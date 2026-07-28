@@ -1,7 +1,4 @@
-"""Tests for metrics — placeholder for Phase 1 Slice 9."""
-from __future__ import annotations
+"""Tests for metrics — Phase 1 Slice 9 (not yet implemented).
 
-
-def test_placeholder():
-    """Placeholder until metrics module is implemented."""
-    assert True
+Excluded from Stage 0 test suite. Remove this marker when implementing.
+"""

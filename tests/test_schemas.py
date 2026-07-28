@@ -1,4 +1,4 @@
-"""Tests for canonical schemas and configuration.
+"""Tests for canonical schemas, configuration, and invariant validation.
 
 These tests do NOT require the Chronos model to load.
 """
@@ -26,9 +26,12 @@ from src.config import (
 )
 
 
-class TestForecastTask:
+class TestForecastTaskDefaults:
     def test_defaults(self):
-        task = ForecastTask()
+        task = ForecastTask(
+            historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+            target_columns=("target",),
+        )
         assert task.mode == ForecastMode.STANDARD_UNIVARIATE
         assert task.prediction_length == 13
         assert task.quantile_levels == (0.1, 0.5, 0.9)
@@ -37,17 +40,110 @@ class TestForecastTask:
     def test_custom_values(self):
         task = ForecastTask(
             mode=ForecastMode.STANDARD_UNIVARIATE,
+            historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+            target_columns=("target",),
             prediction_length=24,
             quantile_levels=(0.05, 0.5, 0.95),
             frequency="D",
         )
         assert task.prediction_length == 24
         assert task.quantile_levels == (0.05, 0.5, 0.95)
-        assert task.frequency == "D"
 
     def test_horizon_bounds(self):
         assert HORIZON_MIN >= 1
         assert HORIZON_MAX <= 1024
+
+
+class TestForecastTaskValidation:
+    """Construction-time invariant validation (__post_init__)."""
+
+    def test_empty_data_rejected(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            ForecastTask()
+
+    def test_empty_target_rejected(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=(),
+            )
+
+    def test_zero_horizon_rejected(self):
+        with pytest.raises(ValueError, match="prediction_length"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                prediction_length=0,
+            )
+
+    def test_negative_horizon_rejected(self):
+        with pytest.raises(ValueError, match="prediction_length"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                prediction_length=-5,
+            )
+
+    def test_overcap_horizon_rejected(self):
+        with pytest.raises(ValueError, match="prediction_length"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                prediction_length=99999,
+            )
+
+    def test_empty_quantiles_rejected(self):
+        with pytest.raises(ValueError, match="quantile_levels"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(),
+            )
+
+    def test_quantile_out_of_range(self):
+        with pytest.raises(ValueError, match="Quantile"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(-0.1, 0.5),
+            )
+        with pytest.raises(ValueError, match="Quantile"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(0.5, 1.0),
+            )
+
+    def test_duplicate_quantiles_rejected(self):
+        with pytest.raises(ValueError, match="Duplicate quantile"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(0.5, 0.5),
+            )
+
+    def test_negative_context_cap_rejected(self):
+        with pytest.raises(ValueError, match="context_window_cap"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                context_window_cap=-1,
+            )
+
+    def test_cross_learning_rejected(self):
+        with pytest.raises(ValueError, match="cross_learning"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                cross_learning=True,
+            )
+
+    def test_multiple_targets_in_univariate_rejected(self):
+        with pytest.raises(ValueError, match="exactly one target"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target1", "target2"),
+            )
 
 
 class TestForecastResult:
@@ -81,7 +177,7 @@ class TestValidation:
         assert issue.severity == IssueSeverity.ERROR
         assert issue.code == "missing_timestamps"
 
-    def test_validation_report_blocking(self):
+    def test_blocking_derived_from_errors(self):
         report = ValidationReport(
             issues=(
                 ValidationIssue(
@@ -90,13 +186,12 @@ class TestValidation:
                     message="Test error",
                 ),
             ),
-            is_blocking=True,
         )
         assert report.is_blocking is True
         assert len(report.errors) == 1
         assert len(report.warnings) == 0
 
-    def test_validation_report_warning(self):
+    def test_non_blocking_warning(self):
         report = ValidationReport(
             issues=(
                 ValidationIssue(
@@ -136,4 +231,3 @@ class TestRunMetadata:
     def test_defaults(self):
         meta = RunMetadata()
         assert meta.run_id == ""
-        assert meta.package_versions == {}

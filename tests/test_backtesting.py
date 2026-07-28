@@ -1,7 +1,4 @@
-"""Tests for backtesting — placeholder for Phase 1 Slice 7."""
-from __future__ import annotations
+"""Tests for backtesting — Phase 1 Slice 7 (not yet implemented).
 
-
-def test_placeholder():
-    """Placeholder until backtesting module is implemented."""
-    assert True
+Excluded from Stage 0 test suite. Remove this marker when implementing.
+"""

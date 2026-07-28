@@ -62,7 +62,11 @@ class ValidationIssue:
 @dataclasses.dataclass(frozen=True)
 class ValidationReport:
     issues: tuple[ValidationIssue, ...] = ()
-    is_blocking: bool = False
+
+    @property
+    def is_blocking(self) -> bool:
+        """Derived from presence of ERROR-severity issues."""
+        return len(self.errors) > 0
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -79,7 +83,10 @@ class ValidationReport:
 
 @dataclasses.dataclass(frozen=True)
 class ForecastTask:
-    """Everything the forecasting backend needs to produce a prediction."""
+    """Everything the forecasting backend needs to produce a prediction.
+
+    Raises ``ValueError`` at construction if invariants are violated.
+    """
     mode: ForecastMode = ForecastMode.STANDARD_UNIVARIATE
 
     # Canonical long-format data (after validation & normalisation)
@@ -114,6 +121,52 @@ class ForecastTask:
 
     # Batch size for cross-learning / joint prediction
     batch_size: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate task invariants at construction time."""
+        from src.config import HORIZON_MIN, HORIZON_MAX, CONTEXT_WINDOW_CAP
+
+        if not isinstance(self.mode, ForecastMode):
+            raise ValueError(
+                f"Unsupported mode '{self.mode}'. "
+                f"Valid modes: {[m.value for m in ForecastMode]}"
+            )
+        if not self.historical_data:
+            raise ValueError("historical_data must not be empty")
+        if not self.target_columns:
+            raise ValueError("target_columns must not be empty")
+        if self.mode == ForecastMode.STANDARD_UNIVARIATE and len(self.target_columns) > 1:
+            raise ValueError(
+                "Standard univariate mode supports exactly one target column, "
+                f"got {len(self.target_columns)}"
+            )
+        if self.prediction_length < HORIZON_MIN or self.prediction_length > HORIZON_MAX:
+            raise ValueError(
+                f"prediction_length must be between {HORIZON_MIN} and {HORIZON_MAX}, "
+                f"got {self.prediction_length}"
+            )
+        if not self.quantile_levels:
+            raise ValueError("quantile_levels must not be empty")
+        seen = set()
+        for q in self.quantile_levels:
+            if q <= 0.0 or q >= 1.0:
+                raise ValueError(f"Quantile must be in (0, 1), got {q}")
+            rounded = round(q, 6)
+            if rounded in seen:
+                raise ValueError(f"Duplicate quantile level: {q}")
+            seen.add(rounded)
+        if self.context_window_cap is not None and self.context_window_cap <= 0:
+            raise ValueError(
+                f"context_window_cap must be positive, got {self.context_window_cap}"
+            )
+        if self.context_window_cap is not None and self.context_window_cap > CONTEXT_WINDOW_CAP:
+            raise ValueError(
+                f"context_window_cap exceeds maximum of {CONTEXT_WINDOW_CAP}"
+            )
+        if self.cross_learning:
+            raise ValueError(
+                "cross_learning is not supported in Stage 0 / Phase 1"
+            )
 
 
 @dataclasses.dataclass(frozen=True)
