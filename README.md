@@ -14,6 +14,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Local setup (D: drive) | ✅ Documented |
 | CI (GitHub Actions) | ✅ Implemented |
 | `st.cache_resource` process-level caching | ✅ Implemented |
+| Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
+| Pipeline reuse (real Chronos-2 model) | ⏳ Requires model download |
 | Real Chronos-2 model smoke test | ⏳ Requires model download |
 | Local benchmark suite | ⏳ Requires model download |
 | Community Cloud deployment | ⏳ Pending |
@@ -76,10 +78,12 @@ This script will:
 ### Manual installation
 
 ```powershell
-# Set environment variables
+# Set environment variables (all D: drive, including Hub and Xet caches)
 $env:PIP_CACHE_DIR = "D:\Forecasting-Tool-Local\cache\pip"
 $env:HF_HOME = "D:\Forecasting-Tool-Local\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "D:\Forecasting-Tool-Local\cache\huggingface"
+$env:HF_HUB_CACHE = "D:\Forecasting-Tool-Local\cache\huggingface\hub"
+$env:HF_XET_CACHE = "D:\Forecasting-Tool-Local\cache\huggingface\xet"
 $env:TRANSFORMERS_CACHE = "D:\Forecasting-Tool-Local\cache\transformers"
 $env:TORCH_HOME = "D:\Forecasting-Tool-Local\cache\torch"
 $env:TMP = "D:\Forecasting-Tool-Local\temp"
@@ -91,8 +95,8 @@ New-Item -ItemType Directory -Force -Path D:\Forecasting-Tool-Local\venv, D:\For
 # Create virtual environment (adjust Python path if needed)
 py -3.12 -m venv D:\Forecasting-Tool-Local\venv
 
-# Install PyTorch (CPU-only)
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch (CPU-only, exact pin)
+D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 
 # Install dependencies
 D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements.txt

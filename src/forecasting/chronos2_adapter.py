@@ -59,14 +59,24 @@ class ResultSchemaError(AdapterError):
 
 def _validate_quantile_monotonic(row: Any, quantile_levels: list[float]) -> None:
     """Raise ResultSchemaError if quantile columns are not non-decreasing
-    when read in ascending quantile-level order."""
+    when read in ascending quantile-level order.
+
+    Requires every requested quantile column to be present, contain numeric
+    finite values, and be monotonic non-decreasing.
+    """
     prev_val: float | None = None
     prev_q: float | None = None
     for q in sorted(quantile_levels):
         col = str(q)
         if col not in row:
-            continue
+            raise ResultSchemaError(
+                f"Missing requested quantile column '{col}' in prediction row."
+            )
         val = float(row[col])
+        if not np.isfinite(val):
+            raise ResultSchemaError(
+                f"Non-finite quantile value for q={q}: {val}"
+            )
         if prev_val is not None and val < prev_val:
             raise ResultSchemaError(
                 f"Quantile values are not monotonic: q={q} value={val} < "

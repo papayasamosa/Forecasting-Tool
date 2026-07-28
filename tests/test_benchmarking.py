@@ -184,7 +184,8 @@ class TestRunBenchmarks:
     def test_failure_and_retry_uses_single_adapter_instance(self):
         """Scenario 4 must retry on the SAME adapter/pipeline that failed,
         not construct a fresh one -- so run_benchmarks should only ask the
-        factory for adapters for scenarios 1 and 2, never for scenario 4."""
+        factory for adapters for scenario 1 only (panel reuses scenario 1's
+        pipeline)."""
         call_log: list[Chronos2Adapter] = []
 
         def counting_factory() -> Chronos2Adapter:
@@ -194,7 +195,8 @@ class TestRunBenchmarks:
 
         with tempfile.TemporaryDirectory() as tmp:
             run_benchmarks(output_dir=tmp, adapter_factory=counting_factory)
-        assert len(call_log) == 2
+        # Only one adapter is created (scenario 1); panel scenario reuses it
+        assert len(call_log) == 1
 
     def test_no_test_package_import_in_benchmarking(self):
         """Production code must not depend on the tests/ tree (would break
@@ -249,3 +251,216 @@ class TestMarkdownReport:
             assert "Error Type" in content
             assert "InferenceError" in content
             assert "boom" in content
+
+
+class TestPanelValidation:
+    """Tests for the _validate_panel_output function."""
+
+    def _make_valid_panel_output(self, n_series=5, horizon=13):
+        """Build a valid panel output DataFrame."""
+        import pandas as pd
+        import numpy as np
+        rows = []
+        quantile_levels = [0.1, 0.5, 0.9]
+        for s in range(n_series):
+            item_id = f"series_{s}"
+            last_ts = pd.Timestamp("2024-04-07")
+            dates = pd.date_range(start=last_ts, periods=horizon + 1, freq="W")[1:]
+            for i, d in enumerate(dates):
+                row = {
+                    "item_id": item_id,
+                    "timestamp": d,
+                    "predictions": float(100 + i),
+                }
+                for q in quantile_levels:
+                    row[str(q)] = float(100 + i - 5 * (1 - q))
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def _make_historical_data(self, n_series=5):
+        """Build matching historical data ending before the forecast."""
+        import pandas as pd
+        import numpy as np
+        rows = []
+        for s in range(n_series):
+            dates = pd.date_range("2022-01-03", periods=104, freq="W")
+            for i, d in enumerate(dates):
+                rows.append({
+                    "item_id": f"series_{s}",
+                    "timestamp": d,
+                    "target": float(100 + s * 20 + i),
+                })
+        return pd.DataFrame(rows)
+
+    def test_valid_panel_passes(self):
+        df = self._make_valid_panel_output()
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output
+        # Should not raise
+        _validate_panel_output(
+            pred_df=df,
+            expected_item_ids=expected_ids,
+            expected_horizon=13,
+            quantile_levels=[0.1, 0.5, 0.9],
+            historical_data=hist,
+        )
+
+    def test_missing_quantile_column(self):
+        df = self._make_valid_panel_output()
+        df = df.drop(columns=["0.5"])
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="Missing requested quantile column"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_nan_in_quantile_column(self):
+        df = self._make_valid_panel_output()
+        df.loc[0, "0.5"] = float("nan")
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="Non-finite values in quantile column"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_wrong_row_count(self):
+        df = self._make_valid_panel_output()
+        df = df.iloc[:-5]  # drop 5 rows
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="expected.*rows"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_wrong_item_ids(self):
+        df = self._make_valid_panel_output()
+        df.loc[df["item_id"] == "series_0", "item_id"] = "unknown_series"
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="item_id set mismatch"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_non_finite_predictions(self):
+        df = self._make_valid_panel_output()
+        df.loc[0, "predictions"] = float("inf")
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="Non-finite point predictions"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_duplicate_item_timestamp_rows(self):
+        import pandas as pd
+        df = self._make_valid_panel_output()
+        # Make the last row's timestamp match the second-to-last (same item)
+        last_idx = df.index[-1]
+        second_last_idx = df.index[-2]
+        df.loc[last_idx, "timestamp"] = df.loc[second_last_idx, "timestamp"]
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="Duplicate"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_timestamps_not_after_history(self):
+        import pandas as pd
+        df = self._make_valid_panel_output()
+        # Shift all timestamps back so they overlap with history
+        df["timestamp"] = pd.to_datetime(df["timestamp"]) - pd.DateOffset(years=1)
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="not after"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+
+class TestOnePipeline:
+    """WP3: The panel and rolling scenarios reuse the same adapter/pipeline."""
+
+    def test_panel_reuses_weekly_adapter(self):
+        """The panel scenario should NOT create a second adapter instance."""
+        call_log: list[Chronos2Adapter] = []
+
+        def counting_factory() -> Chronos2Adapter:
+            a = Chronos2Adapter(pipeline_or_provider=FakePipeline())
+            call_log.append(a)
+            return a
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_benchmarks(output_dir=tmp, adapter_factory=counting_factory)
+        # Only 1 adapter: the weekly + rolling + panel all share it
+        assert len(call_log) == 1
+
+    def test_rolling_reuses_weekly_adapter(self):
+        """The rolling scenario reuses the weekly adapter (tests already
+        pass since rolling uses adapter.forecast() directly)."""
+        call_log: list[Chronos2Adapter] = []
+
+        def counting_factory() -> Chronos2Adapter:
+            a = Chronos2Adapter(pipeline_or_provider=FakePipeline())
+            call_log.append(a)
+            return a
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_benchmarks(output_dir=tmp, adapter_factory=counting_factory)
+        assert len(call_log) == 1
+
+
+class TestPanelFailureEvidence:
+    """WP2: Failed panel runs preserve memory and timing evidence."""
+
+    def test_failed_panel_retains_memory_fields(self):
+        """When panel inference fails, memory fields must be populated."""
+
+        class FailingPipeline:
+            model_id = "amazon/chronos-2-test"
+            model_revision = "fake-revision-001"
+
+            def predict_df(self, input_df, **kwargs):
+                raise RuntimeError("Panel inference simulated failure")
+
+        def failing_factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=FailingPipeline())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=failing_factory)
+            panel = [r for r in results if r.scenario == "panel_5_series"][0]
+            sample = [s for s in panel.samples if s.label == "panel_forecast_direct"][0]
+            assert sample.success is False
+            # Memory fields should be populated
+            assert isinstance(sample.baseline_rss_mb, float)
+            assert isinstance(sample.rss_mb, float)
+            assert isinstance(sample.peak_rss_mb, float)
+            assert isinstance(sample.duration_seconds, float)
+            assert sample.error_type == "RuntimeError"
+            assert "simulated failure" in sample.error_message
