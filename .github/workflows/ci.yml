@@ -40,10 +40,14 @@ jobs:
           python -c "import torch; assert torch.version.cuda is None, f'CUDA available: {torch.version.cuda}'"
           echo "CPU-only PyTorch confirmed: $(python -c 'import torch; print(torch.__version__)')"
 
-      - name: Lint with flake8
+      - name: Compile-check all executable files
         run: |
-          flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 src/ tests/ --count --exit-zero --max-complexity=10 --statistics
+          python -m compileall app.py pages/ src/ scripts/ tests/ -q
+
+      - name: Lint with flake8 (all executable paths)
+        run: |
+          flake8 app.py pages/ src/ scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 app.py pages/ src/ scripts/ tests/ --count --exit-zero --max-complexity=10 --statistics
 
       - name: Run unit tests with coverage (offline mode)
         env:
