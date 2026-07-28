@@ -183,7 +183,13 @@ class RunMetadata:
     context_rows_used: int = 0
     data_fingerprint: str = ""
     warnings: tuple[str, ...] = ()
-    runtime_seconds: float = 0.0
+    runtime_seconds: float = 0.0  # Deprecated: kept for backward compat
+    model_load_seconds: float = 0.0
+    inference_seconds: float = 0.0
+    result_conversion_seconds: float = 0.0
+    total_runtime_seconds: float = 0.0
+    model_was_loaded_this_run: bool = False
+    pipeline_reused: bool = False
     package_versions: dict[str, str] = dataclasses.field(default_factory=dict)
     backend_name: str = ""
 

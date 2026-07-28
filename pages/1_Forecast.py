@@ -1,13 +1,14 @@
 """Streamlit page: Forecast — Stage 0 (not yet Phase 1).
 
 The Chronos-2 model is loaded only when the user clicks "Run Forecast".
+The backend is cached at the process level via ``st.cache_resource``.
 """
 from __future__ import annotations
 
 import logging
 import os
 import sys
-from io import StringIO
+from io import StringIO, BytesIO
 
 import streamlit as st
 import pandas as pd
@@ -33,14 +34,43 @@ st.set_page_config(page_title="Forecast — Chronos-2", page_icon="📈", layout
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # ---------------------------------------------------------------------------
-# Session state
+# Helpers (defined BEFORE their first use to avoid NameError)
+# ---------------------------------------------------------------------------
+
+def _build_demo_data() -> pd.DataFrame:
+    """Return a synthetic weekly time-series fixture (104 periods)."""
+    import numpy as np
+    rng = np.random.default_rng(seed=42)
+    t = np.arange(104)
+    values = 100 + 0.05 * t + 5 * np.sin(2 * np.pi * t / 52) + rng.normal(0, 2, size=104)
+    dates = pd.date_range("2022-01-03", periods=104, freq="W")
+    return pd.DataFrame({"timestamp": dates, "target": values})
+
+
+@st.cache_resource
+def _get_forecast_backend() -> Chronos2Adapter:
+    """Return a process-cached Chronos2Adapter (model loads on first forecast)."""
+    logger.info("Creating Chronos2Adapter (process-level cache).")
+    return Chronos2Adapter()
+
+
+def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
+    """Parse uploaded CSV bytes once and return a DataFrame."""
+    return pd.read_csv(BytesIO(file_bytes))
+
+
+# ---------------------------------------------------------------------------
+# Session state (configuration and results, NOT the model)
 # ---------------------------------------------------------------------------
 _DEFAULT_STATE = {
     "run_id": "",
     "forecast_result": None,
     "error_message": "",
     "is_running": False,
-    "backend": None,
+    "cached_df": None,           # parsed DataFrame reused across reruns
+    "cached_file_bytes": None,   # raw bytes to avoid re-read
+    "cached_columns": [],
+    "pipeline_was_loaded": False,  # tracks whether model was loaded this session
 }
 for k, v in _DEFAULT_STATE.items():
     if k not in st.session_state:
@@ -61,24 +91,41 @@ with st.sidebar:
     ts_col = "timestamp"
     target_col = "target"
 
+    # Reset cached data when switching data sources
+    if "last_data_option" not in st.session_state or st.session_state.last_data_option != data_option:
+        st.session_state.cached_df = None
+        st.session_state.cached_file_bytes = None
+        st.session_state.last_data_option = data_option
+
     if data_option == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
         if uploaded_file is not None:
+            # Check size before reading
             uploaded_file.seek(0, os.SEEK_END)
             size = uploaded_file.tell()
             uploaded_file.seek(0)
             if size > MAX_UPLOAD_BYTES:
                 st.error(f"File exceeds the 50 MB limit ({size / 1024 / 1024:.1f} MB).")
                 uploaded_file = None
+                st.session_state.cached_df = None
+                st.session_state.cached_file_bytes = None
             else:
-                try:
-                    raw_df = pd.read_csv(uploaded_file)
-                    cols = raw_df.columns.tolist()
-                    ts_col = st.selectbox("Timestamp column", cols, index=0)
-                    target_col = st.selectbox("Target column", cols, index=min(1, len(cols) - 1))
-                except Exception:
-                    st.error("Could not parse CSV. Please check the file format.")
-                    uploaded_file = None
+                # Read bytes ONCE
+                file_bytes = uploaded_file.read()
+                if st.session_state.cached_file_bytes != file_bytes:
+                    st.session_state.cached_file_bytes = file_bytes
+                    try:
+                        st.session_state.cached_df = _parse_csv_bytes(file_bytes)
+                        st.session_state.cached_columns = st.session_state.cached_df.columns.tolist()
+                    except Exception:
+                        st.error("Could not parse CSV. Please check the file format.")
+                        st.session_state.cached_df = None
+                        st.session_state.cached_file_bytes = None
+
+                if st.session_state.cached_df is not None:
+                    cols = st.session_state.cached_columns
+                    ts_col = st.selectbox("Timestamp column", cols, index=0, key="ts_col")
+                    target_col = st.selectbox("Target column", cols, index=min(1, len(cols) - 1), key="target_col")
 
     st.markdown("---")
     horizon = st.number_input("Forecast horizon (periods)", min_value=1, max_value=1024, value=13, step=1)
@@ -88,7 +135,7 @@ with st.sidebar:
                           disabled=st.session_state.is_running)
 
 # ---------------------------------------------------------------------------
-# Data preview
+# Data preview (no model loading here)
 # ---------------------------------------------------------------------------
 st.subheader("📊 Data")
 
@@ -96,14 +143,10 @@ if data_option == "Use demo data":
     df = _build_demo_data()
     st.info("Using built-in synthetic weekly data (104 periods).")
     st.dataframe(df.head(10), use_container_width=True)
-elif uploaded_file is not None:
-    try:
-        df = pd.read_csv(uploaded_file)
-        st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns.")
-        st.dataframe(df.head(10), use_container_width=True)
-    except Exception:
-        st.error("Could not read CSV.")
-        df = None
+elif st.session_state.cached_df is not None:
+    df = st.session_state.cached_df
+    st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns.")
+    st.dataframe(df.head(10), use_container_width=True)
 else:
     df = None
     st.info("Upload a CSV or use demo data to continue.")
@@ -144,31 +187,23 @@ if run_button and df is not None and not st.session_state.is_running:
         st.session_state.is_running = False
         st.stop()
 
-    # Create or reuse cached backend
-    if st.session_state.backend is None:
-        with st.spinner("Loading Chronos-2 model (cold start)..."):
-            try:
-                st.session_state.backend = Chronos2Adapter()
-            except AdapterError:
-                st.error("Model loading failed. Please try again later.")
-                logger.error("Model load failed", exc_info=True)
-                st.session_state.is_running = False
-                st.stop()
-    else:
-        st.info("Using previously loaded model (warm reuse).")
-
-    # Run forecast
-    with st.spinner("Running Chronos-2 forecast..."):
-        try:
-            result = st.session_state.backend.forecast(task)
+    # Get or create the process-cached backend (model loads lazily on first forecast)
+    try:
+        backend = _get_forecast_backend()
+        if not st.session_state.pipeline_was_loaded:
+            # First call triggers model loading inside forecast()
+            st.session_state.pipeline_was_loaded = True
+        # Run forecast
+        with st.spinner("Running Chronos-2 forecast (may load model on first call)..."):
+            result = backend.forecast(task)
             st.session_state.forecast_result = result
             st.session_state.run_id = result.run_id
-        except AdapterError as e:
-            st.session_state.error_message = str(e)
-            logger.warning("Forecast failed", exc_info=True)
-        except Exception:
-            st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
-            logger.error("Unexpected forecast error", exc_info=True)
+    except AdapterError as e:
+        st.session_state.error_message = str(e)
+        logger.warning("Forecast failed", exc_info=True)
+    except Exception:
+        st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
+        logger.error("Unexpected forecast error", exc_info=True)
 
     st.session_state.is_running = False
 
@@ -177,15 +212,25 @@ if run_button and df is not None and not st.session_state.is_running:
 # ---------------------------------------------------------------------------
 if st.session_state.forecast_result:
     result = st.session_state.forecast_result
-    call_count = getattr(st.session_state.backend, "pipeline_call_count", 0)
-    label = "cold" if call_count <= 1 else "warm"
+    meta = result.runtime_metadata
+    label = "cold" if meta.model_was_loaded_this_run else "warm"
 
     st.subheader("✅ Forecast Complete")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Run ID", result.run_id)
-    c2.metric("Horizon", result.runtime_metadata.prediction_length)
+    c2.metric("Horizon", meta.prediction_length)
     c3.metric("Backend", f"{result.backend_name} ({label})")
-    c4.metric("Inference", f"{result.runtime_metadata.runtime_seconds:.2f}s")
+    c4.metric("Inference", f"{meta.inference_seconds:.2f}s")
+
+    # Show timing breakdown
+    with st.expander("⏱ Timing & model details", expanded=False):
+        st.write(f"- **Model load:** {meta.model_load_seconds:.3f}s")
+        st.write(f"- **Inference:** {meta.inference_seconds:.3f}s")
+        st.write(f"- **Result conversion:** {meta.result_conversion_seconds:.3f}s")
+        st.write(f"- **Total runtime:** {meta.total_runtime_seconds:.3f}s")
+        st.write(f"- **Pipeline reused:** {meta.pipeline_reused}")
+        st.write(f"- **Model revision:** {result.model_revision}")
+        st.write(f"- **Context rows used:** {meta.context_rows_used}")
 
     st.subheader("📋 Forecast Table")
     rows_df = pd.DataFrame(result.forecast_rows)
@@ -200,15 +245,3 @@ if st.session_state.forecast_result:
 elif st.session_state.error_message:
     st.error(st.session_state.error_message)
     st.info("Your configuration has been preserved. Adjust and try again.")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _build_demo_data() -> pd.DataFrame:
-    import numpy as np
-    rng = np.random.default_rng(seed=42)
-    t = np.arange(104)
-    values = 100 + 0.05 * t + 5 * np.sin(2 * np.pi * t / 52) + rng.normal(0, 2, size=104)
-    dates = pd.date_range("2022-01-03", periods=104, freq="W")
-    return pd.DataFrame({"timestamp": dates, "target": values})

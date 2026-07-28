@@ -37,10 +37,13 @@ generate probabilistic forecasts with quantile predictions.
 
 | Component | Status |
 |-----------|--------|
-| Chronos-2 CPU Inference | ✅ Tested |
-| DataFrame API (`predict_df`) | ✅ Implemented |
-| Streamlit Caching | ✅ Implemented |
-| Unit Tests | ✅ Passing |
+| `Chronos2Adapter` class | ✅ Implemented, tested with fake pipeline |
+| Adapter unit tests | ✅ Implemented (no model download) |
+| Schema invariant validation | ✅ Implemented, tested |
+| Real Chronos-2 model smoke test | ⏳ Requires model download |
+| Local benchmark suite | ⏳ Requires model download |
+| Community Cloud deployment | ⏳ Pending |
+| Inference backend decision (ADR-001) | ⏳ Pending (awaiting Cloud evidence) |
 | Rolling Backtest | 🔜 Phase 1 |
 | Naive Baselines | 🔜 Phase 1 |
 
