@@ -1,6 +1,6 @@
 """Stage 0 benchmark harness — runs, measures, and records benchmark scenarios.
 
-All heavy output defaults to D:\Forecasting-Tool-Local\benchmarks.
+All heavy output defaults to D:\\Forecasting-Tool-Local\\benchmarks.
 """
 from __future__ import annotations
 

@@ -132,19 +132,16 @@ class TestChronos2AdapterContract:
         assert "quantile_0_9" in row
 
     def test_rejects_unknown_mode(self):
-        adapter = Chronos2Adapter(pipeline_or_provider=FakePipeline())
-        import dataclasses
-        valid = ForecastTask(
-            mode=ForecastMode.STANDARD_UNIVARIATE,
-            historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
-            timestamp_column="timestamp",
-            target_columns=("target",),
-            prediction_length=3,
-            quantile_levels=(0.1, 0.9),
-        )
-        bad = dataclasses.replace(valid, mode="invalid_mode")  # type: ignore[arg-type]
-        with pytest.raises(ConfigurationError):
-            adapter.forecast(bad)
+        """Schema validation rejects invalid modes at construction time."""
+        with pytest.raises(ValueError, match="Unsupported mode"):
+            ForecastTask(
+                mode="invalid_mode",  # type: ignore[arg-type]
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                timestamp_column="timestamp",
+                target_columns=("target",),
+                prediction_length=3,
+                quantile_levels=(0.1, 0.9),
+            )
 
     def test_pipeline_reuse(self):
         fake = FakePipeline()
