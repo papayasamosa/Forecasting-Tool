@@ -143,7 +143,7 @@ def _validate_panel_output(
 
     # --- Per-item checks ---
     for item_id in expected_item_ids:
-        item_rows = pred_df[pred_df["item_id"] == item_id].sort_values("timestamp")
+        item_rows = pred_df[pred_df["item_id"] == item_id]
         if len(item_rows) != expected_horizon:
             raise ResultSchemaError(
                 f"Item '{item_id}' expected {expected_horizon} forecast rows, "
@@ -175,23 +175,34 @@ def _validate_panel_output(
     if len(keys) != len(set(keys)):
         raise ResultSchemaError("Duplicate (item_id, timestamp) rows in panel output.")
 
-    # --- Timestamps ordered per item ---
+    # --- Timestamps ordered per item (BEFORE sorting — detect returned order) ---
     for item_id in expected_item_ids:
-        item_rows = pred_df[pred_df["item_id"] == item_id].sort_values("timestamp")
+        item_rows = pred_df[pred_df["item_id"] == item_id]
         parsed = pd.to_datetime(item_rows["timestamp"])
         if list(parsed) != sorted(parsed):
             raise ResultSchemaError(
                 f"Forecast timestamps for item '{item_id}' are not in order."
             )
 
-    # --- Forecast timestamps after history ---
-    hist_max_ts = pd.to_datetime(historical_data["timestamp"]).max()
-    min_forecast_ts = pd.to_datetime(pred_df["timestamp"]).min()
-    if min_forecast_ts <= hist_max_ts:
-        raise ResultSchemaError(
-            f"First forecast timestamp {min_forecast_ts} is not after "
-            f"last historical timestamp {hist_max_ts}."
+    # --- Forecast timestamps after each item's own history ---
+    hist_max_by_item = (
+        pd.to_datetime(historical_data["timestamp"])
+        .groupby(historical_data["item_id"])
+        .max()
+    )
+    for item_id in expected_item_ids:
+        if item_id not in hist_max_by_item.index:
+            raise ResultSchemaError(
+                f"Item '{item_id}' not found in historical data."
+            )
+        item_forecast_ts = pd.to_datetime(
+            pred_df[pred_df["item_id"] == item_id]["timestamp"]
         )
+        if item_forecast_ts.min() <= hist_max_by_item[item_id]:
+            raise ResultSchemaError(
+                f"First forecast timestamp for item '{item_id}' is not after "
+                f"its last historical timestamp {hist_max_by_item[item_id]}."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +235,7 @@ class BenchmarkResult:
     cpu_info: str = ""
     model_id: str = ""
     model_revision: str = ""
+    configured_revision: str = ""
     package_versions: dict[str, str] = field(default_factory=dict)
     context_rows: int = 0
     horizon: int = 0
@@ -233,6 +245,62 @@ class BenchmarkResult:
     run_timestamp: str = ""
     cross_learning: bool = False
     n_series: int = 1
+    expected_outcome: str = "pass"  # pass | expected_failure
+    sample_passed: bool = False
+    scenario_passed: bool = False
+
+
+def _evaluate_suite(results: list[BenchmarkResult]) -> bool:
+    """Return True if the entire benchmark suite passes.
+
+    Rules:
+    - Every scenario with ``expected_outcome == "pass"`` must have
+      ``scenario_passed == True``.
+    - ``failure_and_retry`` scenario must have ``expected_outcome == "expected_failure"``
+      and its injection_failure_test must be a safe failure, followed by a
+      successful retry on the same backend.
+    - Rolling scenario must have exactly 10 successful folds.
+    """
+    for r in results:
+        if r.expected_outcome == "expected_failure":
+            # Injected failure expected: the failure_sample must fail safely,
+            # and the retry must succeed.
+            if not r.scenario_passed:
+                return False
+        else:
+            if not r.scenario_passed:
+                return False
+    return True
+
+
+def _make_sample(
+    label: str,
+    *,
+    success: bool = True,
+    duration_seconds: float = 0.0,
+    rss_mb: float = 0.0,
+    baseline_rss_mb: float = 0.0,
+    peak_rss_mb: float = 0.0,
+    pipeline_call_count: int = 0,
+    model_load_seconds: float = 0.0,
+    inference_seconds: float = 0.0,
+    error_type: str = "",
+    error_message: str = "",
+) -> BenchmarkSample:
+    """Build a BenchmarkSample with the supplied fields."""
+    return BenchmarkSample(
+        label=label,
+        success=success,
+        duration_seconds=duration_seconds,
+        rss_mb=rss_mb,
+        baseline_rss_mb=baseline_rss_mb,
+        peak_rss_mb=peak_rss_mb,
+        pipeline_call_count=pipeline_call_count,
+        model_load_seconds=model_load_seconds,
+        inference_seconds=inference_seconds,
+        error_type=error_type,
+        error_message=error_message,
+    )
 
 
 def _rss_mb() -> float:
@@ -358,24 +426,34 @@ def run_benchmarks(
     adapter_factory : callable or None
         Factory that returns a Chronos2Adapter. Defaults to ``Chronos2Adapter``.
         Use a fake factory for testing without model download.
+
+    Returns
+    -------
+    list[BenchmarkResult]
+        One entry per scenario, each with ``scenario_passed`` and
+        ``sample_passed`` evaluated. Use ``_evaluate_suite()`` for the
+        overall verdict.
     """
+    from src.config import MODEL_REVISION as CONFIGURED_REVISION
+
     if adapter_factory is None:
         adapter_factory = lambda: Chronos2Adapter()
 
     os.makedirs(output_dir, exist_ok=True)
 
-    mem_sampler = _MemorySampler()
     all_results: list[BenchmarkResult] = []
 
     def _base_result(scenario: str, context_rows: int = 0, horizon: int = 13,
                      quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
-                     n_series: int = 1, cross_learning: bool = False) -> BenchmarkResult:
+                     n_series: int = 1, cross_learning: bool = False,
+                     expected_outcome: str = "pass") -> BenchmarkResult:
         return BenchmarkResult(
             scenario=scenario,
             python_version=sys.version.split()[0],
             os_name=sys.platform,
             cpu_info=_cpu_info(),
             model_id=MODEL_ID,
+            configured_revision=CONFIGURED_REVISION,
             package_versions=_package_versions(),
             context_rows=context_rows,
             horizon=horizon,
@@ -384,7 +462,64 @@ def run_benchmarks(
             run_timestamp=datetime.now(timezone.utc).isoformat(),
             n_series=n_series,
             cross_learning=cross_learning,
+            expected_outcome=expected_outcome,
         )
+
+    def _record_sample(
+        result: BenchmarkResult,
+        label: str,
+        *,
+        success: bool = True,
+        duration_seconds: float = 0.0,
+        rss_mb: float = 0.0,
+        baseline_rss_mb: float = 0.0,
+        peak_rss_mb: float = 0.0,
+        pipeline_call_count: int = 0,
+        model_load_seconds: float = 0.0,
+        inference_seconds: float = 0.0,
+        error_type: str = "",
+        error_message: str = "",
+    ) -> None:
+        result.samples.append(_make_sample(
+            label=label, success=success,
+            duration_seconds=duration_seconds,
+            rss_mb=rss_mb, baseline_rss_mb=baseline_rss_mb,
+            peak_rss_mb=peak_rss_mb,
+            pipeline_call_count=pipeline_call_count,
+            model_load_seconds=model_load_seconds,
+            inference_seconds=inference_seconds,
+            error_type=error_type, error_message=error_message,
+        ))
+
+    # ------------------------------------------------------------------
+    # Shared measurement context for telemetry capture
+    # ------------------------------------------------------------------
+    class _Measure:
+        """Captures timing and memory for a single measurement block."""
+        def __init__(self, sampler: _MemorySampler | None = None):
+            self.sampler = sampler or _MemorySampler()
+            self.start_time = time.perf_counter()
+            self.model_load_seconds = 0.0
+            self.inference_seconds = 0.0
+            self.sampler.start()
+
+        def record_load(self, seconds: float) -> None:
+            self.model_load_seconds = seconds
+
+        def record_inference(self, seconds: float) -> None:
+            self.inference_seconds = seconds
+
+        def finish(self) -> dict:
+            self.sampler.stop()
+            elapsed = time.perf_counter() - self.start_time
+            return dict(
+                duration_seconds=elapsed,
+                rss_mb=_rss_mb(),
+                baseline_rss_mb=self.sampler.baseline_mb,
+                peak_rss_mb=self.sampler.peak_mb,
+                model_load_seconds=self.model_load_seconds,
+                inference_seconds=self.inference_seconds,
+            )
 
     # ------------------------------------------------------------------
     # Scenario 1: Weekly series, 260 obs, 13-period horizon
@@ -395,50 +530,46 @@ def run_benchmarks(
     result1 = _base_result("weekly_260_13", context_rows=260, horizon=13)
 
     adapter = adapter_factory()
-    mem_sampler.start()
+    pipeline_construction_count_before = adapter.pipeline_call_count
+
+    # Cold forecast
+    m = _Measure()
     try:
         fr = adapter.forecast(task1)
-        mem_sampler.stop()
-        result1.samples.append(BenchmarkSample(
-            label="cold_forecast",
-            duration_seconds=fr.runtime_metadata.total_runtime_seconds,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=mem_sampler.baseline_mb,
-            peak_rss_mb=mem_sampler.peak_mb,
-            pipeline_call_count=adapter.pipeline_call_count,
-            model_load_seconds=fr.runtime_metadata.model_load_seconds,
-            inference_seconds=fr.runtime_metadata.inference_seconds,
-        ))
+        meta = m.finish()
+        meta["duration_seconds"] = fr.runtime_metadata.total_runtime_seconds
+        meta["model_load_seconds"] = fr.runtime_metadata.model_load_seconds
+        meta["inference_seconds"] = fr.runtime_metadata.inference_seconds
+        _record_sample(result1, "cold_forecast", **meta,
+                       pipeline_call_count=adapter.pipeline_call_count)
         result1.model_revision = fr.model_revision
     except Exception as e:
-        mem_sampler.stop()
-        result1.samples.append(BenchmarkSample(
-            label="cold_forecast", success=False,
-            error_type=type(e).__name__, error_message=str(e)[:200],
-        ))
+        meta = m.finish()
+        _record_sample(result1, "cold_forecast", success=False,
+                       **meta,
+                       error_type=type(e).__name__, error_message=str(e)[:200])
 
     # Warm forecast
-    mem_sampler = _MemorySampler()
-    mem_sampler.start()
+    m = _Measure()
     try:
         fr2 = adapter.forecast(task1)
-        mem_sampler.stop()
-        result1.samples.append(BenchmarkSample(
-            label="warm_forecast",
-            duration_seconds=fr2.runtime_metadata.total_runtime_seconds,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=mem_sampler.baseline_mb,
-            peak_rss_mb=mem_sampler.peak_mb,
-            pipeline_call_count=adapter.pipeline_call_count,
-            model_load_seconds=fr2.runtime_metadata.model_load_seconds,
-            inference_seconds=fr2.runtime_metadata.inference_seconds,
-        ))
+        meta = m.finish()
+        meta["duration_seconds"] = fr2.runtime_metadata.total_runtime_seconds
+        meta["model_load_seconds"] = fr2.runtime_metadata.model_load_seconds
+        meta["inference_seconds"] = fr2.runtime_metadata.inference_seconds
+        _record_sample(result1, "warm_forecast", **meta,
+                       pipeline_call_count=adapter.pipeline_call_count)
     except Exception as e:
-        mem_sampler.stop()
-        result1.samples.append(BenchmarkSample(
-            label="warm_forecast", success=False,
-            error_type=type(e).__name__, error_message=str(e)[:200],
-        ))
+        meta = m.finish()
+        _record_sample(result1, "warm_forecast", success=False,
+                       **meta,
+                       error_type=type(e).__name__, error_message=str(e)[:200])
+
+    # Evaluate scenario 1
+    cold_ok = any(s.label == "cold_forecast" and s.success for s in result1.samples)
+    warm_ok = any(s.label == "warm_forecast" and s.success for s in result1.samples)
+    result1.sample_passed = cold_ok and warm_ok
+    result1.scenario_passed = result1.sample_passed
     all_results.append(result1)
 
     # ------------------------------------------------------------------
@@ -453,19 +584,16 @@ def run_benchmarks(
     result2 = _base_result("panel_5_series", context_rows=104 * 5, horizon=13,
                           n_series=5, cross_learning=False)
 
-    # Reuse the pipeline from Scenario 1 (WP3: one pipeline).
-    # If Scenario 1 failed, this will load it now — still only one load.
-    panel_mem_sampler = _MemorySampler()
-    panel_t0 = time.perf_counter()
+    m2 = _Measure()
     panel_load_time = 0.0
     try:
-        panel_mem_sampler.start()
         load_t0 = time.perf_counter()
         try:
             pipeline = adapter.get_pipeline()
         except ModelLoadError:
             raise
         panel_load_time = time.perf_counter() - load_t0
+        m2.record_load(panel_load_time)
 
         input_df = df2.copy()
         input_df.columns = ["item_id", "timestamp", "target"]
@@ -481,9 +609,11 @@ def run_benchmarks(
             id_column="item_id",
             timestamp_column="timestamp",
             target="target",
+            # WP5: explicitly pass cross_learning setting
+            cross_learning=False,
         )
         inference_time = time.perf_counter() - t0
-        panel_mem_sampler.stop()
+        m2.record_inference(inference_time)
 
         # Full panel invariant validation (WP1)
         _validate_panel_output(
@@ -494,70 +624,66 @@ def run_benchmarks(
             historical_data=df2,
         )
 
-        elapsed = time.perf_counter() - panel_t0
-        result2.samples.append(BenchmarkSample(
-            label="panel_forecast_direct",
-            duration_seconds=elapsed,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=panel_mem_sampler.baseline_mb,
-            peak_rss_mb=panel_mem_sampler.peak_mb,
-            model_load_seconds=panel_load_time,
-            inference_seconds=inference_time,
-        ))
+        meta = m2.finish()
+        meta["model_load_seconds"] = panel_load_time
+        meta["inference_seconds"] = inference_time
+        _record_sample(result2, "panel_forecast_direct", **meta,
+                       pipeline_call_count=adapter.pipeline_call_count)
         result2.model_revision = getattr(pipeline, "model_revision", "")
+        result2.sample_passed = True
     except Exception as e:
-        panel_mem_sampler.stop()
-        elapsed = time.perf_counter() - panel_t0
-        result2.samples.append(BenchmarkSample(
-            label="panel_forecast_direct", success=False,
-            duration_seconds=elapsed,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=panel_mem_sampler.baseline_mb,
-            peak_rss_mb=panel_mem_sampler.peak_mb,
-            model_load_seconds=panel_load_time,
-            error_type=type(e).__name__, error_message=str(e)[:200],
-        ))
+        meta = m2.finish()
+        meta["model_load_seconds"] = panel_load_time
+        _record_sample(result2, "panel_forecast_direct", success=False,
+                       **meta,
+                       error_type=type(e).__name__, error_message=str(e)[:200])
+        result2.sample_passed = False
+    result2.scenario_passed = result2.sample_passed
     all_results.append(result2)
 
     # ------------------------------------------------------------------
     # Scenario 3: 10 rolling forecast calls
+    #
+    # Requires exactly 10 successful folds for scenario_passed.
     # ------------------------------------------------------------------
     print("\n=== Scenario 3: 10 rolling calls ===")
     df3 = _weekly_fixture(260)
     result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13)
-    rolling_mem_sampler = _MemorySampler()
-    rolling_mem_sampler.start()
+    m3 = _Measure()
     total = 0.0
+    successful_folds = 0
     for fold in range(10):
         cutoff = 260 - (10 - fold) * 13
         if cutoff < 13:
             break
         subset = df3.iloc[:cutoff]
         t_task = _make_task(subset, horizon=13)
+        fold_m = _Measure()
         try:
             fr3 = adapter.forecast(t_task)
+            meta = fold_m.finish()
             d = fr3.runtime_metadata.total_runtime_seconds
             total += d
-            result3.samples.append(BenchmarkSample(
-                label=f"fold_{fold}", duration_seconds=d,
-                rss_mb=_rss_mb(),
-                baseline_rss_mb=rolling_mem_sampler.baseline_mb,
-                peak_rss_mb=rolling_mem_sampler.peak_mb,
-                inference_seconds=fr3.runtime_metadata.inference_seconds,
-            ))
+            meta["duration_seconds"] = d
+            meta["inference_seconds"] = fr3.runtime_metadata.inference_seconds
+            _record_sample(result3, f"fold_{fold}", **meta,
+                           pipeline_call_count=adapter.pipeline_call_count)
+            successful_folds += 1
         except Exception as e:
-            result3.samples.append(BenchmarkSample(
-                label=f"fold_{fold}", success=False,
-                error_type=type(e).__name__, error_message=str(e)[:200],
-            ))
-    rolling_mem_sampler.stop()
+            meta = fold_m.finish()
+            _record_sample(result3, f"fold_{fold}", success=False,
+                           **meta,
+                           error_type=type(e).__name__, error_message=str(e)[:200])
+    m3_tot = _Measure()
+    m3_tot_d = m3_tot.finish()
     if result3.samples:
-        result3.samples.append(BenchmarkSample(
-            label="total_10_folds", duration_seconds=total,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=rolling_mem_sampler.baseline_mb,
-            peak_rss_mb=rolling_mem_sampler.peak_mb,
-        ))
+        _record_sample(result3, "total_10_folds",
+                       duration_seconds=total,
+                       rss_mb=m3_tot_d["rss_mb"],
+                       baseline_rss_mb=m3_tot_d["baseline_rss_mb"],
+                       peak_rss_mb=m3_tot_d["peak_rss_mb"])
+    result3.sample_passed = successful_folds == 10
+    result3.scenario_passed = result3.sample_passed
     all_results.append(result3)
 
     # ------------------------------------------------------------------
@@ -566,11 +692,13 @@ def run_benchmarks(
     # Uses a fake adapter/pipeline that fails, then retries with valid data.
     # The failure is constructed INSIDE the protected block so the suite
     # does NOT terminate before the retry test.
+    #
+    # expected_outcome is "expected_failure": the injected failure is a
+    # pass only when the safe failure occurs AND the same backend recovers.
     # ------------------------------------------------------------------
     print("\n=== Scenario 4: Failure + retry (same adapter instance) ===")
-    result4 = _base_result("failure_and_retry", context_rows=0, horizon=13)
-    retry_mem_sampler = _MemorySampler()
-    retry_mem_sampler.start()
+    result4 = _base_result("failure_and_retry", context_rows=0, horizon=13,
+                          expected_outcome="expected_failure")
 
     # A pipeline that fails its first call, then succeeds -- proves the
     # SAME adapter/cached pipeline recovers and remains usable after an
@@ -578,41 +706,52 @@ def run_benchmarks(
     flaky_pipeline = _TransientFailurePipeline(fail_first_n_calls=1)
     flaky_adapter = Chronos2Adapter(pipeline_or_provider=flaky_pipeline)
     valid_task = _make_task(_weekly_fixture(50), horizon=13)
+    failure_occurred = False
+    retry_succeeded = False
+
+    m4_fail = _Measure()
     try:
         flaky_adapter.forecast(valid_task)
-        result4.samples.append(BenchmarkSample(
-            label="injection_failure_test", success=True,
-            error_type="UnexpectedSuccess",
-            error_message="Flaky pipeline did not fail as expected",
-        ))
+        m4_fail.finish()
+        _record_sample(result4, "injection_failure_test", success=True,
+                       error_type="UnexpectedSuccess",
+                       error_message="Flaky pipeline did not fail as expected")
     except AdapterError as e:
-        result4.samples.append(BenchmarkSample(
-            label="injection_failure_test", success=False,
-            error_type=type(e).__name__,
-        ))
+        m4_fail.finish()
+        _record_sample(result4, "injection_failure_test", success=False,
+                       error_type=type(e).__name__, error_message=str(e)[:200])
+        failure_occurred = True
 
     # Retry on the SAME adapter/pipeline (no new adapter is constructed)
+    m4_retry = _Measure()
     try:
         retry_result = flaky_adapter.forecast(valid_task)
-        retry_mem_sampler.stop()
-        result4.samples.append(BenchmarkSample(
-            label="retry_success",
-            duration_seconds=retry_result.runtime_metadata.total_runtime_seconds,
-            rss_mb=_rss_mb(),
-            baseline_rss_mb=retry_mem_sampler.baseline_mb,
-            peak_rss_mb=retry_mem_sampler.peak_mb,
-            pipeline_call_count=flaky_adapter.pipeline_call_count,
-            model_load_seconds=retry_result.runtime_metadata.model_load_seconds,
-            inference_seconds=retry_result.runtime_metadata.inference_seconds,
-        ))
+        meta = m4_retry.finish()
+        meta["duration_seconds"] = retry_result.runtime_metadata.total_runtime_seconds
+        meta["model_load_seconds"] = retry_result.runtime_metadata.model_load_seconds
+        meta["inference_seconds"] = retry_result.runtime_metadata.inference_seconds
+        _record_sample(result4, "retry_success", **meta,
+                       pipeline_call_count=flaky_adapter.pipeline_call_count)
         result4.model_revision = retry_result.model_revision
+        retry_succeeded = True
     except Exception as e:
-        retry_mem_sampler.stop()
-        result4.samples.append(BenchmarkSample(
-            label="retry_success",
-            success=False, error_type=type(e).__name__, error_message=str(e)[:200],
-        ))
+        meta = m4_retry.finish()
+        _record_sample(result4, "retry_success", success=False,
+                       **meta,
+                       error_type=type(e).__name__, error_message=str(e)[:200])
+
+    # Scenario 4 passes when: call failed safely AND retry succeeded
+    result4.sample_passed = failure_occurred and retry_succeeded
+    result4.scenario_passed = result4.sample_passed
     all_results.append(result4)
+
+    # ------------------------------------------------------------------
+    # Evaluate suite pass/fail
+    # ------------------------------------------------------------------
+    suite_ok = _evaluate_suite(all_results)
+    for r in all_results:
+        # Write configured revision into each result
+        r.configured_revision = CONFIGURED_REVISION
 
     # ------------------------------------------------------------------
     # Write results (do NOT filter successful zero-duration samples)
@@ -625,6 +764,11 @@ def run_benchmarks(
     _write_markdown(all_results, md_path)
 
     print(f"\nResults written to:\n  {json_path}\n  {md_path}")
+    print(f"\nSuite passed: {suite_ok}")
+    for r in all_results:
+        status = "PASS" if r.scenario_passed else "FAIL"
+        print(f"  [{status}] {r.scenario} (expected={r.expected_outcome}, "
+              f"samples={len(r.samples)})")
     return all_results
 
 
@@ -639,23 +783,33 @@ def _write_json(results: list[BenchmarkResult], path: str) -> None:
 
 
 def _write_markdown(results: list[BenchmarkResult], path: str) -> None:
+    suite_ok = _evaluate_suite(results)
     lines = [
         "# Stage 0 Benchmark Report",
         f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## Suite verdict",
+        f"- **Suite passed:** {suite_ok}",
         "",
         "## Environment",
         f"- Python: {sys.version.split()[0]}",
         f"- OS: {sys.platform}",
         f"- Model: {MODEL_ID}",
+        f"- Configured revision: {results[0].configured_revision if results else ''}",
         "",
     ]
     for r in results:
+        status = "PASS" if r.scenario_passed else "FAIL"
         lines.extend([
-            f"## Scenario: {r.scenario}",
+            f"## Scenario: {r.scenario}  [{status}]",
+            f"- Expected outcome: {r.expected_outcome}",
+            f"- Scenario passed: {r.scenario_passed}",
             f"- Context rows: {r.context_rows}",
             f"- Horizon: {r.horizon}",
             f"- Quantiles: {r.quantile_levels}",
             f"- HF_TOKEN present: {r.hf_token_present}",
+            f"- Cross-learning: {r.cross_learning}",
+            f"- Model revision: {r.model_revision}",
             "",
             "| Sample | Duration (s) | Baseline RSS (MB) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Success | Error Type | Error Message |",
             "|--------|-------------|--------------------|---------|--------------|----------------|--------------|---------|-----------|---------------|",
