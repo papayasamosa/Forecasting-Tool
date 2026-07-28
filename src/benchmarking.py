@@ -645,43 +645,47 @@ def run_benchmarks(
     # Scenario 3: 10 rolling forecast calls
     #
     # Requires exactly 10 successful folds for scenario_passed.
+    # Uses ONE sampler across all folds, stopped in a finally block (WP3).
     # ------------------------------------------------------------------
     print("\n=== Scenario 3: 10 rolling calls ===")
     df3 = _weekly_fixture(260)
     result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13)
-    m3 = _Measure()
+    rolling_sampler = _MemorySampler()
+    rolling_sampler.start()
     total = 0.0
     successful_folds = 0
-    for fold in range(10):
-        cutoff = 260 - (10 - fold) * 13
-        if cutoff < 13:
-            break
-        subset = df3.iloc[:cutoff]
-        t_task = _make_task(subset, horizon=13)
-        fold_m = _Measure()
-        try:
-            fr3 = adapter.forecast(t_task)
-            meta = fold_m.finish()
-            d = fr3.runtime_metadata.total_runtime_seconds
-            total += d
-            meta["duration_seconds"] = d
-            meta["inference_seconds"] = fr3.runtime_metadata.inference_seconds
-            _record_sample(result3, f"fold_{fold}", **meta,
-                           pipeline_call_count=adapter.pipeline_call_count)
-            successful_folds += 1
-        except Exception as e:
-            meta = fold_m.finish()
-            _record_sample(result3, f"fold_{fold}", success=False,
-                           **meta,
-                           error_type=type(e).__name__, error_message=str(e)[:200])
-    m3_tot = _Measure()
-    m3_tot_d = m3_tot.finish()
+    try:
+        for fold in range(10):
+            cutoff = 260 - (10 - fold) * 13
+            if cutoff < 13:
+                break
+            subset = df3.iloc[:cutoff]
+            t_task = _make_task(subset, horizon=13)
+            fold_m = _Measure()
+            try:
+                fr3 = adapter.forecast(t_task)
+                meta = fold_m.finish()
+                d = fr3.runtime_metadata.total_runtime_seconds
+                total += d
+                meta["duration_seconds"] = d
+                meta["inference_seconds"] = fr3.runtime_metadata.inference_seconds
+                _record_sample(result3, f"fold_{fold}", **meta,
+                               pipeline_call_count=adapter.pipeline_call_count)
+                successful_folds += 1
+            except Exception as e:
+                meta = fold_m.finish()
+                _record_sample(result3, f"fold_{fold}", success=False,
+                               **meta,
+                               error_type=type(e).__name__, error_message=str(e)[:200])
+    finally:
+        rolling_sampler.stop()
+
     if result3.samples:
         _record_sample(result3, "total_10_folds",
                        duration_seconds=total,
-                       rss_mb=m3_tot_d["rss_mb"],
-                       baseline_rss_mb=m3_tot_d["baseline_rss_mb"],
-                       peak_rss_mb=m3_tot_d["peak_rss_mb"])
+                       rss_mb=_rss_mb(),
+                       baseline_rss_mb=rolling_sampler.baseline_mb,
+                       peak_rss_mb=rolling_sampler.peak_mb)
     result3.sample_passed = successful_folds == 10
     result3.scenario_passed = result3.sample_passed
     all_results.append(result3)

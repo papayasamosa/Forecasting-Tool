@@ -139,7 +139,7 @@ with st.sidebar:
             uploaded_file.seek(0, os.SEEK_END)
             size = uploaded_file.tell()
             uploaded_file.seek(0)
-                if size > MAX_UPLOAD_SIZE_BYTES:
+            if size > MAX_UPLOAD_SIZE_BYTES:
                 st.error(f"File exceeds the {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB limit ({size / 1024 / 1024:.1f} MB).")
                 uploaded_file = None
                 st.session_state.cached_df = None
@@ -207,8 +207,8 @@ if run_button and df is not None and not st.session_state.is_running:
         if not q_levels:
             raise ValueError("No quantile levels provided.")
         for q in q_levels:
-            if q <= QUANTILE_MIN or q >= QUANTILE_MAX:
-                raise ValueError(f"Quantile must be between {QUANTILE_MIN} and {QUANTILE_MAX}, got {q}")
+            if q < QUANTILE_MIN or q > QUANTILE_MAX:
+                raise ValueError(f"Quantile must be strictly between {QUANTILE_MIN} and {QUANTILE_MAX}, got {q}")
     except ValueError as e:
         st.error(f"Invalid quantile levels: {e}")
         st.session_state.is_running = False
@@ -231,29 +231,19 @@ if run_button and df is not None and not st.session_state.is_running:
     # Parse timestamps and sort chronologically (WP6: keep latest observations)
     try:
         working_df[ts_col] = pd.to_datetime(working_df[ts_col])
-    except Exception as e:
-        st.error(f"Could not parse timestamps in column '{ts_col}': {e}")
+    except Exception as exc:
+        logger.warning(f"Timestamp parse failed in column '{ts_col}': {type(exc).__name__}")
+        st.error(f"Could not parse timestamps in column '{ts_col}'. Check the date format.")
         st.session_state.is_running = False
         st.stop()
 
     working_df = working_df.sort_values(ts_col).reset_index(drop=True)
-    original_row_count = len(working_df)
-
-    # Apply context cap chronologically (WP6: keep latest timestamps)
-    if len(working_df) > CONTEXT_WINDOW_CAP:
-        working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
-        retained_start = working_df[ts_col].iloc[0]
-        st.warning(
-            f"Context was truncated from {original_row_count} to "
-            f"{CONTEXT_WINDOW_CAP} rows (Chronos-2 limit). "
-            f"Retaining data from {retained_start.date()} onwards."
-        )
 
     # Convert to records for ForecastTask
     records = tuple(working_df.to_dict("records"))
 
-    # Build task with context_window_cap so the adapter produces proper
-    # RunMetadata warnings (WP6: no metadata injected into data rows)
+    # Build task with context_window_cap — the adapter handles truncation
+    # and produces consistent RunMetadata warnings (WP5).
     try:
         task = ForecastTask(
             mode=ForecastMode.STANDARD_UNIVARIATE,

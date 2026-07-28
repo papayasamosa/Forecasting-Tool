@@ -73,7 +73,7 @@ Use this checklist when deploying to Streamlit Community Cloud.
 - [ ] Warm forecast completes within 30 seconds
 - [ ] Peak memory within Community Cloud platform limits (to be measured)
 - [ ] File upload size limit enforced before parse
-- [ ] Same-coumn mapping blocked
+- [ ] Same-column mapping blocked
 - [ ] Errors show user-friendly messages (no stack traces)
 - [ ] Configuration preserved after recoverable error
 
