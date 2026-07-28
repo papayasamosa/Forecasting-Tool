@@ -13,11 +13,15 @@ param(
     [string]$LocalRoot = "D:\Forecasting-Tool-Local"
 )
 
+$ErrorActionPreference = "Stop"
+
 # ---- Set D: drive environment variables ------------------------------------
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "$LocalRoot\cache\huggingface"
+$env:HF_HUB_CACHE = "$LocalRoot\cache\huggingface\hub"
+$env:HF_XET_CACHE = "$LocalRoot\cache\huggingface\xet"
 $env:TRANSFORMERS_CACHE = "$LocalRoot\cache\transformers"
 $env:TORCH_HOME = "$LocalRoot\cache\torch"
 $env:TMP = "$LocalRoot\temp"
@@ -27,6 +31,8 @@ Write-Host "✅ Environment variables set to D: drive:"
 Write-Host "   FORECASTING_LOCAL_ROOT = $LocalRoot"
 Write-Host "   PIP_CACHE_DIR          = $env:PIP_CACHE_DIR"
 Write-Host "   HF_HOME                = $env:HF_HOME"
+Write-Host "   HF_HUB_CACHE           = $env:HF_HUB_CACHE"
+Write-Host "   HF_XET_CACHE           = $env:HF_XET_CACHE"
 Write-Host "   TRANSFORMERS_CACHE     = $env:TRANSFORMERS_CACHE"
 Write-Host "   TORCH_HOME             = $env:TORCH_HOME"
 Write-Host "   TMP / TEMP             = $env:TMP"
@@ -35,11 +41,11 @@ Write-Host "   TMP / TEMP             = $env:TMP"
 $venvPath = "$LocalRoot\venv\Scripts\Activate.ps1"
 if (Test-Path $venvPath) {
     . $venvPath
-    Write-Host "✅ Virtual environment activated: $(Get-Command python).Source"
+    Write-Host "✅ Virtual environment activated: $((Get-Command python).Source)"
 }
 else {
-    Write-Warning "Virtual environment not found at $venvPath. Run setup_local_windows.ps1 first."
-    Write-Host "   Falling back to system Python."
+    Write-Error "Virtual environment not found at $venvPath. Run setup_local_windows.ps1 first."
+    exit 1
 }
 
 Write-Host ""

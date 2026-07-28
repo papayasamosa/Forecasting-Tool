@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-from io import BytesIO
-from unittest.mock import patch
 
 import pytest
 import pandas as pd
@@ -46,6 +44,16 @@ def _make_valid_csv_bytes() -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
 
+class _ExplodingBackend:
+    """Backend that fails loudly if forecast() is ever called.
+
+    Used to prove a code path does NOT trigger model inference.
+    """
+
+    def forecast(self, task):  # noqa: D401 - test double
+        raise AssertionError("forecast() must not be called on this code path")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -59,16 +67,17 @@ class TestForecastPageAppTest:
         at = AppTest.from_file("pages/1_Forecast.py")
         at.run()
         assert not at.exception
-        # Should show the demo data preview
-        assert "Using built-in synthetic weekly data" in at.markdown[0].value
+        # Should show the demo data preview (emitted via st.info, not st.markdown)
+        assert "Using built-in synthetic weekly data" in at.info[0].value
 
     def test_demo_data_preview_no_model(self):
         """The demo data preview should appear without model loading."""
         at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
         at.run()
         assert not at.exception
-        # The data preview should show without model load
-        # (Check that no error about model loading is shown)
+        assert "Using built-in synthetic weekly data" in at.info[0].value
+        assert at.session_state["forecast_result"] is None
 
     def test_upload_csv_preview(self):
         """A valid CSV can be uploaded and previewed."""
@@ -81,12 +90,12 @@ class TestForecastPageAppTest:
 
         # Upload a valid CSV
         csv_bytes = _make_valid_csv_bytes()
-        at.file_uploader[0].set_value(csv_bytes)
+        at.file_uploader[0].set_value(("valid.csv", csv_bytes, "text/csv"))
         at.run()
 
         assert not at.exception
-        # Should show the data preview
-        assert "Loaded 20 rows" in at.markdown[0].value
+        # Should show the data preview (emitted via st.success, not st.markdown)
+        assert "Loaded 20 rows" in at.success[0].value
 
     def test_oversized_file_rejected(self):
         """An oversized file should be rejected before parsing."""
@@ -97,17 +106,20 @@ class TestForecastPageAppTest:
         at.radio[0].set_value("Upload CSV")
         at.run()
 
-        # Upload a file that exceeds 50 MB (mock size by patching)
+        # Upload a file that exceeds 50 MB
         large_bytes = b"x" * (51 * 1024 * 1024)
-        at.file_uploader[0].set_value(large_bytes)
+        at.file_uploader[0].set_value(("large.csv", large_bytes, "text/csv"))
         at.run()
 
-        # Should show error about file size
         assert not at.exception
+        assert "exceeds the 50 MB limit" in at.error[0].value
+        assert at.session_state["cached_df"] is None
+        assert at.session_state["cached_file_bytes"] is None
 
     def test_invalid_quantiles_blocked(self):
         """Invalid quantile levels should produce an error message."""
         at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
         at.run()
 
         # Set invalid quantiles
@@ -116,41 +128,46 @@ class TestForecastPageAppTest:
 
         # Click Run Forecast
         at.button[0].click()
+        at.run()
 
         assert not at.exception
+        assert "Invalid quantile levels" in at.error[0].value
+        assert at.session_state["forecast_result"] is None
 
-    @patch("pages.1_Forecast._get_forecast_backend")
-    def test_fake_backend_reuse(self, mock_backend):
-        """Test that the cached backend is reused across reruns."""
+    def test_fake_backend_reuse(self):
+        """The same injected backend/pipeline is reused across reruns."""
         from src.forecasting.chronos2_adapter import Chronos2Adapter
         from tests.test_adapter_contract import FakePipeline
 
         fake_pipeline = FakePipeline()
         adapter = Chronos2Adapter(pipeline_or_provider=fake_pipeline)
-        mock_backend.return_value = adapter
 
         at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = adapter
         at.run()
 
         # Click Run Forecast on demo data
         at.button[0].click()
         at.run()
-
-        # Should not raise
         assert not at.exception
+        assert fake_pipeline.call_count == 1
 
-        # Run again - should reuse cached backend
+        # Run again - should reuse the same adapter/pipeline
         at.button[0].click()
         at.run()
         assert not at.exception
+        assert fake_pipeline.call_count == 2
 
 
-@pytest.mark.skipif(HAS_APPTEST, reason="Unit tests for page logic (not AppTest)")
 class TestForecastPageLogic:
-    """Unit tests for page helper functions."""
+    """Unit tests for page helper functions.
+
+    These import the page module directly via importlib (its name starts
+    with a digit, so a normal `import pages.1_Forecast` is not valid
+    syntax) and run regardless of whether AppTest is available.
+    """
 
     def _get_page_module(self):
-        """Import the forecast page module using importlib (name starts with digit)."""
         import importlib
         return importlib.import_module("pages.1_Forecast")
 

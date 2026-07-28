@@ -145,6 +145,36 @@ class TestForecastTaskValidation:
                 target_columns=("target1", "target2"),
             )
 
+    def test_quantile_levels_canonicalized_sorted(self):
+        task = ForecastTask(
+            historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+            target_columns=("target",),
+            quantile_levels=(0.9, 0.1, 0.5),
+        )
+        assert task.quantile_levels == (0.1, 0.5, 0.9)
+
+    def test_quantile_boundary_values_accepted(self):
+        task = ForecastTask(
+            historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+            target_columns=("target",),
+            quantile_levels=(QUANTILE_MIN, QUANTILE_MAX),
+        )
+        assert task.quantile_levels == (QUANTILE_MIN, QUANTILE_MAX)
+
+    def test_quantile_just_outside_boundary_rejected(self):
+        with pytest.raises(ValueError, match="Quantile"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(QUANTILE_MIN - 0.001, 0.5),
+            )
+        with pytest.raises(ValueError, match="Quantile"):
+            ForecastTask(
+                historical_data=({"timestamp": "2024-01-01", "target": 1.0},),
+                target_columns=("target",),
+                quantile_levels=(0.5, QUANTILE_MAX + 0.001),
+            )
+
 
 class TestForecastResult:
     def test_minimal(self):

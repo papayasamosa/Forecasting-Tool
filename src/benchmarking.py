@@ -24,6 +24,8 @@ from src.forecasting.chronos2_adapter import (
     Chronos2Adapter,
     AdapterError,
     ModelLoadError,
+    ResultSchemaError,
+    _validate_quantile_monotonic,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,7 @@ class BenchmarkSample:
     label: str
     duration_seconds: float = 0.0
     rss_mb: float = 0.0
+    baseline_rss_mb: float = 0.0
     peak_rss_mb: float = 0.0
     pipeline_call_count: int = 0
     success: bool = True
@@ -161,6 +164,52 @@ def _package_versions() -> dict[str, str]:
             versions[alias] = "not found"
     versions["python"] = sys.version.split()[0]
     return versions
+
+
+class _TransientFailurePipeline:
+    """Fails on its first N ``predict_df`` calls, then succeeds with a
+    valid synthetic single-series forecast.
+
+    Used only by the failure/retry benchmark scenario. Defined here (not
+    imported from ``tests/``) so this production module has no dependency
+    on the tests package under a packaged/installed deployment.
+    """
+    model_id = MODEL_ID
+    model_revision = ""
+
+    def __init__(self, fail_first_n_calls: int = 1):
+        self._fail_first_n_calls = fail_first_n_calls
+        self.call_count = 0
+
+    def predict_df(self, input_df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+        self.call_count += 1
+        if self.call_count <= self._fail_first_n_calls:
+            raise RuntimeError("Simulated transient inference failure")
+
+        prediction_length = kwargs.get("prediction_length", 13)
+        quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
+        item_id = input_df["item_id"].iloc[0]
+        last_ts = pd.to_datetime(input_df["timestamp"].iloc[-1])
+        try:
+            freq = pd.infer_freq(input_df["timestamp"])
+        except (ValueError, TypeError):
+            freq = "D"
+        if freq is None:
+            freq = "D"
+        dates = pd.date_range(start=last_ts, periods=prediction_length + 1, freq=freq)[1:]
+
+        rows = []
+        for i, d in enumerate(dates):
+            row: dict[str, Any] = {
+                "item_id": item_id,
+                "timestamp": d,
+                "target_name": "target",
+                "predictions": float(100 + i),
+            }
+            for q in quantile_levels:
+                row[str(q)] = float(100 + i - 5 * (1 - q))
+            rows.append(row)
+        return pd.DataFrame(rows)
 
 
 def _weekly_fixture(n_points: int = 260) -> pd.DataFrame:
@@ -255,6 +304,7 @@ def run_benchmarks(
             label="cold_forecast",
             duration_seconds=fr.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
+            baseline_rss_mb=mem_sampler.baseline_mb,
             peak_rss_mb=mem_sampler.peak_mb,
             pipeline_call_count=adapter.pipeline_call_count,
             model_load_seconds=fr.runtime_metadata.model_load_seconds,
@@ -278,6 +328,7 @@ def run_benchmarks(
             label="warm_forecast",
             duration_seconds=fr2.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
+            baseline_rss_mb=mem_sampler.baseline_mb,
             peak_rss_mb=mem_sampler.peak_mb,
             pipeline_call_count=adapter.pipeline_call_count,
             model_load_seconds=fr2.runtime_metadata.model_load_seconds,
@@ -304,33 +355,49 @@ def run_benchmarks(
                           n_series=5, cross_learning=False)
 
     panel_adapter = adapter_factory()
+    panel_mem_sampler = _MemorySampler()
     try:
-        pipeline = panel_adapter._get_pipeline()  # type: ignore[attr-defined]
+        panel_mem_sampler.start()  # started before pipeline acquisition
+        pipeline = panel_adapter.get_pipeline()
         input_df = df2.copy()
         input_df.columns = ["item_id", "timestamp", "target"]
-        mem_sampler = _MemorySampler()
-        mem_sampler.start()
+        quantile_levels = [0.1, 0.5, 0.9]
+        expected_horizon = 13
+        expected_item_ids = set(input_df["item_id"].unique())
+
         t0 = time.perf_counter()
         pred_df = pipeline.predict_df(
             input_df,
-            prediction_length=13,
-            quantile_levels=[0.1, 0.5, 0.9],
+            prediction_length=expected_horizon,
+            quantile_levels=quantile_levels,
             id_column="item_id",
             timestamp_column="timestamp",
             target="target",
         )
         inference_time = time.perf_counter() - t0
-        mem_sampler.stop()
+        panel_mem_sampler.stop()
+
+        expected_rows = len(expected_item_ids) * expected_horizon
+        if len(pred_df) != expected_rows:
+            raise ResultSchemaError(
+                f"Panel benchmark expected {expected_rows} rows, got {len(pred_df)}"
+            )
+        if set(pred_df["item_id"].unique()) != expected_item_ids:
+            raise ResultSchemaError("Panel benchmark item_id set mismatch.")
+        for _, prow in pred_df.iterrows():
+            _validate_quantile_monotonic(prow, quantile_levels)
+
         result2.samples.append(BenchmarkSample(
             label="panel_forecast_direct",
             duration_seconds=inference_time,
             rss_mb=_rss_mb(),
-            peak_rss_mb=mem_sampler.peak_mb,
+            baseline_rss_mb=panel_mem_sampler.baseline_mb,
+            peak_rss_mb=panel_mem_sampler.peak_mb,
             inference_seconds=inference_time,
         ))
         result2.model_revision = getattr(pipeline, "model_revision", "")
     except Exception as e:
-        mem_sampler.stop()
+        panel_mem_sampler.stop()
         result2.samples.append(BenchmarkSample(
             label="panel_forecast_direct", success=False,
             error_type=type(e).__name__, error_message=str(e)[:200],
@@ -343,6 +410,8 @@ def run_benchmarks(
     print("\n=== Scenario 3: 10 rolling calls ===")
     df3 = _weekly_fixture(260)
     result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13)
+    rolling_mem_sampler = _MemorySampler()
+    rolling_mem_sampler.start()
     total = 0.0
     for fold in range(10):
         cutoff = 260 - (10 - fold) * 13
@@ -357,6 +426,8 @@ def run_benchmarks(
             result3.samples.append(BenchmarkSample(
                 label=f"fold_{fold}", duration_seconds=d,
                 rss_mb=_rss_mb(),
+                baseline_rss_mb=rolling_mem_sampler.baseline_mb,
+                peak_rss_mb=rolling_mem_sampler.peak_mb,
                 inference_seconds=fr3.runtime_metadata.inference_seconds,
             ))
         except Exception as e:
@@ -364,10 +435,13 @@ def run_benchmarks(
                 label=f"fold_{fold}", success=False,
                 error_type=type(e).__name__, error_message=str(e)[:200],
             ))
+    rolling_mem_sampler.stop()
     if result3.samples:
         result3.samples.append(BenchmarkSample(
             label="total_10_folds", duration_seconds=total,
             rss_mb=_rss_mb(),
+            baseline_rss_mb=rolling_mem_sampler.baseline_mb,
+            peak_rss_mb=rolling_mem_sampler.peak_mb,
         ))
     all_results.append(result3)
 
@@ -378,21 +452,23 @@ def run_benchmarks(
     # The failure is constructed INSIDE the protected block so the suite
     # does NOT terminate before the retry test.
     # ------------------------------------------------------------------
-    print("\n=== Scenario 4: Failure + retry ===")
+    print("\n=== Scenario 4: Failure + retry (same adapter instance) ===")
     result4 = _base_result("failure_and_retry", context_rows=0, horizon=13)
+    retry_mem_sampler = _MemorySampler()
+    retry_mem_sampler.start()
 
-    # Use a failing pipeline for the failure test
-    from tests.test_adapter_contract import FakePipeline
-
-    failing_pipeline = FakePipeline(fail_on_call=True)
-    fail_adapter = Chronos2Adapter(pipeline_or_provider=failing_pipeline)
+    # A pipeline that fails its first call, then succeeds -- proves the
+    # SAME adapter/cached pipeline recovers and remains usable after an
+    # InferenceError, rather than just proving a fresh adapter works.
+    flaky_pipeline = _TransientFailurePipeline(fail_first_n_calls=1)
+    flaky_adapter = Chronos2Adapter(pipeline_or_provider=flaky_pipeline)
     valid_task = _make_task(_weekly_fixture(50), horizon=13)
     try:
-        fail_adapter.forecast(valid_task)
+        flaky_adapter.forecast(valid_task)
         result4.samples.append(BenchmarkSample(
             label="injection_failure_test", success=True,
             error_type="UnexpectedSuccess",
-            error_message="Fake pipeline did not fail as expected",
+            error_message="Flaky pipeline did not fail as expected",
         ))
     except AdapterError as e:
         result4.samples.append(BenchmarkSample(
@@ -400,20 +476,23 @@ def run_benchmarks(
             error_type=type(e).__name__,
         ))
 
-    # Retry with a valid adapter and valid data
-    retry_adapter = adapter_factory()
+    # Retry on the SAME adapter/pipeline (no new adapter is constructed)
     try:
-        retry_result = retry_adapter.forecast(valid_task)
+        retry_result = flaky_adapter.forecast(valid_task)
+        retry_mem_sampler.stop()
         result4.samples.append(BenchmarkSample(
             label="retry_success",
             duration_seconds=retry_result.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
-            pipeline_call_count=retry_adapter.pipeline_call_count,
+            baseline_rss_mb=retry_mem_sampler.baseline_mb,
+            peak_rss_mb=retry_mem_sampler.peak_mb,
+            pipeline_call_count=flaky_adapter.pipeline_call_count,
             model_load_seconds=retry_result.runtime_metadata.model_load_seconds,
             inference_seconds=retry_result.runtime_metadata.inference_seconds,
         ))
         result4.model_revision = retry_result.model_revision
     except Exception as e:
+        retry_mem_sampler.stop()
         result4.samples.append(BenchmarkSample(
             label="retry_success",
             success=False, error_type=type(e).__name__, error_message=str(e)[:200],
@@ -440,7 +519,7 @@ def _write_json(results: list[BenchmarkResult], path: str) -> None:
         d = asdict(r)
         d["samples"] = [asdict(s) for s in r.samples]
         data.append(d)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
 
 
@@ -463,18 +542,18 @@ def _write_markdown(results: list[BenchmarkResult], path: str) -> None:
             f"- Quantiles: {r.quantile_levels}",
             f"- HF_TOKEN present: {r.hf_token_present}",
             "",
-            "| Sample | Duration (s) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Success |",
-            "|--------|-------------|---------|--------------|----------------|--------------|---------|",
+            "| Sample | Duration (s) | Baseline RSS (MB) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Success | Error Type | Error Message |",
+            "|--------|-------------|--------------------|---------|--------------|----------------|--------------|---------|-----------|---------------|",
         ])
         for s in r.samples:
             lines.append(
-                f"| {s.label} | {s.duration_seconds:.3f} | {s.rss_mb:.1f} | "
-                f"{s.peak_rss_mb:.1f} | {s.model_load_seconds:.3f} | "
-                f"{s.inference_seconds:.3f} | {s.success} |"
+                f"| {s.label} | {s.duration_seconds:.3f} | {s.baseline_rss_mb:.1f} | "
+                f"{s.rss_mb:.1f} | {s.peak_rss_mb:.1f} | {s.model_load_seconds:.3f} | "
+                f"{s.inference_seconds:.3f} | {s.success} | {s.error_type} | {s.error_message} |"
             )
         lines.append("")
 
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
 

@@ -15,12 +15,13 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from src.config import MODEL_ID
+from src.config import MODEL_ID, MODEL_REVISION
 from src.schemas import (
     ForecastMode,
     ForecastResult,
     ForecastTask,
     RunMetadata,
+    WarningCode,
     new_run_id,
 )
 from src.forecasting.base import ForecastBackend
@@ -50,6 +51,29 @@ class InferenceError(AdapterError):
 
 class ResultSchemaError(AdapterError):
     """Raised when the model output does not match the expected schema."""
+
+
+# ---------------------------------------------------------------------------
+# Shared validation helpers (also used by src.benchmarking)
+# ---------------------------------------------------------------------------
+
+def _validate_quantile_monotonic(row: Any, quantile_levels: list[float]) -> None:
+    """Raise ResultSchemaError if quantile columns are not non-decreasing
+    when read in ascending quantile-level order."""
+    prev_val: float | None = None
+    prev_q: float | None = None
+    for q in sorted(quantile_levels):
+        col = str(q)
+        if col not in row:
+            continue
+        val = float(row[col])
+        if prev_val is not None and val < prev_val:
+            raise ResultSchemaError(
+                f"Quantile values are not monotonic: q={q} value={val} < "
+                f"q={prev_q} value={prev_val}"
+            )
+        prev_val = val
+        prev_q = q
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +128,19 @@ class Chronos2Adapter:
         df[ts_col] = pd.to_datetime(df[ts_col])
         df = df.sort_values(ts_col).reset_index(drop=True)
 
+        captured_warnings: list[str] = []
+
         # Context truncation
         if task.context_window_cap is not None and len(df) > task.context_window_cap:
+            original_rows = len(df)
             df = df.iloc[-task.context_window_cap:].reset_index(drop=True)
+            captured_warnings.append(
+                f"{WarningCode.CONTEXT_TRUNCATION.value}: truncated context from "
+                f"{original_rows} to {task.context_window_cap} rows"
+            )
 
         context_rows = len(df)
+        last_historical_ts = df[ts_col].iloc[-1]
 
         # Validate single series for standard univariate mode
         id_col = task.item_id_column or "item_id"
@@ -138,7 +170,6 @@ class Chronos2Adapter:
         model_was_loaded = self._pipeline_call_count > pipeline_call_count_before
 
         # Capture warnings during inference rather than silencing them
-        captured_warnings: list[str] = []
         inference_start = time.perf_counter()
         try:
             with stdlib_warnings.catch_warnings(record=True) as w:
@@ -185,6 +216,7 @@ class Chronos2Adapter:
         quant_cols = [str(q) for q in task.quantile_levels]
 
         item_id_seen: str | None = None
+        seen_row_keys: set[tuple[str, str]] = set()
         for idx, row in pred_df.iterrows():
             out: dict[str, Any] = {
                 "run_id": "",
@@ -213,6 +245,15 @@ class Chronos2Adapter:
                     f"Multiple item IDs in output: '{item_id_seen}' and '{out['item_id']}'."
                 )
 
+            # Validate no duplicate (item_id, timestamp) rows
+            row_key = (out["item_id"], out["timestamp"])
+            if row_key in seen_row_keys:
+                raise ResultSchemaError(
+                    f"Duplicate forecast row for item_id={out['item_id']!r}, "
+                    f"timestamp={out['timestamp']!r}."
+                )
+            seen_row_keys.add(row_key)
+
             for q_col in quant_cols:
                 if q_col in row:
                     key = f"quantile_{q_col.replace('.', '_')}"
@@ -222,12 +263,20 @@ class Chronos2Adapter:
                             f"Non-finite quantile {q_col} at row {idx}: {q_val}"
                         )
                     out[key] = q_val
+
+            _validate_quantile_monotonic(row, list(task.quantile_levels))
             forecast_rows.append(out)
 
-        # Validate timestamp ordering
-        timestamps = [r["timestamp"] for r in forecast_rows]
-        if timestamps != sorted(timestamps):
+        # Validate timestamp ordering (parsed, not string-sorted) and that the
+        # forecast starts strictly after the last historical observation.
+        parsed_timestamps = [pd.Timestamp(r["timestamp"]) for r in forecast_rows]
+        if parsed_timestamps != sorted(parsed_timestamps):
             raise ResultSchemaError("Forecast timestamps are not in order.")
+        if parsed_timestamps and parsed_timestamps[0] <= last_historical_ts:
+            raise ResultSchemaError(
+                f"First forecast timestamp {parsed_timestamps[0]} is not after "
+                f"the last historical timestamp {last_historical_ts}."
+            )
 
         result_conversion_time = time.perf_counter() - result_conversion_start
 
@@ -235,14 +284,13 @@ class Chronos2Adapter:
         run_id = new_run_id()
         now_iso = datetime.now(timezone.utc).isoformat()
         total_runtime = model_load_time + inference_time + result_conversion_time
-        pipeline_reused = self._pipeline is not None and self._pipeline_call_count == 0
+        # "Reused" means this call did not trigger a fresh model load -- the
+        # logical complement of model_was_loaded, covering both a
+        # pre-injected pipeline and a warm call after an earlier cold start.
+        pipeline_reused = not model_was_loaded
 
         pkg_versions = _capture_package_versions()
-        model_revision = (
-            getattr(self._pipeline, "model_revision", "")
-            if self._pipeline is not None
-            else getattr(pipeline, "model_revision", "") or ""
-        )
+        model_revision = getattr(pipeline, "model_revision", "") or MODEL_REVISION
 
         meta = RunMetadata(
             run_id=run_id,
@@ -291,6 +339,17 @@ class Chronos2Adapter:
         """Number of times the pipeline was constructed (0 if pre-injected)."""
         return self._pipeline_call_count
 
+    def get_pipeline(self) -> Any:
+        """Return the underlying pipeline instance, loading it if needed.
+
+        This is a diagnostic/benchmark accessor for code that needs direct
+        pipeline access outside the standard ``forecast()`` flow (e.g.
+        multi-series panel measurement, which ``forecast()`` intentionally
+        rejects in Stage 0). Prefer ``forecast()`` for all production
+        paths -- it is the only path that performs schema/output validation.
+        """
+        return self._get_pipeline()
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -309,7 +368,9 @@ class Chronos2Adapter:
         try:
             from chronos import Chronos2Pipeline
             logger.info("Loading Chronos-2 model (cold start)...")
-            pipeline = Chronos2Pipeline.from_pretrained(MODEL_ID, device_map="cpu")
+            pipeline = Chronos2Pipeline.from_pretrained(
+                MODEL_ID, revision=MODEL_REVISION, device_map="cpu",
+            )
             logger.info("Chronos-2 model loaded.")
             return pipeline
         except Exception as exc:

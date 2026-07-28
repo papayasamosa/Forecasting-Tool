@@ -1,5 +1,5 @@
 #! /usr/bin/env python3
-"""Verify the local D: drive environment is correctly set up.
+r"""Verify the local D: drive environment is correctly set up.
 
 Checks can be customised via environment variables:
   FORECASTING_LOCAL_ROOT — root directory (default: D:\Forecasting-Tool-Local)
@@ -22,6 +22,8 @@ REQUIRED_DIRS = [
     os.path.join(LOCAL_ROOT, "venv"),
     os.path.join(LOCAL_ROOT, "cache", "pip"),
     os.path.join(LOCAL_ROOT, "cache", "huggingface"),
+    os.path.join(LOCAL_ROOT, "cache", "huggingface", "hub"),
+    os.path.join(LOCAL_ROOT, "cache", "huggingface", "xet"),
     os.path.join(LOCAL_ROOT, "cache", "transformers"),
     os.path.join(LOCAL_ROOT, "cache", "torch"),
     os.path.join(LOCAL_ROOT, "temp"),
@@ -33,6 +35,8 @@ REQUIRED_ENV_VARS = {
     "PIP_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "pip"),
     "HF_HOME": os.path.join(LOCAL_ROOT, "cache", "huggingface"),
     "HUGGINGFACE_HUB_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface"),
+    "HF_HUB_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface", "hub"),
+    "HF_XET_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface", "xet"),
     "TRANSFORMERS_CACHE": os.path.join(LOCAL_ROOT, "cache", "transformers"),
     "TORCH_HOME": os.path.join(LOCAL_ROOT, "cache", "torch"),
     "TMP": os.path.join(LOCAL_ROOT, "temp"),
@@ -48,15 +52,26 @@ REQUIRED_PACKAGES = [
     ("pyarrow", "pyarrow"),
 ]
 
-# Expected pinned versions (from requirements.txt)
-PINNED_VERSIONS = {
-    "streamlit": "1.60.0",
-    "pandas": "3.0.5",
-    "numpy": "2.4.6",
-    "pyarrow": "24.0.0",
-    "chronos-forecasting": "2.3.1",
-    "torch": "2.13.0",
-}
+def _load_pinned_versions() -> dict[str, str]:
+    """Parse direct pins from requirements.txt (single source of truth)."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    req_path = os.path.join(repo_root, "requirements.txt")
+    pins: dict[str, str] = {}
+    try:
+        with open(req_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "==" not in line:
+                    continue
+                name, _, version = line.partition("==")
+                pins[name.strip()] = version.strip()
+    except OSError:
+        pass
+    return pins
+
+
+# Expected pinned versions, read directly from requirements.txt
+PINNED_VERSIONS = _load_pinned_versions()
 
 
 def main() -> int:
@@ -81,6 +96,19 @@ def main() -> int:
             print(f"Root drive: {root_drive} OK")
     else:
         print(f"Local root: {LOCAL_ROOT}")
+
+    # --- Interpreter location ---
+    if sys.platform == "win32":
+        expected_python = os.path.join(LOCAL_ROOT, "venv", "Scripts", "python.exe")
+        actual = os.path.normcase(os.path.abspath(sys.executable))
+        expected = os.path.normcase(os.path.abspath(expected_python))
+        if actual != expected:
+            errors.append(
+                f"Running under {sys.executable}, expected the local-root venv "
+                f"interpreter at {expected_python}"
+            )
+        else:
+            print(f"Interpreter: {sys.executable} OK (local-root venv)")
 
     # --- Required directories ---
     for d in REQUIRED_DIRS:
@@ -108,18 +136,24 @@ def main() -> int:
             mod = __import__(pkg_name)
             ver = getattr(mod, "__version__", "unknown")
             print(f"  {alias}: {ver}")
-            if alias in PINNED_VERSIONS and ver != PINNED_VERSIONS[alias]:
+            # Compare only the PEP 440 release portion -- local version
+            # labels like "+cpu" (added by the CPU wheel index) legitimately
+            # vary by install source and don't indicate a wrong pin.
+            if alias in PINNED_VERSIONS and ver.split("+")[0] != PINNED_VERSIONS[alias]:
                 errors.append(
                     f"{alias} version mismatch: got {ver}, expected {PINNED_VERSIONS[alias]}"
                 )
             # Check torch is CPU build
             if pkg_name == "torch":
                 try:
-                    if hasattr(mod, "_C") and hasattr(mod._C, "_get_cpu_capability"):
-                        pass  # PyTorch C extension available
                     import torch
-                    if torch.cuda.is_available():
-                        print("    (CUDA available — expected CPU-only)")
+                    has_cuda_build = torch.version.cuda is not None
+                    gpu_available = torch.cuda.is_available()
+                    if has_cuda_build or gpu_available:
+                        errors.append(
+                            f"Non-CPU-only torch detected (cuda build={torch.version.cuda}, "
+                            f"cuda.is_available()={gpu_available}); expected the CPU-only wheel"
+                        )
                     else:
                         print("    (CPU-only build)")
                 except Exception:

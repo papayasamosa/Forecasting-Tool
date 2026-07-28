@@ -180,3 +180,72 @@ class TestRunBenchmarks:
             fold_labels = [s.label for s in rolling.samples if s.label.startswith("fold_")]
             assert len(fold_labels) == 10
             assert "total_10_folds" in {s.label for s in rolling.samples}
+
+    def test_failure_and_retry_uses_single_adapter_instance(self):
+        """Scenario 4 must retry on the SAME adapter/pipeline that failed,
+        not construct a fresh one -- so run_benchmarks should only ask the
+        factory for adapters for scenarios 1 and 2, never for scenario 4."""
+        call_log: list[Chronos2Adapter] = []
+
+        def counting_factory() -> Chronos2Adapter:
+            a = _fake_adapter_factory()
+            call_log.append(a)
+            return a
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_benchmarks(output_dir=tmp, adapter_factory=counting_factory)
+        assert len(call_log) == 2
+
+    def test_no_test_package_import_in_benchmarking(self):
+        """Production code must not depend on the tests/ tree (would break
+        under a packaged install that excludes tests/)."""
+        import src.benchmarking as benchmarking_module
+        src_path = benchmarking_module.__file__
+        with open(src_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "from tests" not in source
+        assert "import tests" not in source
+
+    def test_panel_scenario_succeeds_with_valid_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=_fake_adapter_factory)
+            panel = [r for r in results if r.scenario == "panel_5_series"][0]
+            sample = [s for s in panel.samples if s.label == "panel_forecast_direct"][0]
+            assert sample.success is True
+
+    def test_panel_scenario_flags_non_monotonic_quantiles(self):
+        def broken_factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=FakePipeline(non_monotonic_quantiles=True))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=broken_factory)
+            panel = [r for r in results if r.scenario == "panel_5_series"][0]
+            sample = [s for s in panel.samples if s.label == "panel_forecast_direct"][0]
+            assert sample.success is False
+            assert sample.error_type == "ResultSchemaError"
+
+    def test_baseline_rss_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=_fake_adapter_factory)
+            weekly = [r for r in results if r.scenario == "weekly_260_13"][0]
+            cold = [s for s in weekly.samples if s.label == "cold_forecast"][0]
+            assert isinstance(cold.baseline_rss_mb, float)
+
+
+class TestMarkdownReport:
+    def test_includes_baseline_and_error_columns(self):
+        r = BenchmarkResult(scenario="test_err", context_rows=10, horizon=3)
+        r.samples.append(BenchmarkSample(
+            label="failing_sample", success=False,
+            error_type="InferenceError", error_message="boom",
+            baseline_rss_mb=123.4,
+        ))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "test.md")
+            _write_markdown([r], path)
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            assert "Baseline RSS (MB)" in content
+            assert "Error Type" in content
+            assert "InferenceError" in content
+            assert "boom" in content
