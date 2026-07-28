@@ -1,1 +1,21 @@
-streamlit
+# =============================================================================
+# Chronos-2 Forecasting Tool — Production Dependencies
+#
+# Pin every direct runtime dependency exactly after a verified test.
+# Last resolved: 2026-07-28 with Python 3.12 on Windows (CPU)
+# =============================================================================
+
+streamlit==1.60.0
+pandas==3.0.5
+numpy==2.4.6
+pyarrow==24.0.0
+chronos-forecasting==2.3.1
+torch==2.13.0
+
+# ---------------------------------------------------------------------------
+# Note: torch is installed from the CPU-only index:
+#   --index-url https://download.pytorch.org/whl/cpu
+# This avoids downloading the GPU-enabled (much larger) package.
+#
+# Development-only dependencies are in requirements-dev.txt.
+# ---------------------------------------------------------------------------

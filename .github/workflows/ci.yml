@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, stage0-completion]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install runtime dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Install development dependencies
+        run: |
+          pip install -r requirements-dev.txt
+
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 src/ tests/ --count --exit-zero --max-complexity=10 --statistics
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ -v --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
+            --cov-report=term-missing --cov-fail-under=80
+
+      - name: Verify no Chronos-2 model download in tests
+        run: |
+          python -c "
+          import subprocess, sys
+          # Ensure tests pass without the model being present
+          result = subprocess.run(
+              [sys.executable, '-m', 'pytest', 'tests/', '-v', '--tb=short'],
+              capture_output=True, text=True, timeout=120
+          )
+          print(result.stdout[-2000:])
+          if 'FAILED' in result.stdout or result.returncode != 0:
+              print(result.stderr[-1000:])
+              sys.exit(result.returncode)
+          "
