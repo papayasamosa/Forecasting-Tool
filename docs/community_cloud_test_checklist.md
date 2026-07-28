@@ -46,7 +46,7 @@ Record approximate RSS from Cloud logs or monitoring:
 
 - [ ] Cold start completes within 5 minutes
 - [ ] Warm forecast completes within 30 seconds
-- [ ] Peak memory stays below 900 MB
+- [ ] Peak memory within Community Cloud platform limits (to be measured)
 - [ ] File upload size limit enforced before parse
 - [ ] Errors show user-friendly messages (no stack traces)
 - [ ] Configuration preserved after recoverable error

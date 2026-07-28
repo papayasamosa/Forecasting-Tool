@@ -286,7 +286,12 @@ class TestChronos2AdapterContract:
         assert meta.prediction_length == 5
         assert len(meta.package_versions) > 0
         assert "python" in meta.package_versions
-        assert meta.runtime_seconds > 0
+        assert meta.inference_seconds > 0
+        assert meta.total_runtime_seconds > 0
+        assert meta.model_load_seconds == 0  # pre-injected pipeline
+        assert meta.pipeline_reused is True
+        # First call with pre-injected pipeline: model not loaded
+        assert meta.model_was_loaded_this_run is False
 
     def test_rejects_multiple_items(self):
         fake = FakePipeline()
@@ -311,3 +316,26 @@ class TestForecastBackendProtocol:
     def test_backend_is_protocol_compatible(self):
         adapter = Chronos2Adapter(pipeline_or_provider=FakePipeline())
         assert isinstance(adapter, ForecastBackend)
+
+    def test_default_provider_not_invoked(self):
+        """Ensure the real Chronos-2 model provider is never invoked during tests.
+
+        All tests must inject a fake pipeline. This test confirms the default
+        provider raises ModelLoadError (no model weights available in CI).
+        """
+        adapter = Chronos2Adapter()  # No fake injected
+        task = ForecastTask(
+            mode=ForecastMode.STANDARD_UNIVARIATE,
+            historical_data=(
+                {"timestamp": "2024-01-01", "target": 100.0},
+                {"timestamp": "2024-01-02", "target": 102.0},
+                {"timestamp": "2024-01-03", "target": 101.0},
+            ),
+            timestamp_column="timestamp",
+            target_columns=("target",),
+            prediction_length=3,
+            quantile_levels=(0.1, 0.5, 0.9),
+        )
+        from src.forecasting.chronos2_adapter import ModelLoadError
+        with pytest.raises(ModelLoadError):
+            adapter.forecast(task)

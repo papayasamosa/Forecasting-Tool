@@ -14,13 +14,14 @@
 | # | Scenario | Status |
 |---|----------|--------|
 | 1 | Weekly series (260 obs, horizon 13) | ⏳ Pending |
-| 2 | Small panel (5 series) | ⏳ Pending |
+| 2 | Small panel (5 series, benchmark-only direct API) | ⏳ Pending |
 | 3 | 10 rolling forecast calls | ⏳ Pending |
-| 4 | Failure + successful retry | ⏳ Pending |
+| 4 | Failure + successful retry (injected failure) | ⏳ Pending |
 
 ## Local Results
 
 *To be filled after running `scripts/run_stage0_benchmark.py` on the D: drive environment.*
+*Use `.\scripts\activate_local_windows.ps1` first to set D: drive caches.*
 
 ## Community Cloud Results
 
@@ -31,6 +32,8 @@
 | Metric | Cold | Warm |
 |--------|------|------|
 | Model load time | TBD | N/A |
-| Forecast time (13-step) | TBD | TBD |
-| Peak RSS memory | TBD | TBD |
+| Inference time (13-step) | TBD | TBD |
+| Result conversion time | TBD | TBD |
+| Baseline RSS | TBD | TBD |
+| Peak RSS (approximate) | TBD | TBD |
 | Pipeline reuse | TBD | Verified |

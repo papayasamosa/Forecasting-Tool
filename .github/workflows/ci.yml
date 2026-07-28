@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, stage0-completion]
+    branches: [main, stage0-completion, stage0-repair-and-evidence]
   pull_request:
     branches: [main]
 
@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
       - name: Install runtime dependencies
         run: |
@@ -30,28 +31,18 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
 
+      - name: Verify dependency consistency
+        run: pip check
+
       - name: Lint with flake8
         run: |
-          pip install flake8
           flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 src/ tests/ --count --exit-zero --max-complexity=10 --statistics
 
-      - name: Run unit tests with coverage
+      - name: Run unit tests with coverage (offline mode)
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: |
           pytest tests/ -v --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
             --cov-report=term-missing --cov-fail-under=80
-
-      - name: Verify no Chronos-2 model download in tests
-        run: |
-          python -c "
-          import subprocess, sys
-          # Ensure tests pass without the model being present
-          result = subprocess.run(
-              [sys.executable, '-m', 'pytest', 'tests/', '-v', '--tb=short'],
-              capture_output=True, text=True, timeout=120
-          )
-          print(result.stdout[-2000:])
-          if 'FAILED' in result.stdout or result.returncode != 0:
-              print(result.stderr[-1000:])
-              sys.exit(result.returncode)
-          "

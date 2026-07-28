@@ -10,10 +10,12 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | `ForecastBackend` protocol | ✅ Implemented |
 | `Chronos2Adapter` class | ✅ Implemented, tested with fake pipeline |
 | Schema invariant validation | ✅ Implemented, tested |
-| Unit tests (no model download) | ✅ Passing |
+| Unit tests (no model download) | ✅ Implemented |
 | Local setup (D: drive) | ✅ Documented |
-| Smoke test | ⏳ Requires model download |
-| Benchmark harness | ⏳ Requires model download |
+| CI (GitHub Actions) | ✅ Implemented |
+| `st.cache_resource` process-level caching | ✅ Implemented |
+| Real Chronos-2 model smoke test | ⏳ Requires model download |
+| Local benchmark suite | ⏳ Requires model download |
 | Community Cloud deployment | ⏳ Pending |
 | ADR-001 inference backend | ⏳ Pending (awaiting Cloud evidence) |
 | Phase 1 features | 🔜 Planned (see below) |
@@ -86,8 +88,8 @@ $env:TEMP = "D:\Forecasting-Tool-Local\temp"
 # Create directories
 New-Item -ItemType Directory -Force -Path D:\Forecasting-Tool-Local\venv, D:\Forecasting-Tool-Local\cache\pip, D:\Forecasting-Tool-Local\temp | Out-Null
 
-# Create virtual environment
-& "C:\Users\moham\AppData\Local\Programs\Python\Python312\python.exe" -m venv D:\Forecasting-Tool-Local\venv
+# Create virtual environment (adjust Python path if needed)
+py -3.12 -m venv D:\Forecasting-Tool-Local\venv
 
 # Install PyTorch (CPU-only)
 D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -100,17 +102,20 @@ D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements
 ### Commands
 
 ```powershell
+# Activate the D: drive environment (sets caches + activates venv)
+.\scripts\activate_local_windows.ps1
+
 # Run unit tests (no model download)
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pytest tests -v
+python -m pytest tests -v
 
 # Run smoke test (first run downloads Chronos-2 ~500MB)
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe scripts/chronos2_smoke_test.py
+python scripts/chronos2_smoke_test.py
 
 # Run benchmarks
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe scripts/run_stage0_benchmark.py
+python scripts/run_stage0_benchmark.py
 
 # Launch Streamlit
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m streamlit run app.py
+python -m streamlit run app.py
 ```
 
 ## Chronos-2 Adapter

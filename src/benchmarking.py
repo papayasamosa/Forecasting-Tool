@@ -1,18 +1,19 @@
-"""Stage 0 benchmark harness — runs, measures, and records benchmark scenarios.
+"""Stage 0 benchmark harness -- runs, measures, and records benchmark scenarios.
 
-All heavy output defaults to D:\Forecasting-Tool-Local\benchmarks.
+All heavy output defaults to D:\\Forecasting-Tool-Local\\benchmarks on Windows,
+or a platform-appropriate path elsewhere.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import platform
 import sys
 import time
+import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -28,9 +29,73 @@ from src.forecasting.chronos2_adapter import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Default output path
+# Default output path (platform-aware)
 # ---------------------------------------------------------------------------
-DEFAULT_OUTPUT_DIR = r"D:\Forecasting-Tool-Local\benchmarks"
+if sys.platform == "win32":
+    DEFAULT_OUTPUT_DIR = r"D:\Forecasting-Tool-Local\benchmarks"
+else:
+    DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "forecast-benchmarks")
+
+
+# ---------------------------------------------------------------------------
+# Lightweight RSS monitor thread (approximate peak)
+# ---------------------------------------------------------------------------
+
+
+class _MemorySampler:
+    """Samples process RSS in a background thread to approximate peak memory."""
+
+    def __init__(self, interval: float = 0.05):
+        self._interval = interval
+        self._peak_mb: float = 0.0
+        self._baseline_mb: float = 0.0
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._imported_psutil = False
+        self._process = None
+        try:
+            import psutil
+            self._process = psutil.Process()
+            self._imported_psutil = True
+        except ImportError:
+            pass
+
+    def start(self) -> None:
+        if not self._imported_psutil:
+            return
+        self._baseline_mb = self._process.memory_info().rss / 1024 / 1024  # type: ignore[union-attr]
+        self._peak_mb = self._baseline_mb
+        self._running = True
+        self._thread = threading.Thread(target=self._sample, daemon=True)
+        self._thread.start()
+
+    def _sample(self) -> None:
+        while self._running:
+            try:
+                rss = self._process.memory_info().rss / 1024 / 1024  # type: ignore[union-attr]
+                if rss > self._peak_mb:
+                    self._peak_mb = rss
+            except Exception:
+                pass
+            time.sleep(self._interval)
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    @property
+    def peak_mb(self) -> float:
+        return self._peak_mb
+
+    @property
+    def baseline_mb(self) -> float:
+        return self._baseline_mb
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -39,10 +104,13 @@ class BenchmarkSample:
     label: str
     duration_seconds: float = 0.0
     rss_mb: float = 0.0
+    peak_rss_mb: float = 0.0
     pipeline_call_count: int = 0
     success: bool = True
     error_type: str = ""
     error_message: str = ""
+    model_load_seconds: float = 0.0
+    inference_seconds: float = 0.0
 
 
 @dataclass
@@ -61,6 +129,8 @@ class BenchmarkResult:
     samples: list[BenchmarkSample] = field(default_factory=list)
     hf_token_present: bool = False
     run_timestamp: str = ""
+    cross_learning: bool = False
+    n_series: int = 1
 
 
 def _rss_mb() -> float:
@@ -127,12 +197,46 @@ def _make_task(df: pd.DataFrame, horizon: int = 13,
     )
 
 
-def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult]:
-    """Execute all Stage 0 benchmark scenarios and write results."""
+def run_benchmarks(
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    adapter_factory: Callable[[], Chronos2Adapter] | None = None,
+) -> list[BenchmarkResult]:
+    """Execute all Stage 0 benchmark scenarios and write results.
+
+    Parameters
+    ----------
+    output_dir : str
+        Directory for JSON and Markdown output files.
+    adapter_factory : callable or None
+        Factory that returns a Chronos2Adapter. Defaults to ``Chronos2Adapter``.
+        Use a fake factory for testing without model download.
+    """
+    if adapter_factory is None:
+        adapter_factory = lambda: Chronos2Adapter()
+
     os.makedirs(output_dir, exist_ok=True)
 
+    mem_sampler = _MemorySampler()
     all_results: list[BenchmarkResult] = []
-    rss_before = _rss_mb()
+
+    def _base_result(scenario: str, context_rows: int = 0, horizon: int = 13,
+                     quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
+                     n_series: int = 1, cross_learning: bool = False) -> BenchmarkResult:
+        return BenchmarkResult(
+            scenario=scenario,
+            python_version=sys.version.split()[0],
+            os_name=sys.platform,
+            cpu_info=_cpu_info(),
+            model_id=MODEL_ID,
+            package_versions=_package_versions(),
+            context_rows=context_rows,
+            horizon=horizon,
+            quantile_levels=quantiles,
+            hf_token_present=bool(os.environ.get("HF_TOKEN")),
+            run_timestamp=datetime.now(timezone.utc).isoformat(),
+            n_series=n_series,
+            cross_learning=cross_learning,
+        )
 
     # ------------------------------------------------------------------
     # Scenario 1: Weekly series, 260 obs, 13-period horizon
@@ -140,48 +244,47 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
     print("\n=== Scenario 1: Weekly series (260 obs, horizon 13) ===")
     df1 = _weekly_fixture(260)
     task1 = _make_task(df1, horizon=13)
-    result1 = BenchmarkResult(
-        scenario="weekly_260_13",
-        python_version=sys.version.split()[0],
-        os_name=sys.platform,
-        cpu_info=_cpu_info(),
-        model_id=MODEL_ID,
-        package_versions=_package_versions(),
-        context_rows=260,
-        horizon=13,
-        quantile_levels=(0.1, 0.5, 0.9),
-        hf_token_present=bool(os.environ.get("HF_TOKEN")),
-        run_timestamp=datetime.now(timezone.utc).isoformat(),
-    )
+    result1 = _base_result("weekly_260_13", context_rows=260, horizon=13)
 
-    adapter = Chronos2Adapter()
-    t0 = time.perf_counter()
+    adapter = adapter_factory()
+    mem_sampler.start()
     try:
         fr = adapter.forecast(task1)
+        mem_sampler.stop()
         result1.samples.append(BenchmarkSample(
             label="cold_forecast",
-            duration_seconds=time.perf_counter() - t0,
+            duration_seconds=fr.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
+            peak_rss_mb=mem_sampler.peak_mb,
             pipeline_call_count=adapter.pipeline_call_count,
+            model_load_seconds=fr.runtime_metadata.model_load_seconds,
+            inference_seconds=fr.runtime_metadata.inference_seconds,
         ))
         result1.model_revision = fr.model_revision
     except Exception as e:
+        mem_sampler.stop()
         result1.samples.append(BenchmarkSample(
             label="cold_forecast", success=False,
             error_type=type(e).__name__, error_message=str(e)[:200],
         ))
 
     # Warm forecast
-    t0 = time.perf_counter()
+    mem_sampler = _MemorySampler()
+    mem_sampler.start()
     try:
-        adapter.forecast(task1)
+        fr2 = adapter.forecast(task1)
+        mem_sampler.stop()
         result1.samples.append(BenchmarkSample(
             label="warm_forecast",
-            duration_seconds=time.perf_counter() - t0,
+            duration_seconds=fr2.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
+            peak_rss_mb=mem_sampler.peak_mb,
             pipeline_call_count=adapter.pipeline_call_count,
+            model_load_seconds=fr2.runtime_metadata.model_load_seconds,
+            inference_seconds=fr2.runtime_metadata.inference_seconds,
         ))
     except Exception as e:
+        mem_sampler.stop()
         result1.samples.append(BenchmarkSample(
             label="warm_forecast", success=False,
             error_type=type(e).__name__, error_message=str(e)[:200],
@@ -189,34 +292,47 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
     all_results.append(result1)
 
     # ------------------------------------------------------------------
-    # Scenario 2: Small panel (5 series)
+    # Scenario 2: Small panel — benchmark-only path
+    #
+    # Uses the real Chronos-2 predict_df API directly (bypasses the
+    # standard-univariate adapter). This is a benchmark-only measurement
+    # and does not expose panel forecasting in the product UI.
     # ------------------------------------------------------------------
-    print("\n=== Scenario 2: Small panel (5 series) ===")
+    print("\n=== Scenario 2: Small panel (5 series, benchmark-only path) ===")
     df2 = _panel_fixture(n_series=5, n_points=104)
-    task2 = _make_task(df2, horizon=13, freq="W")
-    result2 = BenchmarkResult(
-        scenario="panel_5_series",
-        context_rows=104 * 5,
-        horizon=13,
-        quantile_levels=(0.1, 0.5, 0.9),
-        os_name=sys.platform,
-        cpu_info=_cpu_info(),
-        model_id=MODEL_ID,
-        package_versions=_package_versions(),
-        python_version=sys.version.split()[0],
-        run_timestamp=datetime.now(timezone.utc).isoformat(),
-    )
-    t0 = time.perf_counter()
+    result2 = _base_result("panel_5_series", context_rows=104 * 5, horizon=13,
+                          n_series=5, cross_learning=False)
+
+    panel_adapter = adapter_factory()
     try:
-        adapter.forecast(task2)
+        pipeline = panel_adapter._get_pipeline()  # type: ignore[attr-defined]
+        input_df = df2.copy()
+        input_df.columns = ["item_id", "timestamp", "target"]
+        mem_sampler = _MemorySampler()
+        mem_sampler.start()
+        t0 = time.perf_counter()
+        pred_df = pipeline.predict_df(
+            input_df,
+            prediction_length=13,
+            quantile_levels=[0.1, 0.5, 0.9],
+            id_column="item_id",
+            timestamp_column="timestamp",
+            target="target",
+        )
+        inference_time = time.perf_counter() - t0
+        mem_sampler.stop()
         result2.samples.append(BenchmarkSample(
-            label="panel_forecast",
-            duration_seconds=time.perf_counter() - t0,
+            label="panel_forecast_direct",
+            duration_seconds=inference_time,
             rss_mb=_rss_mb(),
+            peak_rss_mb=mem_sampler.peak_mb,
+            inference_seconds=inference_time,
         ))
+        result2.model_revision = getattr(pipeline, "model_revision", "")
     except Exception as e:
+        mem_sampler.stop()
         result2.samples.append(BenchmarkSample(
-            label="panel_forecast", success=False,
+            label="panel_forecast_direct", success=False,
             error_type=type(e).__name__, error_message=str(e)[:200],
         ))
     all_results.append(result2)
@@ -226,16 +342,7 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
     # ------------------------------------------------------------------
     print("\n=== Scenario 3: 10 rolling calls ===")
     df3 = _weekly_fixture(260)
-    result3 = BenchmarkResult(
-        scenario="10_rolling_calls",
-        context_rows=260,
-        horizon=13,
-        quantile_levels=(0.1, 0.5, 0.9),
-        os_name=sys.platform, cpu_info=_cpu_info(),
-        model_id=MODEL_ID, package_versions=_package_versions(),
-        python_version=sys.version.split()[0],
-        run_timestamp=datetime.now(timezone.utc).isoformat(),
-    )
+    result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13)
     total = 0.0
     for fold in range(10):
         cutoff = 260 - (10 - fold) * 13
@@ -243,14 +350,14 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
             break
         subset = df3.iloc[:cutoff]
         t_task = _make_task(subset, horizon=13)
-        t0 = time.perf_counter()
         try:
-            adapter.forecast(t_task)
-            d = time.perf_counter() - t0
+            fr3 = adapter.forecast(t_task)
+            d = fr3.runtime_metadata.total_runtime_seconds
             total += d
             result3.samples.append(BenchmarkSample(
                 label=f"fold_{fold}", duration_seconds=d,
                 rss_mb=_rss_mb(),
+                inference_seconds=fr3.runtime_metadata.inference_seconds,
             ))
         except Exception as e:
             result3.samples.append(BenchmarkSample(
@@ -266,37 +373,46 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
 
     # ------------------------------------------------------------------
     # Scenario 4: Failure + retry
+    #
+    # Uses a fake adapter/pipeline that fails, then retries with valid data.
+    # The failure is constructed INSIDE the protected block so the suite
+    # does NOT terminate before the retry test.
     # ------------------------------------------------------------------
     print("\n=== Scenario 4: Failure + retry ===")
-    result4 = BenchmarkResult(
-        scenario="failure_and_retry",
-        context_rows=0,
-        horizon=13,
-        quantile_levels=(0.1, 0.5, 0.9),
-        os_name=sys.platform, cpu_info=_cpu_info(),
-        model_id=MODEL_ID, package_versions=_package_versions(),
-        python_version=sys.version.split()[0],
-        run_timestamp=datetime.now(timezone.utc).isoformat(),
-    )
-    # Controlled failure: empty data
-    bad_task = _make_task(pd.DataFrame(columns=["timestamp", "target"]), horizon=13)
+    result4 = _base_result("failure_and_retry", context_rows=0, horizon=13)
+
+    # Use a failing pipeline for the failure test
+    from tests.test_adapter_contract import FakePipeline
+
+    failing_pipeline = FakePipeline(fail_on_call=True)
+    fail_adapter = Chronos2Adapter(pipeline_or_provider=failing_pipeline)
+    valid_task = _make_task(_weekly_fixture(50), horizon=13)
     try:
-        adapter.forecast(bad_task)
+        fail_adapter.forecast(valid_task)
+        result4.samples.append(BenchmarkSample(
+            label="injection_failure_test", success=True,
+            error_type="UnexpectedSuccess",
+            error_message="Fake pipeline did not fail as expected",
+        ))
     except AdapterError as e:
         result4.samples.append(BenchmarkSample(
-            label="empty_data_rejection",
-            success=False, error_type=type(e).__name__,
+            label="injection_failure_test", success=False,
+            error_type=type(e).__name__,
         ))
-    # Retry with valid data
+
+    # Retry with a valid adapter and valid data
+    retry_adapter = adapter_factory()
     try:
-        retry = adapter.forecast(task1)
+        retry_result = retry_adapter.forecast(valid_task)
         result4.samples.append(BenchmarkSample(
             label="retry_success",
-            duration_seconds=0,
+            duration_seconds=retry_result.runtime_metadata.total_runtime_seconds,
             rss_mb=_rss_mb(),
-            pipeline_call_count=adapter.pipeline_call_count,
+            pipeline_call_count=retry_adapter.pipeline_call_count,
+            model_load_seconds=retry_result.runtime_metadata.model_load_seconds,
+            inference_seconds=retry_result.runtime_metadata.inference_seconds,
         ))
-        result4.model_revision = retry.model_revision
+        result4.model_revision = retry_result.model_revision
     except Exception as e:
         result4.samples.append(BenchmarkSample(
             label="retry_success",
@@ -305,14 +421,11 @@ def run_benchmarks(output_dir: str = DEFAULT_OUTPUT_DIR) -> list[BenchmarkResult
     all_results.append(result4)
 
     # ------------------------------------------------------------------
-    # Write results
+    # Write results (do NOT filter successful zero-duration samples)
     # ------------------------------------------------------------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = os.path.join(output_dir, f"benchmark_{timestamp}.json")
     md_path = os.path.join(output_dir, f"benchmark_{timestamp}.md")
-
-    for br in all_results:
-        br.samples = [s for s in br.samples if s.duration_seconds > 0 or not s.success]
 
     _write_json(all_results, json_path)
     _write_markdown(all_results, md_path)
@@ -348,13 +461,16 @@ def _write_markdown(results: list[BenchmarkResult], path: str) -> None:
             f"- Context rows: {r.context_rows}",
             f"- Horizon: {r.horizon}",
             f"- Quantiles: {r.quantile_levels}",
+            f"- HF_TOKEN present: {r.hf_token_present}",
             "",
-            "| Sample | Duration (s) | RSS (MB) | Success |",
-            "|--------|-------------|---------|---------|",
+            "| Sample | Duration (s) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Success |",
+            "|--------|-------------|---------|--------------|----------------|--------------|---------|",
         ])
         for s in r.samples:
             lines.append(
-                f"| {s.label} | {s.duration_seconds:.3f} | {s.rss_mb:.1f} | {s.success} |"
+                f"| {s.label} | {s.duration_seconds:.3f} | {s.rss_mb:.1f} | "
+                f"{s.peak_rss_mb:.1f} | {s.model_load_seconds:.3f} | "
+                f"{s.inference_seconds:.3f} | {s.success} |"
             )
         lines.append("")
 

@@ -126,17 +126,23 @@ class Chronos2Adapter:
         input_df = df[[id_col, ts_col, target_col]].copy()
         input_df.columns = ["item_id", "timestamp", "target"]
 
-        # Obtain pipeline
-        t0 = time.perf_counter()
+        # Separate timing for model load vs inference
+        pipeline_call_count_before = self._pipeline_call_count
+        model_load_start = time.perf_counter()
         try:
             pipeline = self._get_pipeline()
         except ModelLoadError:
             raise
+        model_load_time = time.perf_counter() - model_load_start
+        # Model was actually loaded if the provider was invoked this call
+        model_was_loaded = self._pipeline_call_count > pipeline_call_count_before
 
-        # Call Chronos-2
+        # Capture warnings during inference rather than silencing them
+        captured_warnings: list[str] = []
+        inference_start = time.perf_counter()
         try:
-            with stdlib_warnings.catch_warnings():
-                stdlib_warnings.simplefilter("ignore")
+            with stdlib_warnings.catch_warnings(record=True) as w:
+                stdlib_warnings.simplefilter("always")
                 pred_df = pipeline.predict_df(
                     input_df,
                     prediction_length=task.prediction_length,
@@ -145,14 +151,17 @@ class Chronos2Adapter:
                     timestamp_column="timestamp",
                     target="target",
                 )
+                for warning in w:
+                    cat = warning.category.__name__ if warning.category else "Warning"
+                    msg = str(warning.message)[:200]
+                    captured_warnings.append(f"{cat}: {msg}")
         except Exception as exc:
             raise InferenceError(
                 "Chronos-2 inference failed. Check the configuration and try again."
             ) from exc
+        inference_time = time.perf_counter() - inference_start
 
-        inference_time = time.perf_counter() - t0
-
-        # Validate output schema
+        # Validate output schema (stronger checks)
         expected_quant_cols = {str(q) for q in task.quantile_levels}
         actual_cols = set(pred_df.columns)
         if "predictions" not in actual_cols:
@@ -163,11 +172,20 @@ class Chronos2Adapter:
                 f"Model output is missing quantile columns: {sorted(missing)}"
             )
 
+        # Check row count matches horizon
+        if len(pred_df) != task.prediction_length:
+            raise ResultSchemaError(
+                f"Expected {task.prediction_length} forecast rows, "
+                f"got {len(pred_df)}."
+            )
+
         # Convert to canonical long format
+        result_conversion_start = time.perf_counter()
         forecast_rows: list[dict[str, Any]] = []
         quant_cols = [str(q) for q in task.quantile_levels]
 
-        for _, row in pred_df.iterrows():
+        item_id_seen: str | None = None
+        for idx, row in pred_df.iterrows():
             out: dict[str, Any] = {
                 "run_id": "",
                 "item_id": str(row.get("item_id", "default")),
@@ -176,15 +194,48 @@ class Chronos2Adapter:
                 "point_prediction": float(row.get("predictions", np.nan)),
                 "source_type": "forecast",
             }
+            # Validate finite point predictions
+            point_val = out["point_prediction"]
+            if not np.isfinite(point_val):
+                raise ResultSchemaError(
+                    f"Non-finite point prediction at row {idx}: {point_val}"
+                )
+
+            # Validate timestamps are non-empty
+            if not out["timestamp"]:
+                raise ResultSchemaError(f"Empty timestamp at row {idx}.")
+
+            # Validate same item_id across all rows
+            if item_id_seen is None:
+                item_id_seen = out["item_id"]
+            elif out["item_id"] != item_id_seen:
+                raise ResultSchemaError(
+                    f"Multiple item IDs in output: '{item_id_seen}' and '{out['item_id']}'."
+                )
+
             for q_col in quant_cols:
                 if q_col in row:
                     key = f"quantile_{q_col.replace('.', '_')}"
-                    out[key] = float(row[q_col])
+                    q_val = float(row[q_col])
+                    if not np.isfinite(q_val):
+                        raise ResultSchemaError(
+                            f"Non-finite quantile {q_col} at row {idx}: {q_val}"
+                        )
+                    out[key] = q_val
             forecast_rows.append(out)
+
+        # Validate timestamp ordering
+        timestamps = [r["timestamp"] for r in forecast_rows]
+        if timestamps != sorted(timestamps):
+            raise ResultSchemaError("Forecast timestamps are not in order.")
+
+        result_conversion_time = time.perf_counter() - result_conversion_start
 
         # Build metadata
         run_id = new_run_id()
         now_iso = datetime.now(timezone.utc).isoformat()
+        total_runtime = model_load_time + inference_time + result_conversion_time
+        pipeline_reused = self._pipeline is not None and self._pipeline_call_count == 0
 
         pkg_versions = _capture_package_versions()
         model_revision = (
@@ -204,8 +255,14 @@ class Chronos2Adapter:
             quantile_levels=task.quantile_levels,
             context_rows_used=context_rows,
             data_fingerprint="",
-            warnings=(),
+            warnings=tuple(captured_warnings),
             runtime_seconds=round(inference_time, 3),
+            model_load_seconds=round(model_load_time, 3),
+            inference_seconds=round(inference_time, 3),
+            result_conversion_seconds=round(result_conversion_time, 3),
+            total_runtime_seconds=round(total_runtime, 3),
+            model_was_loaded_this_run=model_was_loaded,
+            pipeline_reused=pipeline_reused,
             package_versions=pkg_versions,
             backend_name="Chronos2Adapter",
         )
@@ -221,7 +278,7 @@ class Chronos2Adapter:
             point_prediction_name="predictions",
             quantile_levels=task.quantile_levels,
             runtime_metadata=meta,
-            warnings=(),
+            warnings=tuple(captured_warnings),
             backend_name="Chronos2Adapter",
         )
 

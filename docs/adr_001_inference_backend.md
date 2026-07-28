@@ -14,13 +14,13 @@ run inference via:
 
 **Choice C — Decision pending Community Cloud evidence.**
 
-The local Windows environment validated that Chronos-2 can load and run on CPU
-with the `predict_df` API. However, the following evidence is still required
-before confirming choice A:
+The adapter code validates that Chronos-2 can be loaded and run on CPU
+with the `predict_df` API via dependency-injected tests. However, the
+following evidence is still required before confirming choice A:
 
-- Cold-start duration on Community Cloud (t1.micro CPU)
+- Cold-start duration on Community Cloud (platform limits to be measured)
 - Warm forecast duration
-- Peak memory vs. Cloud instance limits (1 GB RAM)
+- Peak memory vs. Cloud instance limits (limits to be verified during deployment)
 - Stability under repeated inference
 - Behaviour when the optional `HF_TOKEN` is present vs. absent
 - Recovery after an inference failure
@@ -36,4 +36,4 @@ before confirming choice A:
 ## Linked evidence
 
 - [Stage 0 benchmark report](stage_0_benchmark_report.md)
-- Community Cloud deployment test checklist: [](community_cloud_test_checklist.md)
+- Community Cloud deployment test checklist: [community_cloud_test_checklist.md](community_cloud_test_checklist.md)
