@@ -54,6 +54,23 @@ def _get_forecast_backend() -> Chronos2Adapter:
     return Chronos2Adapter()
 
 
+def _resolve_backend() -> Chronos2Adapter:
+    """Return the backend to use for this run.
+
+    Test-only seam: if st.session_state["_test_backend_override"] is set, it
+    is returned instead of the process-cached backend. This exists because
+    this module's name starts with a digit, so unittest.mock.patch cannot
+    target it (pkgutil.resolve_name rejects "pages.1_Forecast" as an invalid
+    dotted name), and Streamlit's AppTest executes this script outside
+    normal import machinery anyway. Production code paths never set this
+    session_state key.
+    """
+    override = st.session_state.get("_test_backend_override")
+    if override is not None:
+        return override
+    return _get_forecast_backend()
+
+
 def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
     """Parse uploaded CSV bytes once and return a DataFrame."""
     return pd.read_csv(BytesIO(file_bytes))
@@ -110,7 +127,9 @@ with st.sidebar:
                 st.session_state.cached_df = None
                 st.session_state.cached_file_bytes = None
             else:
-                # Read bytes ONCE
+                # Bytes are re-read on every rerun the file stays selected;
+                # only the parsed DataFrame below is cached (keyed on
+                # content) to avoid re-parsing identical uploads.
                 file_bytes = uploaded_file.read()
                 if st.session_state.cached_file_bytes != file_bytes:
                     st.session_state.cached_file_bytes = file_bytes
@@ -189,7 +208,7 @@ if run_button and df is not None and not st.session_state.is_running:
 
     # Get or create the process-cached backend (model loads lazily on first forecast)
     try:
-        backend = _get_forecast_backend()
+        backend = _resolve_backend()
         if not st.session_state.pipeline_was_loaded:
             # First call triggers model loading inside forecast()
             st.session_state.pipeline_was_loaded = True

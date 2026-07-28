@@ -19,9 +19,10 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pythonCmd = ""
 
-# ---- Step 1: Check D: drive -------------------------------------------------
-if (-not (Test-Path ($LocalRoot -replace "\\[^\\]+$", ""))) {
-    Write-Error "Drive for $LocalRoot not found. Cannot create local environment."
+# ---- Step 1: Check the target drive ------------------------------------------
+$driveRoot = [System.IO.Path]::GetPathRoot($LocalRoot)
+if (-not (Test-Path $driveRoot)) {
+    Write-Error "Drive for $LocalRoot not found ($driveRoot). Cannot create local environment."
     exit 1
 }
 
@@ -59,16 +60,17 @@ Make sure to check "Add Python to PATH" during installation.
     exit 1
 }
 
-# If using the launcher, build the full command
+# Report the resolved Python version. Keep the launcher and its argument as
+# separate tokens -- PowerShell's & operator treats a quoted string as a
+# single executable name, so "py -3.12" as one string is not invokable.
 if ($pythonCmd -match "py(\.exe)?$") {
-    $fullPython = "py -3.12"
+    Write-Host "Using Python: $pythonCmd -3.12"
+    $pyVer = & $pythonCmd -3.12 --version 2>&1
 }
 else {
-    $fullPython = $pythonCmd
+    Write-Host "Using Python: $pythonCmd"
+    $pyVer = & $pythonCmd --version 2>&1
 }
-
-Write-Host "Using Python: $fullPython"
-$pyVer = & $fullPython --version 2>&1
 Write-Host "Version: $pyVer"
 
 # ---- Step 3: Create directory structure -------------------------------------
@@ -76,6 +78,8 @@ $dirs = @(
     "$LocalRoot\venv",
     "$LocalRoot\cache\pip",
     "$LocalRoot\cache\huggingface",
+    "$LocalRoot\cache\huggingface\hub",
+    "$LocalRoot\cache\huggingface\xet",
     "$LocalRoot\cache\transformers",
     "$LocalRoot\cache\torch",
     "$LocalRoot\temp",
@@ -88,9 +92,12 @@ foreach ($d in $dirs) {
 Write-Host "Directories created under $LocalRoot"
 
 # ---- Step 4: Set environment variables --------------------------------------
+$env:FORECASTING_LOCAL_ROOT = $LocalRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "$LocalRoot\cache\huggingface"
+$env:HF_HUB_CACHE = "$LocalRoot\cache\huggingface\hub"
+$env:HF_XET_CACHE = "$LocalRoot\cache\huggingface\xet"
 $env:TRANSFORMERS_CACHE = "$LocalRoot\cache\transformers"
 $env:TORCH_HOME = "$LocalRoot\cache\torch"
 $env:TMP = "$LocalRoot\temp"

@@ -124,7 +124,13 @@ class ForecastTask:
 
     def __post_init__(self) -> None:
         """Validate task invariants at construction time."""
-        from src.config import HORIZON_MIN, HORIZON_MAX, CONTEXT_WINDOW_CAP
+        from src.config import (
+            HORIZON_MIN,
+            HORIZON_MAX,
+            CONTEXT_WINDOW_CAP,
+            QUANTILE_MIN,
+            QUANTILE_MAX,
+        )
 
         if not isinstance(self.mode, ForecastMode):
             raise ValueError(
@@ -149,12 +155,18 @@ class ForecastTask:
             raise ValueError("quantile_levels must not be empty")
         seen = set()
         for q in self.quantile_levels:
-            if q <= 0.0 or q >= 1.0:
-                raise ValueError(f"Quantile must be in (0, 1), got {q}")
+            if q < QUANTILE_MIN or q > QUANTILE_MAX:
+                raise ValueError(
+                    f"Quantile must be in [{QUANTILE_MIN}, {QUANTILE_MAX}], got {q}"
+                )
             rounded = round(q, 6)
             if rounded in seen:
                 raise ValueError(f"Duplicate quantile level: {q}")
             seen.add(rounded)
+        # Canonicalize to ascending order so downstream code (adapter output
+        # construction, monotonicity checks) never depends on caller-supplied
+        # ordering.
+        object.__setattr__(self, "quantile_levels", tuple(sorted(self.quantile_levels)))
         if self.context_window_cap is not None and self.context_window_cap <= 0:
             raise ValueError(
                 f"context_window_cap must be positive, got {self.context_window_cap}"
@@ -181,6 +193,8 @@ class RunMetadata:
     prediction_length: int = 0
     quantile_levels: tuple[float, ...] = ()
     context_rows_used: int = 0
+    # Computed in Phase 1 Slice 4 (see tests/test_fingerprinting.py); always
+    # "" in Stage 0.
     data_fingerprint: str = ""
     warnings: tuple[str, ...] = ()
     runtime_seconds: float = 0.0  # Deprecated: kept for backward compat

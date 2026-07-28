@@ -44,5 +44,5 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          pytest tests/ -v --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
+          pytest tests/ -v --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
             --cov-report=term-missing --cov-fail-under=80

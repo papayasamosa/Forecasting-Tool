@@ -20,3 +20,9 @@ Thumbs.db
 # Python caches
 .pytest_cache/
 .mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
