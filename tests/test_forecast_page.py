@@ -114,7 +114,7 @@ class TestForecastPageAppTest:
         assert not at.exception
         assert "exceeds the 50 MB limit" in at.error[0].value
         assert at.session_state["cached_df"] is None
-        assert at.session_state["cached_file_bytes"] is None
+        assert at.session_state["cached_df_hash"] == ""
 
     def test_invalid_quantiles_blocked(self):
         """Invalid quantile levels should produce an error message."""

@@ -36,4 +36,4 @@
 | Result conversion time | TBD | TBD |
 | Baseline RSS | TBD | TBD |
 | Peak RSS (approximate) | TBD | TBD |
-| Pipeline reuse | TBD | Verified |
+| Pipeline reuse | TBD | Unit-tested (real rerun pending) |

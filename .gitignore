@@ -26,3 +26,14 @@ Thumbs.db
 .coverage.*
 coverage.xml
 htmlcov/
+
+# Generated benchmark and smoke-test output (JSON, Markdown)
+benchmarks/
+benchmark_*.json
+benchmark_*.md
+smoke_test_*.json
+
+# Test output
+test_output/
+test_results/
+*.test_output

@@ -26,6 +26,7 @@ from src.forecasting.chronos2_adapter import (
     ModelLoadError,
     ResultSchemaError,
     _validate_quantile_monotonic,
+    InferenceError,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,104 @@ class _MemorySampler:
     @property
     def baseline_mb(self) -> float:
         return self._baseline_mb
+
+
+# ---------------------------------------------------------------------------
+# Panel output validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_panel_output(
+    pred_df: pd.DataFrame,
+    expected_item_ids: set[str],
+    expected_horizon: int,
+    quantile_levels: list[float],
+    historical_data: pd.DataFrame,
+) -> None:
+    """Validate panel forecast output against all expected invariants.
+
+    Raises ``ResultSchemaError`` on any violation.
+    """
+    # --- Required columns ---
+    required = {"item_id", "timestamp", "predictions"}
+    missing_cols = required - set(pred_df.columns)
+    if missing_cols:
+        raise ResultSchemaError(
+            f"Panel output missing required columns: {sorted(missing_cols)}"
+        )
+
+    # --- Expected row count ---
+    expected_rows = len(expected_item_ids) * expected_horizon
+    if len(pred_df) != expected_rows:
+        raise ResultSchemaError(
+            f"Panel benchmark expected {expected_rows} rows, got {len(pred_df)}"
+        )
+
+    # --- Expected item IDs ---
+    actual_ids = set(pred_df["item_id"].unique())
+    if actual_ids != expected_item_ids:
+        missing_ids = expected_item_ids - actual_ids
+        extra_ids = actual_ids - expected_item_ids
+        parts = []
+        if missing_ids:
+            parts.append(f"missing: {sorted(missing_ids)}")
+        if extra_ids:
+            parts.append(f"unexpected: {sorted(extra_ids)}")
+        raise ResultSchemaError(
+            "Panel benchmark item_id set mismatch: " + "; ".join(parts)
+        )
+
+    # --- Per-item checks ---
+    for item_id in expected_item_ids:
+        item_rows = pred_df[pred_df["item_id"] == item_id].sort_values("timestamp")
+        if len(item_rows) != expected_horizon:
+            raise ResultSchemaError(
+                f"Item '{item_id}' expected {expected_horizon} forecast rows, "
+                f"got {len(item_rows)}"
+            )
+
+    # --- Finite point predictions ---
+    if not np.isfinite(pred_df["predictions"]).all():
+        raise ResultSchemaError("Non-finite point predictions in panel output.")
+
+    # --- Quantile columns present and finite ---
+    for q in quantile_levels:
+        col = str(q)
+        if col not in pred_df.columns:
+            raise ResultSchemaError(
+                f"Missing requested quantile column '{col}' in panel output."
+            )
+        if not np.isfinite(pred_df[col]).all():
+            raise ResultSchemaError(
+                f"Non-finite values in quantile column '{col}'."
+            )
+
+    # --- Monotonic quantiles per row ---
+    for _, prow in pred_df.iterrows():
+        _validate_quantile_monotonic(prow, quantile_levels)
+
+    # --- Unique (item_id, timestamp) rows ---
+    keys = list(zip(pred_df["item_id"], pred_df["timestamp"].astype(str)))
+    if len(keys) != len(set(keys)):
+        raise ResultSchemaError("Duplicate (item_id, timestamp) rows in panel output.")
+
+    # --- Timestamps ordered per item ---
+    for item_id in expected_item_ids:
+        item_rows = pred_df[pred_df["item_id"] == item_id].sort_values("timestamp")
+        parsed = pd.to_datetime(item_rows["timestamp"])
+        if list(parsed) != sorted(parsed):
+            raise ResultSchemaError(
+                f"Forecast timestamps for item '{item_id}' are not in order."
+            )
+
+    # --- Forecast timestamps after history ---
+    hist_max_ts = pd.to_datetime(historical_data["timestamp"]).max()
+    min_forecast_ts = pd.to_datetime(pred_df["timestamp"]).min()
+    if min_forecast_ts <= hist_max_ts:
+        raise ResultSchemaError(
+            f"First forecast timestamp {min_forecast_ts} is not after "
+            f"last historical timestamp {hist_max_ts}."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -345,20 +444,29 @@ def run_benchmarks(
     # ------------------------------------------------------------------
     # Scenario 2: Small panel — benchmark-only path
     #
-    # Uses the real Chronos-2 predict_df API directly (bypasses the
-    # standard-univariate adapter). This is a benchmark-only measurement
-    # and does not expose panel forecasting in the product UI.
+    # Uses the same pipeline instance as Scenario 1 (no second model
+    # load). Calls predict_df directly (bypasses the standard-univariate
+    # adapter), then validates output with the full panel invariant set.
     # ------------------------------------------------------------------
     print("\n=== Scenario 2: Small panel (5 series, benchmark-only path) ===")
     df2 = _panel_fixture(n_series=5, n_points=104)
     result2 = _base_result("panel_5_series", context_rows=104 * 5, horizon=13,
                           n_series=5, cross_learning=False)
 
-    panel_adapter = adapter_factory()
+    # Reuse the pipeline from Scenario 1 (WP3: one pipeline).
+    # If Scenario 1 failed, this will load it now — still only one load.
     panel_mem_sampler = _MemorySampler()
+    panel_t0 = time.perf_counter()
+    panel_load_time = 0.0
     try:
-        panel_mem_sampler.start()  # started before pipeline acquisition
-        pipeline = panel_adapter.get_pipeline()
+        panel_mem_sampler.start()
+        load_t0 = time.perf_counter()
+        try:
+            pipeline = adapter.get_pipeline()
+        except ModelLoadError:
+            raise
+        panel_load_time = time.perf_counter() - load_t0
+
         input_df = df2.copy()
         input_df.columns = ["item_id", "timestamp", "target"]
         quantile_levels = [0.1, 0.5, 0.9]
@@ -377,29 +485,36 @@ def run_benchmarks(
         inference_time = time.perf_counter() - t0
         panel_mem_sampler.stop()
 
-        expected_rows = len(expected_item_ids) * expected_horizon
-        if len(pred_df) != expected_rows:
-            raise ResultSchemaError(
-                f"Panel benchmark expected {expected_rows} rows, got {len(pred_df)}"
-            )
-        if set(pred_df["item_id"].unique()) != expected_item_ids:
-            raise ResultSchemaError("Panel benchmark item_id set mismatch.")
-        for _, prow in pred_df.iterrows():
-            _validate_quantile_monotonic(prow, quantile_levels)
+        # Full panel invariant validation (WP1)
+        _validate_panel_output(
+            pred_df=pred_df,
+            expected_item_ids=expected_item_ids,
+            expected_horizon=expected_horizon,
+            quantile_levels=quantile_levels,
+            historical_data=df2,
+        )
 
+        elapsed = time.perf_counter() - panel_t0
         result2.samples.append(BenchmarkSample(
             label="panel_forecast_direct",
-            duration_seconds=inference_time,
+            duration_seconds=elapsed,
             rss_mb=_rss_mb(),
             baseline_rss_mb=panel_mem_sampler.baseline_mb,
             peak_rss_mb=panel_mem_sampler.peak_mb,
+            model_load_seconds=panel_load_time,
             inference_seconds=inference_time,
         ))
         result2.model_revision = getattr(pipeline, "model_revision", "")
     except Exception as e:
         panel_mem_sampler.stop()
+        elapsed = time.perf_counter() - panel_t0
         result2.samples.append(BenchmarkSample(
             label="panel_forecast_direct", success=False,
+            duration_seconds=elapsed,
+            rss_mb=_rss_mb(),
+            baseline_rss_mb=panel_mem_sampler.baseline_mb,
+            peak_rss_mb=panel_mem_sampler.peak_mb,
+            model_load_seconds=panel_load_time,
             error_type=type(e).__name__, error_message=str(e)[:200],
         ))
     all_results.append(result2)

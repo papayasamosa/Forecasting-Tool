@@ -2,9 +2,16 @@
 
 The Chronos-2 model is loaded only when the user clicks "Run Forecast".
 The backend is cached at the process level via ``st.cache_resource``.
+
+Memory-conscious design (WP4):
+- Only a SHA-256 identity of uploaded bytes is retained, not the raw bytes.
+- Parsed DataFrame uses selected columns only.
+- Context cap is applied before row-record conversion.
+- Truncation warnings are shown to the user.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
@@ -15,6 +22,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.config import CONTEXT_WINDOW_CAP  # noqa: E402
 from src.schemas import ForecastMode, ForecastTask  # noqa: E402
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
@@ -85,9 +93,8 @@ _DEFAULT_STATE = {
     "error_message": "",
     "is_running": False,
     "cached_df": None,           # parsed DataFrame reused across reruns
-    "cached_file_bytes": None,   # raw bytes to avoid re-read
+    "cached_df_hash": "",        # SHA-256 of uploaded bytes (identity only)
     "cached_columns": [],
-    "pipeline_was_loaded": False,  # tracks whether model was loaded this session
 }
 for k, v in _DEFAULT_STATE.items():
     if k not in st.session_state:
@@ -111,13 +118,13 @@ with st.sidebar:
     # Reset cached data when switching data sources
     if "last_data_option" not in st.session_state or st.session_state.last_data_option != data_option:
         st.session_state.cached_df = None
-        st.session_state.cached_file_bytes = None
+        st.session_state.cached_df_hash = ""
         st.session_state.last_data_option = data_option
 
     if data_option == "Upload CSV":
         uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
         if uploaded_file is not None:
-            # Check size before reading
+            # Check size before reading (WP4: keep pre-parse cap)
             uploaded_file.seek(0, os.SEEK_END)
             size = uploaded_file.tell()
             uploaded_file.seek(0)
@@ -125,21 +132,26 @@ with st.sidebar:
                 st.error(f"File exceeds the 50 MB limit ({size / 1024 / 1024:.1f} MB).")
                 uploaded_file = None
                 st.session_state.cached_df = None
-                st.session_state.cached_file_bytes = None
+                st.session_state.cached_df_hash = ""
             else:
-                # Bytes are re-read on every rerun the file stays selected;
-                # only the parsed DataFrame below is cached (keyed on
-                # content) to avoid re-parsing identical uploads.
+                # Read bytes once, compute identity hash, then release bytes
                 file_bytes = uploaded_file.read()
-                if st.session_state.cached_file_bytes != file_bytes:
-                    st.session_state.cached_file_bytes = file_bytes
+                file_hash = hashlib.sha256(file_bytes).hexdigest()
+                if st.session_state.cached_df_hash != file_hash:
+                    st.session_state.cached_df_hash = file_hash
                     try:
                         st.session_state.cached_df = _parse_csv_bytes(file_bytes)
                         st.session_state.cached_columns = st.session_state.cached_df.columns.tolist()
                     except Exception:
                         st.error("Could not parse CSV. Please check the file format.")
                         st.session_state.cached_df = None
-                        st.session_state.cached_file_bytes = None
+                        st.session_state.cached_df_hash = ""
+                    finally:
+                        # Release raw bytes immediately after parsing
+                        del file_bytes
+                else:
+                    # Release bytes even when hash matches (no need to retain)
+                    del file_bytes
 
                 if st.session_state.cached_df is not None:
                     cols = st.session_state.cached_columns
@@ -191,11 +203,37 @@ if run_button and df is not None and not st.session_state.is_running:
         st.session_state.is_running = False
         st.stop()
 
+    # Use selected columns only  (WP4: reduce memory before row-record expansion)
+    if ts_col in df.columns and target_col in df.columns:
+        working_df = df[[ts_col, target_col]].copy()
+    else:
+        working_df = df.copy()
+
+    # Apply context cap before row-record conversion (WP4)
+    truncation_warning = ""
+    if len(working_df) > CONTEXT_WINDOW_CAP:
+        original_rows = len(working_df)
+        working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
+        truncation_warning = (
+            f"Context was truncated from {original_rows} to "
+            f"{CONTEXT_WINDOW_CAP} rows (Chronos-2 limit)."
+        )
+        st.warning(truncation_warning)
+
+    # Convert to records for ForecastTask (after context cap)
+    records = tuple(working_df.to_dict("records"))
+    if truncation_warning:
+        # Append truncation info to the first record as metadata
+        records = list(records)
+        if records:
+            records[0] = {**records[0], "_truncation_warning": truncation_warning}
+        records = tuple(records)
+
     # Build task (validated at construction)
     try:
         task = ForecastTask(
             mode=ForecastMode.STANDARD_UNIVARIATE,
-            historical_data=tuple(df.to_dict("records")),
+            historical_data=records,
             timestamp_column=ts_col,
             target_columns=(target_col,),
             prediction_length=int(horizon),
@@ -209,9 +247,6 @@ if run_button and df is not None and not st.session_state.is_running:
     # Get or create the process-cached backend (model loads lazily on first forecast)
     try:
         backend = _resolve_backend()
-        if not st.session_state.pipeline_was_loaded:
-            # First call triggers model loading inside forecast()
-            st.session_state.pipeline_was_loaded = True
         # Run forecast
         with st.spinner("Running Chronos-2 forecast (may load model on first call)..."):
             result = backend.forecast(task)

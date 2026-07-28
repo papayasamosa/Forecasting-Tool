@@ -3,12 +3,16 @@
 
 Usage:
     python scripts/chronos2_smoke_test.py
+
+Emits a JSON evidence record alongside console output (P1-6).
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
-import os
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,7 +21,16 @@ import pandas as pd  # noqa: E402
 
 from src.config import MODEL_ID, DEFAULT_QUANTILES  # noqa: E402
 from src.schemas import ForecastTask, ForecastMode  # noqa: E402
-from src.forecasting.chronos2_adapter import Chronos2Adapter  # noqa: E402
+from src.forecasting.chronos2_adapter import (  # noqa: E402
+    Chronos2Adapter,
+    _capture_package_versions,
+)
+from src.benchmarking import _rss_mb  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Default evidence output path
+# ---------------------------------------------------------------------------
+DEFAULT_EVIDENCE_DIR = r"D:\Forecasting-Tool-Local\benchmarks"
 
 
 def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
@@ -31,21 +44,35 @@ def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
-def run_smoke_test() -> None:
+def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
+    """Run the smoke test and return/export a structured evidence dict.
+
+    Returns a JSON-serialisable dict with all measurements, or a dict
+    with ``success=False`` and error details on failure.
+    """
+    evidence: dict = {
+        "test": "chronos2_smoke_test",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "success": False,
+        "python_version": sys.version.split()[0],
+        "model_id": MODEL_ID,
+        "model_revision": "",
+        "hf_token_present": bool(os.environ.get("HF_TOKEN")),
+        "cold": {},
+        "warm": {},
+        "package_versions": {},
+        "error": "",
+    }
+
     print("=" * 64)
     print("  Chronos-2 Smoke Test — Stage 0.1")
     print("=" * 64)
 
-    # Memory before
-    try:
-        import psutil
-        proc = psutil.Process()
-        mem_before_mb = proc.memory_info().rss / 1024 / 1024
-    except ImportError:
-        mem_before_mb = None
-
-    print(f"\n  Python version : {sys.version.split()[0]}")
-    print(f"  Model ID       : {MODEL_ID}")
+    baseline_rss = _rss_mb()
+    print(f"\n  Python version : {evidence['python_version']}")
+    print(f"  Model ID       : {evidence['model_id']}")
+    print(f"  HF_TOKEN       : {evidence['hf_token_present']}")
+    print(f"  Baseline RSS   : {baseline_rss:.1f} MB")
 
     df = _build_weekly_fixture(260)
     context_rows = len(df)
@@ -74,22 +101,26 @@ def run_smoke_test() -> None:
         result = adapter.forecast(task)
     except Exception as exc:
         print(f"  FAILED: {exc}")
-        sys.exit(1)
+        evidence["error"] = f"{type(exc).__name__}: {exc}"
+        _write_evidence(evidence, evidence_dir)
+        return evidence
     cold_time = time.perf_counter() - t0
+    cold_rss = _rss_mb()
 
-    try:
-        import psutil
-        mem_after_mb = proc.memory_info().rss / 1024 / 1024
-    except ImportError:
-        mem_after_mb = None
+    evidence["cold"] = {
+        "total_seconds": round(cold_time, 3),
+        "model_load_seconds": result.runtime_metadata.model_load_seconds,
+        "inference_seconds": result.runtime_metadata.inference_seconds,
+        "result_conversion_seconds": result.runtime_metadata.result_conversion_seconds,
+        "rss_mb": round(cold_rss, 1),
+        "pipeline_call_count": adapter.pipeline_call_count,
+        "model_revision": result.model_revision,
+    }
+    evidence["model_revision"] = result.model_revision
 
     print(f"  Cold time      : {cold_time:.3f}s")
     print(f"  Pipeline calls : {adapter.pipeline_call_count}")
-    if mem_before_mb is not None:
-        print(f"  Memory before  : {mem_before_mb:.1f} MB")
-    if mem_after_mb is not None:
-        print(f"  Memory after   : {mem_after_mb:.1f} MB")
-
+    print(f"  RSS            : {cold_rss:.1f} MB")
     print(f"  Run ID         : {result.run_id}")
     print(f"  Model revision : {result.model_revision}")
     print(f"  # Forecast rows: {len(result.forecast_rows)}")
@@ -99,8 +130,21 @@ def run_smoke_test() -> None:
     t1 = time.perf_counter()
     warm_result = adapter.forecast(task)
     warm_time = time.perf_counter() - t1
+    warm_rss = _rss_mb()
+
+    evidence["warm"] = {
+        "total_seconds": round(warm_time, 3),
+        "model_load_seconds": warm_result.runtime_metadata.model_load_seconds,
+        "inference_seconds": warm_result.runtime_metadata.inference_seconds,
+        "result_conversion_seconds": warm_result.runtime_metadata.result_conversion_seconds,
+        "rss_mb": round(warm_rss, 1),
+        "pipeline_call_count": adapter.pipeline_call_count,
+        "pipeline_reused": warm_result.runtime_metadata.pipeline_reused,
+    }
+
     print(f"  Warm time      : {warm_time:.3f}s")
     print(f"  Pipeline calls : {adapter.pipeline_call_count} (should be 1)")
+    print(f"  RSS            : {warm_rss:.1f} MB")
 
     # Output verification
     assert len(result.forecast_rows) == horizon
@@ -113,15 +157,34 @@ def run_smoke_test() -> None:
     print("\n  Output schema OK")
 
     # Package versions
-    pkg = result.runtime_metadata.package_versions
+    pkg = _capture_package_versions()
+    evidence["package_versions"] = pkg
     print("\n  Package versions:")
     for k, v in pkg.items():
         print(f"    {k}: {v}")
 
+    evidence["success"] = True
     print(f"\n{'=' * 64}")
     print("  Smoke test completed successfully!")
     print("=" * 64)
 
+    _write_evidence(evidence, evidence_dir)
+    return evidence
+
+
+def _write_evidence(evidence: dict, evidence_dir: str) -> str:
+    """Write evidence dict to a JSON file and return the path."""
+    os.makedirs(evidence_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(evidence_dir, f"smoke_test_{timestamp}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(evidence, f, indent=2, default=str)
+    print(f"\n  Evidence written to: {path}")
+    return path
+
 
 if __name__ == "__main__":
-    run_smoke_test()
+    evidence_dir = os.environ.get(
+        "BENCHMARK_OUTPUT_DIR", DEFAULT_EVIDENCE_DIR
+    )
+    run_smoke_test(evidence_dir=evidence_dir)
