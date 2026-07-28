@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from src.config import MODEL_ID, DEFAULT_QUANTILES  # noqa: E402
+from src.config import MODEL_ID, MODEL_REVISION, DEFAULT_QUANTILES  # noqa: E402
 from src.schemas import ForecastTask, ForecastMode  # noqa: E402
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
@@ -28,9 +28,12 @@ from src.forecasting.chronos2_adapter import (  # noqa: E402
 from src.benchmarking import _rss_mb  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Default evidence output path
+# Default evidence output path (platform-aware)
 # ---------------------------------------------------------------------------
-DEFAULT_EVIDENCE_DIR = r"D:\Forecasting-Tool-Local\benchmarks"
+if sys.platform == "win32":
+    DEFAULT_EVIDENCE_DIR = r"D:\Forecasting-Tool-Local\benchmarks"
+else:
+    DEFAULT_EVIDENCE_DIR = os.path.join(os.path.expanduser("~"), "forecast-benchmarks")
 
 
 def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
@@ -56,6 +59,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
         "success": False,
         "python_version": sys.version.split()[0],
         "model_id": MODEL_ID,
+        "configured_revision": MODEL_REVISION,
         "model_revision": "",
         "hf_token_present": bool(os.environ.get("HF_TOKEN")),
         "cold": {},
@@ -187,4 +191,6 @@ if __name__ == "__main__":
     evidence_dir = os.environ.get(
         "BENCHMARK_OUTPUT_DIR", DEFAULT_EVIDENCE_DIR
     )
-    run_smoke_test(evidence_dir=evidence_dir)
+    evidence = run_smoke_test(evidence_dir=evidence_dir)
+    if not evidence.get("success"):
+        sys.exit(1)

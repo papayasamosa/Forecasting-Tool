@@ -464,3 +464,224 @@ class TestPanelFailureEvidence:
             assert isinstance(sample.duration_seconds, float)
             assert sample.error_type == "RuntimeError"
             assert "simulated failure" in sample.error_message
+
+
+class TestSuiteEvaluation:
+    """Tests for _evaluate_suite and scenario pass/fail."""
+
+    def test_suite_passes_with_valid_factory(self):
+        """The full suite should pass with a valid fake pipeline."""
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=_fake_adapter_factory)
+            from src.benchmarking import _evaluate_suite
+            assert _evaluate_suite(results) is True
+            for r in results:
+                assert r.scenario_passed is True
+
+    def test_cold_failure_causes_scenario_fail(self):
+        """If cold forecast fails, scenario should fail."""
+
+        class FailOncePipeline:
+            model_id = "amazon/chronos-2-test"
+            model_revision = "fake-revision-001"
+            call_count = 0
+
+            def predict_df(self, input_df, **kwargs):
+                self.__class__.call_count += 1
+                if self.__class__.call_count == 1:
+                    raise RuntimeError("Cold forecast failure")
+                import pandas as pd
+                prediction_length = kwargs.get("prediction_length", 13)
+                quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
+                rows = []
+                for i in range(prediction_length):
+                    row = {"item_id": "default", "timestamp": pd.Timestamp("2024-01-01") + pd.Timedelta(days=7*i),
+                           "target_name": "target", "predictions": float(100+i)}
+                    for q in quantile_levels:
+                        row[str(q)] = float(100+i-5*(1-q))
+                    rows.append(row)
+                return pd.DataFrame(rows)
+
+        def factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=FailOncePipeline())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=factory)
+            weekly = [r for r in results if r.scenario == "weekly_260_13"][0]
+            assert weekly.scenario_passed is False
+            from src.benchmarking import _evaluate_suite
+            assert _evaluate_suite(results) is False
+
+    def test_failure_and_retry_scenario_passed(self):
+        """Failure+retry scenario should pass when failure occurs and retry succeeds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=_fake_adapter_factory)
+            retry_scenario = [r for r in results if r.scenario == "failure_and_retry"][0]
+            assert retry_scenario.scenario_passed is True
+
+    def test_rolling_requires_exactly_ten_successes(self):
+        """Rolling scenario must have exactly 10 successful folds for scenario_passed."""
+
+        class FailingRollPipeline:
+            model_id = "amazon/chronos-2-test"
+            model_revision = "fake-revision-001"
+            call_count = 0
+
+            def predict_df(self, input_df, **kwargs):
+                self.__class__.call_count += 1
+                if self.__class__.call_count == 5:
+                    raise RuntimeError("Rolling fold 4 failure")
+                import pandas as pd
+                prediction_length = kwargs.get("prediction_length", 13)
+                quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
+                rows = []
+                for i in range(prediction_length):
+                    row = {"item_id": "default", "timestamp": pd.Timestamp("2024-01-01") + pd.Timedelta(days=7*i),
+                           "target_name": "target", "predictions": float(100+i)}
+                    for q in quantile_levels:
+                        row[str(q)] = float(100+i-5*(1-q))
+                    rows.append(row)
+                return pd.DataFrame(rows)
+
+        def factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=FailingRollPipeline())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=factory)
+            rolling = [r for r in results if r.scenario == "10_rolling_calls"][0]
+            assert rolling.scenario_passed is False
+
+
+class TestPanelChronology:
+    """WP4: Panel chronology validation tests."""
+
+    def _make_panel_output(self, n_series=5, horizon=13, shuffle_order=False):
+        """Build a valid panel output, optionally with shuffled row order."""
+        import pandas as pd
+        import numpy as np
+        rows = []
+        quantile_levels = [0.1, 0.5, 0.9]
+        for s in range(n_series):
+            item_id = f"series_{s}"
+            last_ts = pd.Timestamp("2024-04-07")
+            dates = pd.date_range(start=last_ts, periods=horizon + 1, freq="W")[1:]
+            for i, d in enumerate(dates):
+                row = {
+                    "item_id": item_id,
+                    "timestamp": d,
+                    "predictions": float(100 + i),
+                }
+                for q in quantile_levels:
+                    row[str(q)] = float(100 + i - 5 * (1 - q))
+                rows.append(row)
+        df = pd.DataFrame(rows)
+        if shuffle_order:
+            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        return df
+
+    def _make_historical_data(self, n_series=5, staggered=False):
+        """Build historical data, optionally with staggered end dates."""
+        import pandas as pd
+        import numpy as np
+        rows = []
+        for s in range(n_series):
+            if staggered:
+                # Each series ends at a different time
+                n_points = 104 - s * 10
+            else:
+                n_points = 104
+            dates = pd.date_range("2022-01-03", periods=n_points, freq="W")
+            for i, d in enumerate(dates):
+                rows.append({
+                    "item_id": f"series_{s}",
+                    "timestamp": d,
+                    "target": float(100 + s * 20 + i),
+                })
+        return pd.DataFrame(rows)
+
+    def test_unsorted_panel_rows_detected(self):
+        """Rows returned out of order should be detected (not sorted first)."""
+        df = self._make_panel_output(shuffle_order=True)
+        hist = self._make_historical_data()
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="not in order"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_staggered_history_per_item(self):
+        """Each item's forecast must be after its own historical end."""
+        import pandas as pd
+        df = self._make_panel_output()
+        # Use series_2 which has shorter history (104-20=84 weeks).
+        # Its forecast starts at 2024-04-07, history ends ~2023-09-17.
+        # Shift forecast by 1 year back so it overlaps with history.
+        mask = df["item_id"] == "series_2"
+        df.loc[mask, "timestamp"] = pd.to_datetime(df.loc[mask, "timestamp"]) - pd.DateOffset(years=1)
+        hist = self._make_historical_data(staggered=True)
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output, ResultSchemaError
+        with pytest.raises(ResultSchemaError, match="not after"):
+            _validate_panel_output(
+                pred_df=df, expected_item_ids=expected_ids,
+                expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+                historical_data=hist,
+            )
+
+    def test_valid_staggered_history_passes(self):
+        """Staggered histories with valid forecasts should pass."""
+        df = self._make_panel_output()
+        hist = self._make_historical_data(staggered=True)
+        expected_ids = set(hist["item_id"].unique())
+        from src.benchmarking import _validate_panel_output
+        _validate_panel_output(
+            pred_df=df, expected_item_ids=expected_ids,
+            expected_horizon=13, quantile_levels=[0.1, 0.5, 0.9],
+            historical_data=hist,
+        )
+
+
+class TestCrossLearningControl:
+    """WP5: Cross-learning is explicitly controlled."""
+
+    def test_predict_df_receives_cross_learning_false(self):
+        """The panel predict_df call should pass cross_learning=False."""
+        from tests.test_adapter_contract import FakePipeline
+        from src.benchmarking import run_benchmarks
+        # Use a pipeline that records all kwargs per call
+        class TrackingPipeline:
+            model_id = "amazon/chronos-2-test"
+            model_revision = "fake-revision-001"
+            all_kwargs: list[dict] = []
+
+            def predict_df(self, input_df, **kwargs):
+                self.__class__.all_kwargs.append(dict(kwargs))
+                import pandas as pd
+                prediction_length = kwargs.get("prediction_length", 13)
+                quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
+                rows = []
+                for item_id in input_df["item_id"].unique():
+                    last_ts = pd.to_datetime(input_df["timestamp"].iloc[-1])
+                    dates = pd.date_range(start=last_ts, periods=prediction_length+1, freq="W")[1:]
+                    for i, d in enumerate(dates):
+                        row = {"item_id": item_id, "timestamp": d, "target_name": "target",
+                               "predictions": float(100+i)}
+                        for q in quantile_levels:
+                            row[str(q)] = float(100+i-5*(1-q))
+                        rows.append(row)
+                return pd.DataFrame(rows)
+
+        TrackingPipeline.all_kwargs = []
+
+        def factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=TrackingPipeline())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_benchmarks(output_dir=tmp, adapter_factory=factory)
+        # Find the panel predict_df call (it has cross_learning kwarg)
+        panel_calls = [k for k in TrackingPipeline.all_kwargs if "cross_learning" in k]
+        assert len(panel_calls) >= 1, "No predict_df call received cross_learning"
+        assert panel_calls[0]["cross_learning"] is False

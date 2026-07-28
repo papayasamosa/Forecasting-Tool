@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, stage0-completion, stage0-repair-and-evidence]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -22,9 +22,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install runtime dependencies
+      - name: Install production dependencies (Cloud-identical path)
+        env:
+          PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
 
       - name: Install development dependencies
@@ -33,6 +34,11 @@ jobs:
 
       - name: Verify dependency consistency
         run: pip check
+
+      - name: Verify CPU-only PyTorch
+        run: |
+          python -c "import torch; assert torch.version.cuda is None, f'CUDA available: {torch.version.cuda}'"
+          echo "CPU-only PyTorch confirmed: $(python -c 'import torch; print(torch.__version__)')"
 
       - name: Lint with flake8
         run: |

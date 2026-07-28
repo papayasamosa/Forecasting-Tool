@@ -5,9 +5,11 @@ The backend is cached at the process level via ``st.cache_resource``.
 
 Memory-conscious design (WP4):
 - Only a SHA-256 identity of uploaded bytes is retained, not the raw bytes.
-- Parsed DataFrame uses selected columns only.
-- Context cap is applied before row-record conversion.
-- Truncation warnings are shown to the user.
+- Selected columns only are used for the forecast.
+- Raw bytes are released immediately after parsing.
+- The full parsed DataFrame remains cached across reruns (keyed by hash).
+- Context cap is applied chronologically before row-record conversion.
+- Truncation warnings are shown and propagated to RunMetadata.
 """
 from __future__ import annotations
 
@@ -22,8 +24,17 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import CONTEXT_WINDOW_CAP  # noqa: E402
-from src.schemas import ForecastMode, ForecastTask  # noqa: E402
+from src.config import (  # noqa: E402
+    CONTEXT_WINDOW_CAP,
+    MAX_UPLOAD_SIZE_BYTES,
+    QUANTILE_MIN,
+    QUANTILE_MAX,
+)
+from src.schemas import (  # noqa: E402
+    ForecastMode,
+    ForecastTask,
+    WarningCode,
+)
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
     AdapterError,
@@ -37,9 +48,9 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Forecast — Chronos-2", page_icon="📈", layout="wide")
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (use config as source of truth)
 # ---------------------------------------------------------------------------
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+# MAX_UPLOAD_SIZE_BYTES imported from src.config
 
 # ---------------------------------------------------------------------------
 # Helpers (defined BEFORE their first use to avoid NameError)
@@ -128,8 +139,8 @@ with st.sidebar:
             uploaded_file.seek(0, os.SEEK_END)
             size = uploaded_file.tell()
             uploaded_file.seek(0)
-            if size > MAX_UPLOAD_BYTES:
-                st.error(f"File exceeds the 50 MB limit ({size / 1024 / 1024:.1f} MB).")
+                if size > MAX_UPLOAD_SIZE_BYTES:
+                st.error(f"File exceeds the {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB limit ({size / 1024 / 1024:.1f} MB).")
                 uploaded_file = None
                 st.session_state.cached_df = None
                 st.session_state.cached_df_hash = ""
@@ -190,46 +201,59 @@ if run_button and df is not None and not st.session_state.is_running:
     st.session_state.error_message = ""
     st.session_state.forecast_result = None
 
-    # Parse quantiles
+    # Parse quantiles using config constants
     try:
         q_levels = [float(q.strip()) for q in quantiles_str.split(",") if q.strip()]
         if not q_levels:
             raise ValueError("No quantile levels provided.")
         for q in q_levels:
-            if q <= 0.0 or q >= 1.0:
-                raise ValueError(f"Quantile must be between 0 and 1, got {q}")
+            if q <= QUANTILE_MIN or q >= QUANTILE_MAX:
+                raise ValueError(f"Quantile must be between {QUANTILE_MIN} and {QUANTILE_MAX}, got {q}")
     except ValueError as e:
         st.error(f"Invalid quantile levels: {e}")
         st.session_state.is_running = False
         st.stop()
 
-    # Use selected columns only  (WP4: reduce memory before row-record expansion)
+    # Block identical timestamp and target column selections (WP6)
+    if ts_col == target_col:
+        st.error("Timestamp and target columns must be different.")
+        st.session_state.is_running = False
+        st.stop()
+
+    # Use selected columns only (WP4: reduce memory before row-record expansion)
     if ts_col in df.columns and target_col in df.columns:
         working_df = df[[ts_col, target_col]].copy()
     else:
-        working_df = df.copy()
+        st.error(f"Selected columns '{ts_col}' and/or '{target_col}' not found in data.")
+        st.session_state.is_running = False
+        st.stop()
 
-    # Apply context cap before row-record conversion (WP4)
-    truncation_warning = ""
+    # Parse timestamps and sort chronologically (WP6: keep latest observations)
+    try:
+        working_df[ts_col] = pd.to_datetime(working_df[ts_col])
+    except Exception as e:
+        st.error(f"Could not parse timestamps in column '{ts_col}': {e}")
+        st.session_state.is_running = False
+        st.stop()
+
+    working_df = working_df.sort_values(ts_col).reset_index(drop=True)
+    original_row_count = len(working_df)
+
+    # Apply context cap chronologically (WP6: keep latest timestamps)
     if len(working_df) > CONTEXT_WINDOW_CAP:
-        original_rows = len(working_df)
         working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
-        truncation_warning = (
-            f"Context was truncated from {original_rows} to "
-            f"{CONTEXT_WINDOW_CAP} rows (Chronos-2 limit)."
+        retained_start = working_df[ts_col].iloc[0]
+        st.warning(
+            f"Context was truncated from {original_row_count} to "
+            f"{CONTEXT_WINDOW_CAP} rows (Chronos-2 limit). "
+            f"Retaining data from {retained_start.date()} onwards."
         )
-        st.warning(truncation_warning)
 
-    # Convert to records for ForecastTask (after context cap)
+    # Convert to records for ForecastTask
     records = tuple(working_df.to_dict("records"))
-    if truncation_warning:
-        # Append truncation info to the first record as metadata
-        records = list(records)
-        if records:
-            records[0] = {**records[0], "_truncation_warning": truncation_warning}
-        records = tuple(records)
 
-    # Build task (validated at construction)
+    # Build task with context_window_cap so the adapter produces proper
+    # RunMetadata warnings (WP6: no metadata injected into data rows)
     try:
         task = ForecastTask(
             mode=ForecastMode.STANDARD_UNIVARIATE,
@@ -238,6 +262,7 @@ if run_button and df is not None and not st.session_state.is_running:
             target_columns=(target_col,),
             prediction_length=int(horizon),
             quantile_levels=tuple(q_levels),
+            context_window_cap=CONTEXT_WINDOW_CAP,
         )
     except ValueError as e:
         st.error(f"Configuration error: {e}")
