@@ -1,0 +1,51 @@
+{
+  "$comment": "UNAUTHENTICATED TEMPLATE ONLY. Do not add real tokens or API keys here. Copy the server block you need into a local, git-ignored config or register it user-scoped in your MCP client. See docs/development/mcp_setup.md.",
+  "mcpServers": {
+    "github": {
+      "$comment": "Prefer the client's remote HTTP + OAuth GitHub MCP connection if supported. This Docker fallback is read-only by default.",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e",
+        "GITHUB_READ_ONLY",
+        "-e",
+        "GITHUB_TOOLSETS",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_MCP_TOKEN}",
+        "GITHUB_READ_ONLY": "1",
+        "GITHUB_TOOLSETS": "context,repos,pull_requests,actions,issues"
+      }
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@REPLACE_WITH_VERIFIED_VERSION"
+      ],
+      "env": {
+        "npm_config_cache": "D:\\Forecasting-Tool-Local\\cache\\npm",
+        "PLAYWRIGHT_BROWSERS_PATH": "D:\\Forecasting-Tool-Local\\cache\\playwright",
+        "TMP": "D:\\Forecasting-Tool-Local\\temp",
+        "TEMP": "D:\\Forecasting-Tool-Local\\temp"
+      }
+    },
+    "huggingface": {
+      "$comment": "Generate the exact client-specific URL/config from https://huggingface.co/settings/mcp while logged in. Do not hand-write this endpoint.",
+      "type": "http",
+      "url": "USE_THE_CLIENT_SPECIFIC_URL_GENERATED_BY_HUGGING_FACE_SETTINGS"
+    }
+  }
+}

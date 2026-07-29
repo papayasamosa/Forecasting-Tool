@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "verified_at_utc": null,
+  "notes": "Functional MCP verification (actual protocol queries: GitHub repo/CI read, Context7 doc lookups, Playwright UI inspection, Hugging Face Hub search) requires registering these servers in an authenticated MCP client session and was NOT performed as part of this commit -- no MCP servers were registered in this coding session. 'latest_known_at_setup' records versions resolved from the public npm registry on 2026-07-29 for informational purposes only; they are NOT a claim of functional verification. Do not treat this field as a tested pin. Replace 'version' with the actually-tested value and set 'verified_at_utc' only after running the checks in docs/development/mcp_setup.md and the acceptance tests in this task's spec.",
+  "servers": {
+    "github": {
+      "implementation": "github/github-mcp-server",
+      "transport": "remote-http-preferred (Docker fallback unavailable: Docker not found on this machine)",
+      "version": "REPLACE_AFTER_VERIFICATION",
+      "latest_known_at_setup": null
+    },
+    "context7": {
+      "implementation": "@upstash/context7-mcp (or hosted https://mcp.context7.com/mcp)",
+      "transport": "remote-http",
+      "version": "REPLACE_AFTER_VERIFICATION",
+      "latest_known_at_setup": "3.2.5"
+    },
+    "playwright": {
+      "implementation": "@playwright/mcp",
+      "transport": "stdio",
+      "version": "REPLACE_AFTER_VERIFICATION",
+      "latest_known_at_setup": "0.0.78"
+    },
+    "huggingface": {
+      "implementation": "Hugging Face hosted MCP (generated via https://huggingface.co/settings/mcp)",
+      "transport": "remote-http",
+      "version": "hosted-service",
+      "latest_known_at_setup": null
+    }
+  }
+}
