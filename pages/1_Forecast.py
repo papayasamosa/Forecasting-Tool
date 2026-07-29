@@ -1,7 +1,10 @@
 """Streamlit page: Forecast — Stage 0 (not yet Phase 1).
 
 The Chronos-2 model is loaded only when the user clicks "Run Forecast".
-The backend is cached at the process level via ``st.cache_resource``.
+The backend and the inference coordinator are both cached at the process
+level via ``st.cache_resource``; every forecast call is routed through
+``InferenceCoordinator.run`` so overlapping sessions queue behind a bounded
+semaphore instead of racing the shared cached backend directly.
 
 Memory-conscious design (WP4):
 - Only a SHA-256 identity of uploaded bytes is retained, not the raw bytes.
@@ -17,6 +20,7 @@ import hashlib
 import logging
 import os
 import sys
+import uuid
 from io import StringIO, BytesIO
 
 import streamlit as st
@@ -26,6 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (  # noqa: E402
     CONTEXT_WINDOW_CAP,
+    COORDINATOR_CAPACITY,
+    COORDINATOR_TIMEOUT_SECONDS,
     MAX_UPLOAD_SIZE_BYTES,
     QUANTILE_MIN,
     QUANTILE_MAX,
@@ -38,6 +44,10 @@ from src.schemas import (  # noqa: E402
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
     AdapterError,
+)
+from src.coordinator import (  # noqa: E402
+    InferenceCoordinator,
+    CoordinatorTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +100,27 @@ def _resolve_backend() -> Chronos2Adapter:
     return _get_forecast_backend()
 
 
+@st.cache_resource
+def _get_coordinator() -> InferenceCoordinator:
+    """Return a process-cached InferenceCoordinator (one per process, like the backend)."""
+    logger.info("Creating InferenceCoordinator (process-level cache).")
+    return InferenceCoordinator(capacity=COORDINATOR_CAPACITY, timeout_seconds=COORDINATOR_TIMEOUT_SECONDS)
+
+
+def _resolve_coordinator() -> InferenceCoordinator:
+    """Return the coordinator to use for this run.
+
+    Test-only seam mirroring ``_resolve_backend``: if
+    st.session_state["_test_coordinator_override"] is set, it is returned
+    instead of the process-cached coordinator. Production code paths never
+    set this session_state key.
+    """
+    override = st.session_state.get("_test_coordinator_override")
+    if override is not None:
+        return override
+    return _get_coordinator()
+
+
 def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
     """Parse uploaded CSV bytes once and return a DataFrame."""
     return pd.read_csv(BytesIO(file_bytes))
@@ -106,6 +137,7 @@ _DEFAULT_STATE = {
     "cached_df": None,           # parsed DataFrame reused across reruns
     "cached_df_hash": "",        # SHA-256 of uploaded bytes (identity only)
     "cached_columns": [],
+    "last_queue_seconds": 0.0,   # coordinator queue wait for the most recent run
 }
 for k, v in _DEFAULT_STATE.items():
     if k not in st.session_state:
@@ -307,12 +339,17 @@ if run_button and df is not None and not st.session_state.is_running:
         st.session_state.is_running = False
         st.stop()
 
-    # Get or create the process-cached backend (model loads lazily on first forecast)
+    # Get or create the process-cached backend and coordinator (model loads
+    # lazily on first forecast; the coordinator serialises concurrent
+    # sessions' inference calls through a bounded semaphore).
     try:
         backend = _resolve_backend()
-        # Run forecast
-        with st.spinner("Running Chronos-2 forecast (may load model on first call)..."):
-            result = backend.forecast(task)
+        coordinator = _resolve_coordinator()
+        request_id = str(uuid.uuid4())
+        # Run forecast under the coordinator so overlapping sessions queue
+        # rather than racing the shared cached backend directly.
+        with st.spinner("Running Chronos-2 forecast (may load model on first call, or queue behind another request)..."):
+            result = coordinator.run(backend.forecast, task, request_id=request_id)
             # Attach preprocessing metadata captured before materialisation
             import dataclasses
             old_meta = result.runtime_metadata
@@ -327,6 +364,18 @@ if run_button and df is not None and not st.session_state.is_running:
             result = dataclasses.replace(result, runtime_metadata=new_meta)
             st.session_state.forecast_result = result
             st.session_state.run_id = result.run_id
+            # Sanitised queue-time telemetry only (no coordinator internals).
+            queue_seconds = 0.0
+            for entry in coordinator.request_log:
+                if entry.get("request_id") == request_id:
+                    queue_seconds = entry.get("queue_seconds", 0.0)
+            st.session_state.last_queue_seconds = queue_seconds
+    except CoordinatorTimeoutError:
+        st.session_state.error_message = (
+            "The forecasting service is busy handling another request and did not "
+            "become available in time. Please try again in a moment."
+        )
+        logger.warning("Coordinator timeout waiting for inference slot", exc_info=True)
     except AdapterError as e:
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
@@ -377,6 +426,7 @@ if st.session_state.forecast_result:
 
     # Show timing breakdown
     with st.expander("⏱ Timing & model details", expanded=False):
+        st.write(f"- **Queue wait:** {st.session_state.last_queue_seconds:.3f}s")
         st.write(f"- **Model load:** {meta.model_load_seconds:.3f}s")
         st.write(f"- **Inference:** {meta.inference_seconds:.3f}s")
         st.write(f"- **Result conversion:** {meta.result_conversion_seconds:.3f}s")
