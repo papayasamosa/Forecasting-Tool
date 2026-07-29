@@ -32,10 +32,13 @@ Every evidence file includes:
 | `evidence_schema_version` | Schema version string |
 | `code_commit` | Git commit SHA |
 | `git_worktree_clean` | Whether the worktree was clean |
+| `git_traceability_error` | Sanitised error string if traceability failed |
 | `timestamp` | UTC ISO-8601 timestamp |
-| `cache_state` | `download_cold`, `process_cold_cached_weights`, or `same_process_warm` |
+| `initial_cache_state` | Run-level cache state: `download_cold` or `process_cold_cached_weights` |
+| `cold.cache_state` | Per-phase cache state (matches `initial_cache_state` for cold) |
+| `warm.cache_state` | Per-phase cache state: `same_process_warm` |
 | `configured_revision` | MODEL_REVISION from config |
-| `resolved_revision` | Actual revision loaded |
+| `model_revision` | Actual revision loaded |
 | `python_version` | Python version |
 | `package_versions` | Dict of key package versions |
 | `cpu_model` | CPU model string |

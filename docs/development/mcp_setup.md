@@ -140,10 +140,11 @@ integration until `D:` is available.
 
 ## Client-specific configuration location (Claude Code)
 
-- Project-scoped, shareable (unauthenticated only): `.mcp.json` at the repo
-  root — **do not commit this file with live secrets**; copy it from
-  `tools/mcp/mcp.example.json` and fill in your own local, git-ignored
-  overrides, or register servers as user-scoped instead.
+- **Root `.mcp.json` is git-ignored** per the repository's `.gitignore`.
+  Do **not** commit this file. Only the example template in
+  `tools/mcp/mcp.example.json` is tracked. Copy the relevant server block
+  into your own local, git-ignored `.mcp.json` or register it as
+  user-scoped.
 - User-scoped (preferred for anything authenticated): register via
   `claude mcp add --scope user ...` or through Claude Code's `/mcp` UI,
   which stores credentials outside the repository.

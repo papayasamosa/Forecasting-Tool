@@ -2,13 +2,24 @@
 """Stage 0.1 — Minimal Local Proof for Chronos-2.
 
 Usage:
-    python scripts/chronos2_smoke_test.py
+    python scripts/chronos2_smoke_test.py --initial-cache-state download_cold
+    python scripts/chronos2_smoke_test.py --initial-cache-state process_cold_cached_weights
 
 Emits a JSON evidence record alongside console output.
 Every failure phase attempts JSON evidence writing (WP7, P1-5).
+
+The ``--initial-cache-state`` argument is required for release-evidence mode.
+It describes the model-cache state before the run:
+
+- ``download_cold`` — First-ever run on a machine; no model files cached.
+- ``process_cold_cached_weights`` — Weight files already cached from a
+  previous run; cold phase still constructs the pipeline fresh.
+
+The warm phase always records ``same_process_warm``.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -54,18 +65,20 @@ def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
-def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
-                   cache_state: str = "unknown") -> dict:
+def run_smoke_test(
+    evidence_dir: str = DEFAULT_EVIDENCE_DIR,
+    initial_cache_state: str = "",
+) -> dict:
     """Run the smoke test and return/export a structured evidence dict.
 
     Parameters
     ----------
     evidence_dir : str
         Directory for evidence JSON output.
-    cache_state : str
-        One of ``download_cold``, ``process_cold_cached_weights``,
+    initial_cache_state : str
+        One of ``download_cold``, ``process_cold_cached_weights``, or
         ``same_process_warm``.  Describes the model-cache state before
-        the run (WP7).
+        the run.  Must be non-empty for release-evidence mode.
 
     Returns a JSON-serialisable dict with all measurements, or a dict
     with ``success=False`` and error details on failure.
@@ -87,7 +100,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
         "warm": {},
         "package_versions": {},
         "error": "",
-        "cache_state": cache_state,
+        "initial_cache_state": initial_cache_state,
     }
     # Capture traceability & machine info upfront
     evidence.update(capture_traceability())
@@ -145,6 +158,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
         "rss_mb": round(cold_rss, 1),
         "pipeline_call_count": adapter.pipeline_call_count,
         "model_revision": result.model_revision,
+        "cache_state": initial_cache_state,
     }
     evidence["model_revision"] = result.model_revision
 
@@ -172,6 +186,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
             "rss_mb": round(warm_rss, 1),
             "pipeline_call_count": adapter.pipeline_call_count,
             "pipeline_reused": warm_result.runtime_metadata.pipeline_reused,
+            "cache_state": "same_process_warm",
         }
 
         print(f"  Warm time      : {warm_time:.3f}s")
@@ -229,12 +244,57 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
     return evidence
 
 
-if __name__ == "__main__":
-    evidence_dir = os.environ.get(
-        "BENCHMARK_OUTPUT_DIR", DEFAULT_EVIDENCE_DIR
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the smoke test.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with ``initial_cache_state`` and
+        ``evidence_dir`` attributes.
+    """
+    parser = argparse.ArgumentParser(
+        description="Chronos-2 smoke test — Stage 0.1",
     )
+    parser.add_argument(
+        "--initial-cache-state",
+        type=str,
+        default=os.environ.get("SMOKE_INITIAL_CACHE_STATE", ""),
+        choices=["download_cold", "process_cold_cached_weights"],
+        help=(
+            "Model-cache state before the run. "
+            "Required for release-evidence mode. "
+            "Environment fallback: SMOKE_INITIAL_CACHE_STATE."
+        ),
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        type=str,
+        default=os.environ.get("BENCHMARK_OUTPUT_DIR", DEFAULT_EVIDENCE_DIR),
+        help="Directory for evidence JSON output.",
+    )
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    evidence_dir = args.evidence_dir
+    initial_cache_state = args.initial_cache_state
+
+    if not initial_cache_state:
+        print(
+            "ERROR: --initial-cache-state is required for release-evidence mode.\n"
+            "  Valid values: download_cold, process_cold_cached_weights\n"
+            "  Set via --initial-cache-state or SMOKE_INITIAL_CACHE_STATE env var.\n"
+            "  Warm phase always records same_process_warm."
+        )
+        sys.exit(1)
+
     try:
-        evidence = run_smoke_test(evidence_dir=evidence_dir)
+        evidence = run_smoke_test(
+            evidence_dir=evidence_dir,
+            initial_cache_state=initial_cache_state,
+        )
     except Exception as exc:
         # WP5: Wrap the invocation itself to catch pre-assignment failures
         # (fixture construction, task creation, package capture, etc.).
@@ -256,7 +316,7 @@ if __name__ == "__main__":
             "cold": {},
             "warm": {},
             "package_versions": {},
-            "cache_state": "unknown",
+            "initial_cache_state": "",
         }
         evidence.update(capture_traceability())
         evidence.update(machine_summary())

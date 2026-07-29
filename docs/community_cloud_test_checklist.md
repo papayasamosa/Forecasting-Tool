@@ -9,14 +9,14 @@ Use this checklist when deploying to Streamlit Community Cloud.
 - [ ] Python version: 3.12 (select in Cloud advanced settings)
 - [ ] `requirements.txt` pinned exactly
 - [ ] `requirements-dev.txt` NOT included (dev deps excluded from production)
-- [ ] CPU-only Torch: set `PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu` in Streamlit secrets
+- [ ] CPU-only Torch via `--extra-index-url` in `requirements.txt` (no Streamlit secrets needed)
 - [ ] Verify `torch.version.cuda is None` after build
 - [ ] Branch protection requires green CI and resolved review threads
 
 ## Dependency-install parity check
 
 - [ ] Cloud `pip install -r requirements.txt` must match CI install path
-- [ ] Both use `PIP_EXTRA_INDEX_URL` for CPU Torch (not a manual pre-install step)
+- [ ] Both use `--extra-index-url` directive from `requirements.txt` for CPU Torch
 - [ ] No CUDA packages installed
 - [ ] `pip check` passes
 

@@ -20,6 +20,16 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $pythonCmd = ""
 
 # ---- Step 1: Check the target drive ------------------------------------------
+$resolvedRoot = [System.IO.Path]::GetFullPath($LocalRoot)
+$driveLetter = [System.IO.Path]::GetPathRoot($resolvedRoot).TrimEnd('\')
+if ($driveLetter -ne 'D:') {
+    Write-Error "LocalRoot must be on drive D:. Got '$driveLetter' from '$LocalRoot'. Requirement: D:\Forecasting-Tool-Local"
+    exit 1
+}
+if ($resolvedRoot -ne 'D:\Forecasting-Tool-Local' -and $resolvedRoot -notlike 'D:\Forecasting-Tool-Local\*') {
+    Write-Error "LocalRoot must be under D:\Forecasting-Tool-Local. Got '$resolvedRoot'."
+    exit 1
+}
 $driveRoot = [System.IO.Path]::GetPathRoot($LocalRoot)
 if (-not (Test-Path $driveRoot)) {
     Write-Error "Drive for $LocalRoot not found ($driveRoot). Cannot create local environment."

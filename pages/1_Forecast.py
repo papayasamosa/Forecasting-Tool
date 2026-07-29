@@ -208,7 +208,7 @@ if run_button and df is not None and not st.session_state.is_running:
             raise ValueError("No quantile levels provided.")
         for q in q_levels:
             if q < QUANTILE_MIN or q > QUANTILE_MAX:
-                raise ValueError(f"Quantile must be strictly between {QUANTILE_MIN} and {QUANTILE_MAX}, got {q}")
+                raise ValueError(f"Quantile must be between {QUANTILE_MIN} and {QUANTILE_MAX} inclusive, got {q}")
     except ValueError as e:
         st.error(f"Invalid quantile levels: {e}")
         st.session_state.is_running = False
@@ -234,6 +234,30 @@ if run_button and df is not None and not st.session_state.is_running:
     except Exception as exc:
         logger.warning(f"Timestamp parse failed in column '{ts_col}': {type(exc).__name__}")
         st.error(f"Could not parse timestamps in column '{ts_col}'. Check the date format.")
+        st.session_state.is_running = False
+        st.stop()
+
+    # ------------------------------------------------------------------
+    # Missing timestamp detection (P0-3): detect NaT values after
+    # parsing.  Block the run before sorting or materialisation so rows
+    # containing invalid timestamps never reach the backend.
+    # ------------------------------------------------------------------
+    nat_mask = working_df[ts_col].isna()
+    nat_count = nat_mask.sum()
+    if nat_count > 0:
+        total_rows = len(working_df)
+        if nat_count == total_rows:
+            st.error(
+                f"The timestamp column '{ts_col}' contains no valid dates "
+                f"({nat_count} of {total_rows} rows are blank or unparseable). "
+                "Check that the column contains parseable date values."
+            )
+        else:
+            st.error(
+                f"The timestamp column '{ts_col}' has {nat_count} invalid "
+                f"row(s) out of {total_rows}. "
+                "Remove or fix the invalid timestamps and try again."
+            )
         st.session_state.is_running = False
         st.stop()
 

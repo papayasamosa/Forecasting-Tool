@@ -42,6 +42,7 @@ test_results/
 .env.mcp
 .env.mcp.*
 !.env.mcp.example
+.mcp.json
 .mcp.local.json
 .mcp.local.toml
 .mcp-auth/

@@ -7,20 +7,20 @@
       "sha256": null,
       "cache_state": null,
       "code_commit": null,
-      "notes": "Populate after current-head local evidence rerun (Gate B2)"
+      "notes": "Populate after current-head local evidence rerun (Gate B2). Use publish_evidence.py script."
     },
     "local_token_present_summary": {
       "filename": null,
       "sha256": null,
       "code_commit": null,
-      "notes": "Populate after current-head token-present check"
+      "notes": "Populate after current-head token-present check. Use publish_evidence.py script."
     },
     "cloud_summary": {
       "filename": null,
       "sha256": null,
       "code_commit": null,
-      "notes": "Populate after Community Cloud deployment (Gate C)"
+      "notes": "Populate after Community Cloud deployment (Gate C). Use publish_evidence.py script."
     }
   },
-  "instructions": "After each evidence run, move the sanitised JSON into this directory, update sha256 with the file hash, set last_updated, and record the code_commit."
+  "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand."
 }

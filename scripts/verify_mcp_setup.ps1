@@ -133,7 +133,8 @@ else {
 # ---- .gitignore coverage for local MCP secret/state files --------------------
 $gitignorePath = Join-Path $repoRoot ".gitignore"
 $requiredPatterns = @(
-    ".env.mcp", ".mcp.local.json", ".mcp-auth/", ".mcp-state/", ".mcp-logs/", ".playwright-mcp/"
+    ".env.mcp", ".mcp.local.json", ".mcp-auth/", ".mcp-state/", ".mcp-logs/", ".playwright-mcp/",
+    ".mcp.json"
 )
 if (Test-Path $gitignorePath) {
     $gitignoreContent = Get-Content $gitignorePath -Raw
@@ -174,21 +175,79 @@ finally {
     Pop-Location
 }
 
+# ---- Stricter D-drive LocalRoot enforcement (WP6) ----------------------------
+$resolvedRoot = [System.IO.Path]::GetFullPath($LocalRoot)
+$driveLetter = [System.IO.Path]::GetPathRoot($resolvedRoot).TrimEnd('\')
+if ($driveLetter -ne 'D:') {
+    Add-Result "LocalRoot drive is D:" "FAIL" "LocalRoot '$resolvedRoot' is on drive '$driveLetter'. Requirement: D:\Forecasting-Tool-Local"
+}
+else {
+    $expectedPrefix = 'D:\Forecasting-Tool-Local'
+    if ($resolvedRoot -eq $expectedPrefix -or $resolvedRoot -like "$expectedPrefix\*") {
+        Add-Result "LocalRoot under D:\Forecasting-Tool-Local" "PASS" $resolvedRoot
+    }
+    else {
+        Add-Result "LocalRoot under D:\Forecasting-Tool-Local" "FAIL" "LocalRoot '$resolvedRoot' is not under $expectedPrefix"
+    }
+}
+
+# ---- Root .mcp.json safety policy ---------------------------------------------
+# Policy A: .mcp.json must be git-ignored. Only the example template in
+# tools/mcp/ should be tracked. This prevents accidental credential commits.
+$rootMcpJson = Join-Path $repoRoot ".mcp.json"
+if (Test-Path $rootMcpJson) {
+    Push-Location $repoRoot
+    try {
+        git check-ignore -q -- ".mcp.json" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Add-Result "Root .mcp.json is git-ignored" "PASS"
+        }
+        else {
+            Add-Result "Root .mcp.json is git-ignored" "FAIL" ".mcp.json exists at repo root but is NOT ignored. Move credentials to a git-ignored file or user-scoped config."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+else {
+    Add-Result "Root .mcp.json is absent (safe)" "PASS" "No .mcp.json at repo root — only example template in tools/mcp/"
+}
+
 # ---- No obvious secret literals in tracked MCP files --------------------------
 # Flags likely token/key literals by pattern; never prints the matched value.
+# Uses `git ls-files` to discover tracked MCP-related files dynamically rather
+# than a hardcoded list, so new MCP files cannot bypass the scan silently.
 $secretPatterns = @(
     'gh[pousr]_[A-Za-z0-9]{20,}',
+    'github_pat_[A-Za-z0-9_]{20,}',
     'hf_[A-Za-z0-9]{20,}',
     'sk-[A-Za-z0-9]{20,}',
     '"[A-Za-z0-9+/]{40,}={0,2}"'
 )
-$trackedMcpFiles = @(
-    (Join-Path $repoRoot "tools\mcp\mcp.example.json"),
-    (Join-Path $repoRoot "tools\mcp\mcp-versions.json"),
-    (Join-Path $repoRoot "tools\mcp\README.md"),
-    (Join-Path $repoRoot "docs\development\mcp_setup.md"),
-    (Join-Path $repoRoot "docs\development\mcp_usage_policy.md")
-)
+$mcpFileExtensions = @('.json', '.md', '.toml', '.yaml', '.yml', '.env.example', '.ps1')
+$trackedMcpFiles = @()
+Push-Location $repoRoot
+try {
+    $allTracked = git ls-files 2>$null
+    foreach ($f in $allTracked) {
+        $ext = [System.IO.Path]::GetExtension($f).ToLower()
+        $dirName = [System.IO.Path]::GetDirectoryName($f)
+        if ($mcpFileExtensions -contains $ext -and ($f -like '*mcp*' -or $f -like '*context7*' -or $f -like '*playwright*' -or $f -like '*huggingface*')) {
+            $trackedMcpFiles += (Join-Path $repoRoot $f)
+        }
+    }
+    # Also add the root .mcp.json if it exists and is tracked (shouldn't be, but check anyway)
+    if (Test-Path $rootMcpJson) {
+        $ignored = (& git check-ignore -q ".mcp.json" 2>$null; $LASTEXITCODE -eq 0)
+        if (-not $ignored) {
+            $trackedMcpFiles += $rootMcpJson
+        }
+    }
+}
+finally {
+    Pop-Location
+}
 $secretHits = @()
 foreach ($file in $trackedMcpFiles) {
     if (-not (Test-Path $file)) { continue }
