@@ -16,7 +16,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Pipeline reuse (real Chronos-2 model) | ✅ Verified (prior code — must rerun on current head) |
-| Pull-request CI | ✅ Green (120 tests, 90.19% coverage as of PR #10) |
+| Pull-request CI | ✅ Green (175 tests, 90.28% coverage as of PR #13) |
 | `main` branch CI (post-merge) | ⏳ Verified for PR-head only; push-to-main run pending confirmation |
 | Context capping before record materialisation | ✅ Implemented |
 | Truncation warnings displayed in UI | ✅ Implemented |
@@ -36,6 +36,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Phase 1 features | 🔜 Planned (after all Stage 0 gates pass) |
 | MCP developer tooling scaffold | ✅ Optional, documentation-only, not functionally verified |
 | Evidence and MCP-security review closure | ✅ Merged (PR #10) |
+| Evidence publication hardening | ✅ Merged (PR #11) |
 | Cache state labelling (smoke + benchmark) | ✅ Implemented |
 | Git traceability (trustworthy repo-root detection) | ✅ Implemented |
 | Blank/missing timestamp rejection | ✅ Implemented |
@@ -43,6 +44,11 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | MCP static CI verification | ✅ Implemented |
 | Self-contained CPU Torch dependency declaration | ✅ Implemented (repository-contained) |
 | Windows machine CPU model detection | ✅ Implemented (platform-aware) |
+| Current-head local evidence bundle | ✅ Completed (PR #12) |
+| ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
+| Community Cloud deployment | ⏳ Pending Gate C completion |
+| Phase 1 data ingestion module | ✅ Core merged (PR #13) but not integrated |
+| Streamlit page | ⏳ Still Stage 0 — not yet consuming Phase 1 ingestion |
 
 ## Repository Structure
 
@@ -182,49 +188,31 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 | Gate | Requirement | Status | Sequence |
 |------|-------------|--------|----------|
 | A8 | Evidence and MCP-security closure | ✅ Merged (PR #10) | 1 |
-| A9 | Evidence publication hardening | ✅ Merged (this PR) | 2 |
-| B2 | Current-head local evidence rerun | ⏳ Pending | 3 — after A9 merges |
-| C | Community Cloud technical spike | ⏳ Pending | 4 — collect evidence on Cloud |
-| D | ADR-001 decision | ⏳ Pending | 5 — after Cloud evidence collected |
-| E | Phase 1 start | 🔜 After all gates pass | 6 |
+| A9 | Evidence publication hardening | ✅ Merged (PR #11) | 2 |
+| B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
+| C | Community Cloud technical spike | ⏳ Pending — needs completion | 4 |
+| D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 5 |
+| E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 6 |
 
-> **Sequence:** deploy technical spike → collect evidence → decide ADR.
-> The benchmark report and checklist previously suggested Cloud deployment is pending
-> ADR, which is circular. Correct order: 1) deploy technical spike, 2) collect evidence,
-> 3) decide ADR.
+> **Correct sequence:** deploy to Cloud → collect evidence → decide ADR.
+> Phase 1 ingestion core was merged before Stage 0 passed. Additional Phase 1
+> feature work is paused until the Cloud gate is completed.
 
-## Current status after PR #11 (Evidence publication hardening)
+## Current status
 
-This PR hardens evidence publication before the real-model rerun:
+- **Local evidence (Gate B2)**: Completed and committed. See `docs/evidence/stage0/`.
+- **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
+  is still empty. This is the current blocker.
+- **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
+- **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
+  Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
+- **Evidence defects**: This PR corrects remaining PR #11 and PR #12 findings.
 
-- **Evidence schema v2** — typed dataclasses for smoke, benchmark suite, model artifact,
-  local bundle, and Cloud evidence with per-type validation methods
-- **Benchmark suite envelope** — benchmark JSON is now a validated object with
-  `suite_passed`, `code_commit`, `initial_cache_state`, and `scenarios` list
-- **Strict publication validation** — publisher rejects failed evidence, wrong token
-  state, revision mismatches, missing scenarios, missing cache states, unclean
-  worktree, and bare lists (old format)
-- **Local bundle builder** — `scripts/build_local_stage0_bundle.py` validates and
-  combines all component evidence into a single bundle
-- **Cache-state verification** — `inspect_hf_cache()` checks Hugging Face cache
-  before runs (snapshot present/absent, file count, bytes)
-- **Smoke failure traceability** — warm failures record `cache_state=same_process_warm`;
-  top-level failures preserve parsed `initial_cache_state`
-- **Recursive sanitisation** — all string values in lists, nested lists, and tuples
-  are sanitised for personal paths
-- **Model-artifact schema** — records snapshot commit, shard count, per-file SHA-256,
-  and manifest hash
-- **CI dependency assertions** — verifies no NVIDIA/CUDA packages installed
-- **28 evidence tests** — validate schemas, publisher rules, sanitisation, bundles
-
-> **Evidence manifest is empty** until the current-head local evidence rerun (Gate B2).
+> **Evidence manifest** contains the local Stage 0 bundle hash. CI verifies its
+> integrity on every run. Cloud evidence entry remains null until Gate C.
 > Direct dependency pins are not a complete lock — capture a lock file after
-> Cloud success. Direct pins plus the extra-index directive do not by themselves
-> guarantee transitive reproducibility.
-> Community Cloud may process `requirements.txt` with `uv` before falling back to
-> `pip`. The `--extra-index-url` directive in `requirements.txt` has been verified
-> with pip on CI but still needs an actual Cloud build to confirm the platform's
-> resolver selects the CPU wheel.
+> Cloud success. Community Cloud may process `requirements.txt` with `uv`
+> before falling back to `pip`.
 
 ## Developer MCP integrations (optional)
 
