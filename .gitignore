@@ -37,3 +37,18 @@ smoke_test_*.json
 test_output/
 test_results/
 *.test_output
+
+# Local MCP configuration and secrets (developer tooling only, see tools/mcp/)
+.env.mcp
+.env.mcp.*
+!.env.mcp.example
+.mcp.local.json
+.mcp.local.toml
+.mcp-auth/
+.mcp-state/
+.mcp-logs/
+
+# Playwright MCP local state
+.playwright-mcp/
+playwright-report/
+test-results/

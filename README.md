@@ -179,6 +179,21 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 > ADR, which is circular. Correct order: 1) deploy technical spike, 2) collect evidence,
 > 3) decide ADR.
 
+## Developer MCP integrations (optional)
+
+This repository includes optional configuration for **Model Context
+Protocol (MCP)** servers — developer tooling that gives a coding assistant
+(e.g. Claude Code) read access to repository/CI state, current library
+documentation, a disposable browser for inspecting the running Streamlit
+app, and Hugging Face Hub metadata while you work.
+
+MCP is **not required to run the forecasting application** and is not a
+Python or Streamlit dependency. See
+[`docs/development/mcp_setup.md`](docs/development/mcp_setup.md) for setup
+and [`docs/development/mcp_usage_policy.md`](docs/development/mcp_usage_policy.md)
+for the read-only-by-default usage policy. Unauthenticated templates live
+in [`tools/mcp/`](tools/mcp/).
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
