@@ -25,7 +25,7 @@
     },
     "local_stage0_bundle": {
       "filename": "evidence_local_stage0_bundle_20260729_162933_791384_10def382.json",
-      "sha256": "c921cc32ad3c0edb39b4ab9d8e1774feb3f1683abab9951f6649a620aedf445f",
+      "sha256": "76b43ef014ce8ebc21406116b4522e72c0936379a0ce239cf880324aa8f308ea",
       "code_commit": "3710e6b3051262ac19e4dcaef17cf58b71540cae",
       "evidence_type": "local_stage0_bundle",
       "notes": "Published 20260729_162933"
