@@ -42,6 +42,12 @@ CROSS_LEARNING: bool = False
 MODEL_LOAD_TIMEOUT: int = 300
 
 # ---------------------------------------------------------------------------
+# Inference coordinator (process-wide semaphore serialising forecast calls)
+# ---------------------------------------------------------------------------
+COORDINATOR_CAPACITY: int = 1
+COORDINATOR_TIMEOUT_SECONDS: int = 300
+
+# ---------------------------------------------------------------------------
 # Supported quantile range
 # ---------------------------------------------------------------------------
 QUANTILE_MIN: float = 0.01

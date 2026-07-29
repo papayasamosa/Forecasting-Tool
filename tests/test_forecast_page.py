@@ -61,6 +61,35 @@ class _ExplodingBackend:
         raise AssertionError("forecast() must not be called on this code path")
 
 
+class _SpyCoordinator:
+    """Records how it was invoked, then delegates to the real fn.
+
+    Used to prove the production page routes forecasts through the
+    coordinator rather than calling backend.forecast() directly.
+    """
+
+    def __init__(self):
+        self.run_calls: list[tuple] = []
+        self.request_log: list[dict] = []
+
+    def run(self, fn, *args, request_id: str = "", **kwargs):
+        self.run_calls.append((fn, args, kwargs, request_id))
+        result = fn(*args, **kwargs)
+        self.request_log.append({
+            "request_id": request_id,
+            "queue_seconds": 0.0,
+        })
+        return result
+
+
+class _TimeoutCoordinator:
+    """Always raises CoordinatorTimeoutError without calling fn."""
+
+    def run(self, fn, *args, request_id: str = "", **kwargs):
+        from src.coordinator import CoordinatorTimeoutError
+        raise CoordinatorTimeoutError("simulated: no inference slot available")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -164,6 +193,127 @@ class TestForecastPageAppTest:
         at.run()
         assert not at.exception
         assert fake_pipeline.call_count == 2
+
+
+@pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
+class TestForecastPageCoordinatorIntegration:
+    """P0-2 closure: production forecasts must be routed through
+    InferenceCoordinator.run(), not called directly on the backend."""
+
+    def test_production_path_calls_coordinator(self):
+        """A forecast run must go through coordinator.run(), not
+        backend.forecast() called directly."""
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        from tests.test_adapter_contract import FakePipeline
+
+        fake_pipeline = FakePipeline()
+        adapter = Chronos2Adapter(pipeline_or_provider=fake_pipeline)
+        spy = _SpyCoordinator()
+
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = adapter
+        at.session_state["_test_coordinator_override"] = spy
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert len(spy.run_calls) == 1
+        fn, args, kwargs, request_id = spy.run_calls[0]
+        assert fn == adapter.forecast
+        assert request_id  # non-empty — unique per request
+        assert fake_pipeline.call_count == 1, "backend must be invoked exactly once, via the coordinator"
+
+    def test_second_run_goes_through_coordinator_again(self):
+        """Two sequential runs must each be routed through the coordinator
+        with distinct request IDs (pipeline still constructed only once)."""
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        from tests.test_adapter_contract import FakePipeline
+
+        fake_pipeline = FakePipeline()
+        adapter = Chronos2Adapter(pipeline_or_provider=fake_pipeline)
+        spy = _SpyCoordinator()
+
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = adapter
+        at.session_state["_test_coordinator_override"] = spy
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        at.button[0].click()
+        at.run()
+
+        assert not at.exception
+        assert len(spy.run_calls) == 2
+        request_ids = {call[3] for call in spy.run_calls}
+        assert len(request_ids) == 2, "each run must get a unique request_id"
+        assert fake_pipeline.call_count == 2
+
+    def test_coordinator_timeout_is_recoverable(self):
+        """A CoordinatorTimeoutError must surface as a recoverable error,
+        re-enable the run button, and preserve the user's configuration."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.session_state["_test_coordinator_override"] = _TimeoutCoordinator()
+        at.run()
+
+        at.text_input[0].set_value("0.2, 0.5, 0.8")
+        at.number_input[0].set_value(21)
+        at.run()
+
+        at.button[0].click()
+        at.run()
+
+        assert not at.exception
+        assert at.session_state["is_running"] is False
+        assert at.session_state["forecast_result"] is None
+        assert "busy" in at.error[0].value.lower()
+        # Configuration must be preserved after the recoverable error.
+        assert at.text_input[0].value == "0.2, 0.5, 0.8"
+        assert at.number_input[0].value == 21
+
+    def test_semaphore_releases_after_backend_failure_via_page(self):
+        """If the coordinator-wrapped call fails, the page must recover and
+        a subsequent run must still be able to go through the coordinator
+        (proves the page does not leave the coordinator in a stuck state)."""
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        from tests.test_adapter_contract import FakePipeline
+
+        class _FailingThenOkPipeline(FakePipeline):
+            def __init__(self):
+                super().__init__()
+                self._first = True
+
+            def predict_df(self, *args, **kwargs):
+                if self._first:
+                    self._first = False
+                    raise RuntimeError("simulated backend failure")
+                return super().predict_df(*args, **kwargs)
+
+        pipeline = _FailingThenOkPipeline()
+        adapter = Chronos2Adapter(pipeline_or_provider=pipeline)
+        spy = _SpyCoordinator()
+
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = adapter
+        at.session_state["_test_coordinator_override"] = spy
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert at.session_state["is_running"] is False
+        assert at.session_state["error_message"] != ""
+
+        # A second run must succeed — the (real, non-spy) coordinator design
+        # releases its semaphore in `finally`, and this spy proves the page
+        # attempts the call again rather than short-circuiting.
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert at.session_state["forecast_result"] is not None
+        assert len(spy.run_calls) == 2
 
 
 @pytest.mark.skipif(not HAS_STREAMLIT, reason="streamlit not installed")

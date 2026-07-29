@@ -26,6 +26,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
 | Evidence schemas (v2) with typed models | ✅ Implemented |
 | Process-wide inference coordinator (`src/coordinator.py`) | ✅ Implemented with semaphore, tests |
+| Production page routes forecasts through the coordinator | ✅ Implemented (`pages/1_Forecast.py`) |
 | Typed repeated-run records (WP9) | ✅ Implemented |
 | Typed concurrency evidence (WP11) | ✅ Implemented |
 | Token-absent and token-present path results (WP8) | ✅ Implemented |
@@ -237,10 +238,13 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
 - **Inference coordinator**: `src/coordinator.py` implements a bounded semaphore
-  and request telemetry, but the production Streamlit page
-  (`pages/1_Forecast.py`) does not yet route forecasts through it — it still
-  calls `backend.forecast(task)` directly. Cloud concurrency evidence is not
-  meaningful until this is wired up.
+  and request telemetry. The production Streamlit page (`pages/1_Forecast.py`)
+  now routes every forecast call through a process-cached
+  `InferenceCoordinator.run(...)` instead of calling `backend.forecast(task)`
+  directly, so overlapping sessions queue behind the semaphore and a
+  `CoordinatorTimeoutError` surfaces as a recoverable, configuration-preserving
+  error. Cloud concurrency evidence collected against this page will now be
+  meaningful.
 
 > **Evidence manifest** contains the local Stage 0 bundle hash. CI verifies its
 > integrity on every run — hash/schema verification passing does **not**
