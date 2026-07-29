@@ -44,16 +44,7 @@ jobs:
           python -m compileall app.py pages/ src/ scripts/ tests/ -q
 
       - name: Verify manifest verifier and bundle builder are not empty
-        run: |
-          python -c "
-import os
-for f in ['scripts/verify_evidence_manifest.py', 'scripts/build_local_stage0_bundle.py']:
-    sz = os.path.getsize(f)
-    if sz == 0:
-        print(f'ERROR: {f} is empty (0 bytes)')
-        exit(1)
-    print(f'{f}: {sz} bytes - OK')
-"
+        run: python -c "import os; [exit(print(f'ERROR: {f} is empty (0 bytes)') or 1) for f in ['scripts/verify_evidence_manifest.py','scripts/build_local_stage0_bundle.py'] if os.path.getsize(f)==0]; print('Scripts non-empty OK')"
 
       - name: Lint with flake8 (all executable paths)
         run: |
