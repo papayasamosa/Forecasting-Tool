@@ -52,7 +52,7 @@ for f in ['scripts/verify_evidence_manifest.py', 'scripts/build_local_stage0_bun
     if sz == 0:
         print(f'ERROR: {f} is empty (0 bytes)')
         exit(1)
-    print(f'{f}: {sz} bytes — OK')
+    print(f'{f}: {sz} bytes - OK')
 "
 
       - name: Lint with flake8 (all executable paths)
