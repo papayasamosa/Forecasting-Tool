@@ -1066,6 +1066,102 @@ class TestManifestVerifierSubprocess:
 
 
 # ---------------------------------------------------------------------------
+# New typed record tests (WP4, WP8, WP9, WP11, WP12)
+# ---------------------------------------------------------------------------
+
+
+class TestCachePreflight:
+    def test_defaults(self):
+        from src.evidence_schemas import CachePreflight
+        cp = CachePreflight()
+        errors = cp.validate()
+        assert errors == []
+
+    def test_invalid_source_rejected(self):
+        from src.evidence_schemas import CachePreflight
+        cp = CachePreflight(cache_source="invalid_path")
+        errors = cp.validate()
+        assert any("cache_source" in e for e in errors)
+
+    def test_valid_source_accepted(self):
+        from src.evidence_schemas import CachePreflight, CACHE_SOURCE_EXPLICIT
+        cp = CachePreflight(cache_source=CACHE_SOURCE_EXPLICIT)
+        errors = cp.validate()
+        assert errors == []
+
+
+class TestTokenPathResult:
+    def test_failed_without_error_rejected(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(attempted=True, success=False, error_code="")
+        errors = tp.validate()
+        assert any("error_code" in e for e in errors)
+
+    def test_failed_with_error_accepted(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(attempted=True, success=False, error_code="HTTP_403")
+        errors = tp.validate()
+        assert errors == []
+
+
+class TestRepeatedRun:
+    def test_valid_run_passes(self):
+        from src.evidence_schemas import RepeatedRun
+        r = RepeatedRun(run_number=1, success=True, total_seconds=10.0,
+                        started_at_utc="2026-01-01T00:00:00",
+                        completed_at_utc="2026-01-01T00:00:10",
+                        resolved_revision="rev1")
+        errors = r.validate()
+        assert errors == []
+
+    def test_missing_revision_rejected(self):
+        from src.evidence_schemas import RepeatedRun
+        r = RepeatedRun(run_number=1, success=True, total_seconds=10.0,
+                        started_at_utc="2026-01-01T00:00:00",
+                        completed_at_utc="2026-01-01T00:00:10")
+        errors = r.validate()
+        assert any("resolved_revision" in e for e in errors)
+
+
+class TestConcurrencyRequest:
+    def test_empty_request_id_rejected(self):
+        from src.evidence_schemas import ConcurrencyRequest
+        cr = ConcurrencyRequest()
+        errors = cr.validate()
+        assert any("request_id" in e for e in errors)
+
+    def test_valid_request_passes(self):
+        from src.evidence_schemas import ConcurrencyRequest
+        cr = ConcurrencyRequest(request_id="req1", success=True,
+                                inference_seconds=1.0, queue_seconds=0.0,
+                                start_time_utc="2026-01-01T00:00:00",
+                                completion_time_utc="2026-01-01T00:00:01")
+        errors = cr.validate()
+        assert errors == []
+
+    def test_negative_queue_rejected(self):
+        from src.evidence_schemas import ConcurrencyRequest
+        cr = ConcurrencyRequest(request_id="req1", success=True,
+                                inference_seconds=1.0, queue_seconds=-1.0)
+        errors = cr.validate()
+        assert any("queue_seconds" in e for e in errors)
+
+
+class TestAcceptanceTestResult:
+    def test_empty_name_rejected(self):
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult()
+        errors = at.validate()
+        assert any("test_name" in e for e in errors)
+
+    def test_valid_result_passes(self):
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult(test_name="valid_csv", passed=True)
+        errors = at.validate()
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # Coordinator tests (WP10)
 # ---------------------------------------------------------------------------
 

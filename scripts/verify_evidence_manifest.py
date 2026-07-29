@@ -19,6 +19,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -196,7 +197,32 @@ def verify_manifest() -> int:
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # Avoid using module globals in default args to prevent
+    # "used prior to global declaration" SyntaxError.
+    parser = argparse.ArgumentParser(
+        description="Verify integrity of the evidence manifest and all referenced files.",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=str,
+        default="",
+        help="Path to the evidence manifest JSON (default: docs/evidence/stage0/evidence_manifest.json)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        type=str,
+        default="",
+        help="Path to the evidence directory (default: docs/evidence/stage0)",
+    )
+    args = parser.parse_args(argv)
+
+    global EVIDENCE_DIR, MANIFEST_PATH  # noqa: PLW0603
+    if args.manifest_path:
+        MANIFEST_PATH = Path(args.manifest_path)
+    if args.evidence_dir:
+        EVIDENCE_DIR = Path(args.evidence_dir)
+
     return verify_manifest()
 
 
