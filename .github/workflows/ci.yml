@@ -43,6 +43,18 @@ jobs:
         run: |
           python -m compileall app.py pages/ src/ scripts/ tests/ -q
 
+      - name: Verify manifest verifier and bundle builder are not empty
+        run: |
+          python -c "
+import os
+for f in ['scripts/verify_evidence_manifest.py', 'scripts/build_local_stage0_bundle.py']:
+    sz = os.path.getsize(f)
+    if sz == 0:
+        print(f'ERROR: {f} is empty (0 bytes)')
+        exit(1)
+    print(f'{f}: {sz} bytes — OK')
+"
+
       - name: Lint with flake8 (all executable paths)
         run: |
           flake8 app.py pages/ src/ scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -59,37 +71,10 @@ jobs:
         run: |
           pytest tests/ -v \
             --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
-            --cov=src.data_ingestion --cov=src.evidence_schemas \
+            --cov=src.data_ingestion --cov=src.evidence_schemas --cov=src.telemetry \
+            --cov=scripts.publish_evidence --cov=scripts.verify_evidence_manifest \
             --cov-report=term-missing --cov-fail-under=80
 
       - name: Verify evidence manifest hashes
         run: |
-          python -c "
-import json, hashlib, os
-manifest_path = 'docs/evidence/stage0/evidence_manifest.json'
-with open(manifest_path) as f:
-    manifest = json.load(f)
-errors = []
-for key, entry in manifest.get('files', {}).items():
-    fname = entry.get('filename')
-    expected_sha = entry.get('sha256')
-    if fname and expected_sha:
-        fpath = os.path.join('docs/evidence/stage0', fname)
-        if not os.path.exists(fpath):
-            errors.append(f'{key}: file not found: {fpath}')
-            continue
-        h = hashlib.sha256()
-        with open(fpath, 'rb') as f:
-            for chunk in iter(lambda: f.read(65536), b''):
-                h.update(chunk)
-        actual_sha = h.hexdigest()
-        if actual_sha != expected_sha:
-            errors.append(f'{key}: SHA-256 mismatch for {fname}')
-            errors.append(f'  expected: {expected_sha}')
-            errors.append(f'  actual:   {actual_sha}')
-if errors:
-    for e in errors:
-        print(f'ERROR: {e}')
-    exit(1)
-print('All evidence manifest hashes verified.')
-"
+          python scripts/verify_evidence_manifest.py

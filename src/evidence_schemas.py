@@ -238,6 +238,8 @@ class BenchmarkScenarioRecord:
     cpu_logical_cores: int = 0
     ram_total_gb: float = 0.0
     git_traceability_error: str = ""
+    # Producer-emitted field — accepted for round-trip compatibility (WP7)
+    evidence_schema_version: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -367,11 +369,15 @@ class ModelArtifactEvidence:
     configured_revision: str = ""
     resolved_revision: str = ""
     snapshot_commit: str = ""
-    shard_count: int = 0  # total files in snapshot (config + weights)
-    weight_shard_count: int = 0  # number of model weight files only
+    # Artifact inventory — unambiguous field naming (WP8)
+    snapshot_file_count: int = 0  # total files in snapshot (config + weights)
+    weight_file_count: int = 0  # number of model weight files only
+    weight_shard_count: int = 0  # number of weight shards (safetensors parts)
     total_bytes: int = 0
     files: list[ModelArtifactFile] = dataclasses.field(default_factory=list)
     manifest_sha256: str = ""
+    # Deprecated alias (backward compat) — use snapshot_file_count in new evidence
+    shard_count: int = 0
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -396,6 +402,14 @@ class ModelArtifactEvidence:
             errors.append("files: empty — no weight files recorded")
         if not self.manifest_sha256:
             errors.append("manifest_sha256: empty")
+        # Sanity checks on file counts — use snapshot_file_count as canonical
+        sc = self.snapshot_file_count if self.snapshot_file_count > 0 else self.shard_count
+        if sc <= 0:
+            errors.append("snapshot_file_count: must be >= 1")
+        if self.weight_file_count < 0:
+            errors.append("weight_file_count: must be >= 0")
+        if self.weight_shard_count < 0:
+            errors.append("weight_shard_count: must be >= 0")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -459,6 +473,45 @@ class LocalStage0Bundle:
                 if rc and rc != self.code_commit:
                     errors.append(f"commit mismatch in '{run_name}': expected '{self.code_commit}', got '{rc}'")
 
+            # Verify consistent model_id, configured_revision, model_revision (P1-2)
+            model_ids: set[str] = set()
+            configured_revisions: set[str] = set()
+            model_revisions: set[str] = set()
+            for run_name, run_data in self.runs.items():
+                if not isinstance(run_data, dict):
+                    continue
+                mid = run_data.get("model_id", "")
+                if mid:
+                    model_ids.add(mid)
+                cr = run_data.get("configured_revision", "")
+                if cr:
+                    configured_revisions.add(cr)
+                mr = run_data.get("model_revision", "")
+                if mr:
+                    model_revisions.add(mr)
+
+            if len(model_ids) > 1:
+                errors.append(f"inconsistent model_id across runs: {model_ids}")
+            if len(configured_revisions) > 1:
+                errors.append(f"inconsistent configured_revision across runs: {configured_revisions}")
+            if len(model_revisions) > 1:
+                errors.append(f"inconsistent model_revision across runs: {model_revisions}")
+
+            # Also check model_artifact revisions
+            if isinstance(self.model_artifact, dict):
+                ma_cr = self.model_artifact.get("configured_revision", "")
+                ma_mr = self.model_artifact.get("resolved_revision", "")
+                if ma_cr and configured_revisions and ma_cr not in configured_revisions:
+                    errors.append(
+                        f"model_artifact configured_revision '{ma_cr}' not in "
+                        f"run configured_revisions {configured_revisions}"
+                    )
+                if ma_mr and model_revisions and ma_mr not in model_revisions:
+                    errors.append(
+                        f"model_artifact resolved_revision '{ma_mr}' not in "
+                        f"run model_revisions {model_revisions}"
+                    )
+
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -490,11 +543,21 @@ class CloudEvidence:
     warm: SmokePhase = dataclasses.field(default_factory=SmokePhase)
     concurrent_users: int = 0
     queue_time_seconds: float = 0.0
+    queue_time_per_request: list[float] = dataclasses.field(default_factory=list)
+    inference_time_per_request: list[float] = dataclasses.field(default_factory=list)
+    sync_mode: str = ""  # "none" | "lock" | "semaphore" | "remote_queue"
+    timeout_result: str = ""
     error: str = ""
     # Dependency verification
     pip_check_passed: bool = False
     torch_cuda_none: bool = False
     nvidia_packages_absent: bool = False
+    # Repeated-run sequence
+    repeated_runs: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    # Deployment details
+    deployed_url: str = ""
+    deployed_commit: str = ""
+    deployment_time_utc: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -531,21 +594,65 @@ class CloudEvidence:
             errors.append("torch_cuda_none: false — CPU-only Torch required")
         if not self.nvidia_packages_absent:
             errors.append("nvidia_packages_absent: false — no NVIDIA packages allowed")
-        # Cold phase must have timing
+        # Cold phase (WP5): must have valid cache state and timing
         if self.cold.total_seconds <= 0:
             errors.append("cold.total_seconds: missing — cold forecast required")
-        if not self.cold.cache_state:
-            errors.append("cold.cache_state: empty")
-        # Warm phase must have timing and reuse
+        if self.cold.cache_state not in {CACHE_STATE_DOWNLOAD_COLD, CACHE_STATE_PROCESS_COLD}:
+            errors.append(
+                f"cold.cache_state: must be '{CACHE_STATE_DOWNLOAD_COLD}' or "
+                f"'{CACHE_STATE_PROCESS_COLD}', got '{self.cold.cache_state}'"
+            )
+        if self.cold.pipeline_call_count != 1:
+            errors.append(f"cold.pipeline_call_count: expected 1, got {self.cold.pipeline_call_count}")
+        # Warm phase (WP5): must be same_process_warm with reuse
         if self.warm.total_seconds <= 0:
             errors.append("warm.total_seconds: missing — warm forecast required")
-        if not self.warm.cache_state:
-            errors.append("warm.cache_state: empty")
+        if self.warm.cache_state != CACHE_STATE_WARM:
+            errors.append(
+                f"warm.cache_state: must be '{CACHE_STATE_WARM}', "
+                f"got '{self.warm.cache_state}'"
+            )
         if not self.warm.pipeline_reused:
             errors.append("warm.pipeline_reused: false — pipeline must be reused")
-        # Concurrency must be recorded
-        if self.concurrent_users <= 0:
-            errors.append("concurrent_users: must be at least 1")
+        if self.warm.pipeline_call_count != 1:
+            errors.append(f"warm.pipeline_call_count: expected 1, got {self.warm.pipeline_call_count}")
+        if self.warm.model_load_seconds > 0.5:
+            errors.append(
+                f"warm.model_load_seconds: expected near-zero (reused pipeline), "
+                f"got {self.warm.model_load_seconds}"
+            )
+        # Revision consistency
+        if self.configured_revision and self.model_revision and self.configured_revision != self.model_revision:
+            errors.append(
+                f"revision mismatch: configured '{self.configured_revision}', "
+                f"resolved '{self.model_revision}'"
+            )
+        # Concurrency gate (WP6): must have >= 2 concurrent users
+        if self.concurrent_users < 2:
+            errors.append(
+                f"concurrent_users: expected >= 2, got {self.concurrent_users} "
+                f"— concurrency measurement required before public sharing"
+            )
+        if self.concurrent_users >= 2:
+            if not self.queue_time_per_request:
+                errors.append("queue_time_per_request: empty — must record queue time per request")
+            if not self.inference_time_per_request:
+                errors.append("inference_time_per_request: empty — must record inference time per request")
+            if len(self.queue_time_per_request) < self.concurrent_users:
+                errors.append(
+                    f"queue_time_per_request: expected at least {self.concurrent_users} entries, "
+                    f"got {len(self.queue_time_per_request)}"
+                )
+            if len(self.inference_time_per_request) < self.concurrent_users:
+                errors.append(
+                    f"inference_time_per_request: expected at least {self.concurrent_users} entries, "
+                    f"got {len(self.inference_time_per_request)}"
+                )
+        # Repeated runs (P2-2): at least 3 if success
+        if self.success and len(self.repeated_runs) < 3:
+            errors.append(
+                f"repeated_runs: expected at least 3, got {len(self.repeated_runs)}"
+            )
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -569,11 +676,32 @@ _EVIDENCE_TYPE_MAP: dict[str, type] = {
 }
 
 
+def _filter_known_fields(data: dict[str, Any], cls: type) -> dict[str, Any]:
+    """Filter a dict to only include fields that exist in the dataclass.
+
+    Silently drops producer-only fields to allow round-trip compatibility
+    without mutating the input (deep copy is handled by caller).
+    Unknown fields that are not in the dataclass are logged via a warning.
+    """
+    if not hasattr(cls, "__dataclass_fields__"):
+        return data
+    known = set(cls.__dataclass_fields__.keys())
+    unknown = set(data.keys()) - known
+    if unknown:
+        import warnings
+        warnings.warn(
+            f"evidence_from_dict: dropping unknown fields from {cls.__name__}: "
+            f"{sorted(unknown)}", UserWarning, stacklevel=2
+        )
+    return {k: v for k, v in data.items() if k in known}
+
+
 def evidence_from_dict(data: dict[str, Any]) -> Any:
     """Deserialise a dict into the appropriate evidence type based on
     ``evidence_type`` field.
 
     Operates on a deep copy — does NOT mutate the caller's data (WP3).
+    Unknown producer-only fields are silently dropped with a warning.
 
     Raises ``ValueError`` for unknown types or missing evidence_type.
     """
@@ -589,31 +717,37 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
     # Recursively convert nested dicts into typed objects
     if etype == "smoke_test":
         if "cold" in d and isinstance(d["cold"], dict):
-            d["cold"] = SmokePhase(**d["cold"])
+            d["cold"] = SmokePhase(**_filter_known_fields(d["cold"], SmokePhase))
         if "warm" in d and isinstance(d["warm"], dict):
-            d["warm"] = SmokePhase(**d["warm"])
+            d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
         if "machine" in d and isinstance(d["machine"], dict):
-            d["machine"] = MachineSummary(**d["machine"])
+            d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
     elif etype == "benchmark_suite":
         if "scenarios" in d:
             scenarios = []
             for sc in d["scenarios"]:
-                if "samples" in sc:
-                    scr = copy.deepcopy(sc)
-                    scr["samples"] = [BenchmarkSampleRecord(**s) for s in scr["samples"]]
-                else:
-                    scr = copy.deepcopy(sc)
-                scenarios.append(BenchmarkScenarioRecord(**scr))
+                scr = copy.deepcopy(sc)
+                if "samples" in scr:
+                    scr["samples"] = [
+                        BenchmarkSampleRecord(**_filter_known_fields(s, BenchmarkSampleRecord))
+                        for s in scr["samples"]
+                    ]
+                scenarios.append(
+                    BenchmarkScenarioRecord(**_filter_known_fields(scr, BenchmarkScenarioRecord))
+                )
             d["scenarios"] = scenarios
     elif etype == "model_artifact":
         if "files" in d:
-            d["files"] = [ModelArtifactFile(**f) for f in d["files"]]
+            d["files"] = [
+                ModelArtifactFile(**_filter_known_fields(f, ModelArtifactFile))
+                for f in d["files"]
+            ]
     elif etype == "cloud_stage0":
         if "cold" in d and isinstance(d["cold"], dict):
-            d["cold"] = SmokePhase(**d["cold"])
+            d["cold"] = SmokePhase(**_filter_known_fields(d["cold"], SmokePhase))
         if "warm" in d and isinstance(d["warm"], dict):
-            d["warm"] = SmokePhase(**d["warm"])
+            d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
         if "machine" in d and isinstance(d["machine"], dict):
-            d["machine"] = MachineSummary(**d["machine"])
+            d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
 
-    return cls(**d)
+    return cls(**_filter_known_fields(d, cls))
