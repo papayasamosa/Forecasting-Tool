@@ -25,10 +25,18 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Reusable telemetry module (`src/telemetry.py`) | ✅ Implemented |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
 | Evidence schemas (v2) with typed models | ✅ Implemented |
+| Process-wide inference coordinator (`src/coordinator.py`) | ✅ Implemented with semaphore, tests |
+| Typed repeated-run records (WP9) | ✅ Implemented |
+| Typed concurrency evidence (WP11) | ✅ Implemented |
+| Token-absent and token-present path results (WP8) | ✅ Implemented |
+| Cloud acceptance-test evidence (WP12) | ✅ Schema complete |
+| Cloud evidence bound to deployed commit (WP6) | ✅ Validated |
+| Cloud resource/memory evidence (WP7) | ✅ Required |
 | Evidence publisher (sanitise, copy, manifest) | ✅ Implemented |
-| Bundle builder with validation | ✅ Implemented |
-| Manifest integrity verifier | ✅ Implemented |
-| Cache preflight enforcement | ✅ Implemented |
+| Bundle builder with recursive typed validation (WP3) | ✅ Implemented |
+| Manifest deep verifier (internal JSON validation) (WP2) | ✅ Implemented |
+| Cache preflight evidence required (WP4) | ✅ Schema + bundle enforce |
+| Suite-level resolved revision (WP5) | ✅ BenchmarkSuiteEvidence |
 | HF cache discovery (huggingface_hub constant) | ✅ Implemented |
 | Cloud evidence validation (strict states, concurrency gate) | ✅ Implemented |
 | Snapshot/weight file count metadata | ✅ Implemented |
@@ -40,8 +48,9 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Windows machine CPU model detection | ✅ Implemented |
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
-| Real Chronos-2 local evidence | ⏳ Requires current-head rerun after this PR |
-| Community Cloud deployment | ⏳ Pending (Gate C) |
+| Historical Chronos-2 local evidence (commit ee8f89...) | ✅ Collected prior |
+| Current release-candidate local evidence | ⏳ Pending — requires final rerun after this PR |
+| Community Cloud deployment (Gate C) | ⏳ Pending — checklist blank |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
@@ -59,7 +68,8 @@ src/
     schemas.py          # Canonical typed schemas with invariant validation
     telemetry.py        # Reusable telemetry helpers (memory, HF cache, evidence writing)
     benchmarking.py     # Stage 0 benchmark harness
-    evidence_schemas.py # Typed evidence models (v2) with validation (WP5, WP6, WP8)
+    coordinator.py      # Process-wide inference coordinator (WP10)
+    evidence_schemas.py # Typed evidence models (v2) with validation
     data_ingestion.py   # Phase 1 ingestion core (paused, not integrated)
     forecasting/
         base.py         # ForecastBackend protocol

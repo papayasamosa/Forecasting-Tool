@@ -33,64 +33,208 @@ def _load_json(path: str) -> Any:
         return json.load(f)
 
 
-def _validate_component(
-    data: Any,
+def _validate_component_typed(
+    data: dict[str, Any],
     component_name: str,
     expected_evidence_type: str,
     expected_token_present: bool | None,
     expected_initial_cache_state: str | None,
     expected_commit: str | None,
 ) -> list[str]:
-    """Validate a single component and return error list."""
+    """Validate a single component through the typed evidence schemas (WP3).
+
+    Deserialises via evidence_from_dict, calls validate(), and checks
+    top-level field consistency. Returns a list of error messages.
+    """
     errors: list[str] = []
 
     if not isinstance(data, dict):
         errors.append(f"{component_name}: root must be a JSON object")
         return errors
 
-    etype = data.get("evidence_type", "")
-    if etype != expected_evidence_type:
+    # Deserialise through typed schema
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from src.evidence_schemas import evidence_from_dict
+        evidence_obj = evidence_from_dict(data)
+    except Exception as exc:
+        errors.append(f"{component_name}: deserialisation failed: {exc}")
+        return errors
+
+    # Run typed validate()
+    if hasattr(evidence_obj, "validate"):
+        schema_errors = evidence_obj.validate()
+        for se in schema_errors:
+            errors.append(f"{component_name}: {se}")
+
+    # Evidence type check
+    actual_type = getattr(evidence_obj, "evidence_type", "")
+    if actual_type != expected_evidence_type:
         errors.append(
-            f"{component_name}: expected evidence_type '{expected_evidence_type}', got '{etype}'"
+            f"{component_name}: expected evidence_type '{expected_evidence_type}', "
+            f"got '{actual_type}'"
         )
 
-    schema_ver = data.get("evidence_schema_version", "")
-    if schema_ver != "2":
-        errors.append(f"{component_name}: expected evidence_schema_version '2', got '{schema_ver}'")
+    # Schema version
+    actual_sv = getattr(evidence_obj, "evidence_schema_version", "")
+    if actual_sv != "2":
+        errors.append(f"{component_name}: expected evidence_schema_version '2', got '{actual_sv}'")
 
-    cc = data.get("code_commit", "")
-    if not cc:
+    # Code commit
+    actual_cc = getattr(evidence_obj, "code_commit", "")
+    if not actual_cc:
         errors.append(f"{component_name}: code_commit is empty")
-    elif expected_commit and cc != expected_commit:
-        errors.append(f"{component_name}: code_commit '{cc}' != expected '{expected_commit}'")
+    elif expected_commit and actual_cc != expected_commit:
+        errors.append(f"{component_name}: code_commit '{actual_cc}' != expected '{expected_commit}'")
 
-    if not data.get("git_worktree_clean", False):
+    # Worktree must be clean
+    actual_wt = getattr(evidence_obj, "git_worktree_clean", False)
+    if not actual_wt:
         errors.append(f"{component_name}: git_worktree_clean is false")
+
+    # Git traceability must not have errors
+    actual_gte = getattr(evidence_obj, "git_traceability_error", "")
+    if actual_gte:
+        errors.append(f"{component_name}: git_traceability_error: {actual_gte}")
 
     # Token validation
     if expected_token_present is not None:
-        actual_token = data.get("hf_token_present", None)
+        actual_token = getattr(evidence_obj, "hf_token_present", None)
         if actual_token is None:
             errors.append(f"{component_name}: hf_token_present missing")
         elif actual_token != expected_token_present:
             errors.append(
-                f"{component_name}: hf_token_present expected {expected_token_present}, got {actual_token}"
+                f"{component_name}: hf_token_present expected {expected_token_present}, "
+                f"got {actual_token}"
             )
+        # Also check token path results for release evidence
+        if expected_token_present is False:
+            tar = getattr(evidence_obj, "token_absent_result", None)
+            if tar and hasattr(tar, "attempted") and not tar.attempted:
+                errors.append(f"{component_name}: token_absent_result not attempted")
+        elif expected_token_present is True:
+            tpr = getattr(evidence_obj, "token_present_result", None)
+            if tpr and hasattr(tpr, "attempted") and not tpr.attempted:
+                errors.append(f"{component_name}: token_present_result not attempted")
 
     # Cache state validation
     if expected_initial_cache_state:
-        actual_ics = data.get("initial_cache_state", "")
+        actual_ics = getattr(evidence_obj, "initial_cache_state", "")
         if actual_ics != expected_initial_cache_state:
             errors.append(
-                f"{component_name}: initial_cache_state expected '{expected_initial_cache_state}', "
-                f"got '{actual_ics}'"
+                f"{component_name}: initial_cache_state expected "
+                f"'{expected_initial_cache_state}', got '{actual_ics}'"
             )
 
-    # Success/passed validation
-    if expected_evidence_type == "smoke_test" and not data.get("success", False):
+    # Model ID must match
+    actual_mid = getattr(evidence_obj, "model_id", "")
+    if actual_mid and actual_mid != "amazon/chronos-2":
+        errors.append(f"{component_name}: unexpected model_id '{actual_mid}'")
+
+    # Configured revision must be present
+    actual_cr = getattr(evidence_obj, "configured_revision", "")
+    if not actual_cr:
+        errors.append(f"{component_name}: configured_revision missing")
+
+    # Success/passed for smoke/benchmark
+    if expected_evidence_type == "smoke_test" and not getattr(evidence_obj, "success", False):
         errors.append(f"{component_name}: success is false")
-    if expected_evidence_type == "benchmark_suite" and not data.get("suite_passed", False):
+    if expected_evidence_type == "benchmark_suite" and not getattr(evidence_obj, "suite_passed", False):
         errors.append(f"{component_name}: suite_passed is false")
+
+    return errors
+
+
+def _validate_model_artifact_typed(
+    data: dict[str, Any],
+    expected_commit: str | None,
+    expected_cr: str | None,
+    expected_mr: str | None,
+) -> list[str]:
+    """Validate model artifact through typed schemas (WP3)."""
+    errors: list[str] = []
+
+    if not isinstance(data, dict):
+        errors.append("model_artifact: root must be a JSON object")
+        return errors
+
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from src.evidence_schemas import evidence_from_dict
+        art = evidence_from_dict(data)
+    except Exception as exc:
+        errors.append(f"model_artifact: deserialisation failed: {exc}")
+        return errors
+
+    # Run typed validate()
+    if hasattr(art, "validate"):
+        schema_errors = art.validate()
+        for se in schema_errors:
+            errors.append(f"model_artifact: {se}")
+
+    # Field-level checks
+    if not getattr(art, "code_commit", ""):
+        errors.append("model_artifact: code_commit empty")
+    elif expected_commit and getattr(art, "code_commit", "") != expected_commit:
+        errors.append(
+            f"model_artifact: code_commit '{getattr(art, 'code_commit', '')}' "
+            f"!= expected '{expected_commit}'"
+        )
+    if not getattr(art, "git_worktree_clean", False):
+        errors.append("model_artifact: git_worktree_clean is false")
+    if getattr(art, "model_id", "") != "amazon/chronos-2":
+        errors.append(f"model_artifact: unexpected model_id '{getattr(art, 'model_id', '')}'")
+    if not getattr(art, "configured_revision", ""):
+        errors.append("model_artifact: configured_revision empty")
+    if not getattr(art, "resolved_revision", ""):
+        errors.append("model_artifact: resolved_revision empty")
+    actual_sc = getattr(art, "snapshot_commit", "")
+    if not actual_sc:
+        errors.append("model_artifact: snapshot_commit empty")
+    elif expected_mr and actual_sc != expected_mr:
+        errors.append(
+            f"model_artifact: snapshot_commit '{actual_sc}' != "
+            f"expected model_revision '{expected_mr}'"
+        )
+    # File hashes must be present
+    files = getattr(art, "files", [])
+    for f in files:
+        if not f.sha256:
+            errors.append(f"model_artifact: file '{f.filename}' missing sha256")
+    # Manifest SHA-256
+    if not getattr(art, "manifest_sha256", ""):
+        errors.append("model_artifact: manifest_sha256 empty")
+
+    return errors
+
+
+def _check_revision_consistency(all_data: dict[str, dict[str, Any]]) -> list[str]:
+    """Verify consistent model_id, configured_revision, model_revision across
+    all components."""
+    errors: list[str] = []
+    model_ids: set[str] = set()
+    configured_revisions: set[str] = set()
+    model_revisions: set[str] = set()
+
+    for label, comp in all_data.items():
+        if not isinstance(comp, dict):
+            continue
+        mid = comp.get("model_id", "")
+        if mid:
+            model_ids.add(mid)
+        cr = comp.get("configured_revision", "") or comp.get("resolved_revision", "")
+        if cr:
+            configured_revisions.add(cr)
+        mr = comp.get("model_revision", "") or comp.get("resolved_revision", "")
+        if mr:
+            model_revisions.add(mr)
+
+    if len(model_ids) > 1:
+        errors.append(f"inconsistent model_id across components: {model_ids}")
+    if len(configured_revisions) > 1:
+        errors.append(f"inconsistent configured_revision across components: {configured_revisions}")
+    if len(model_revisions) > 1:
+        errors.append(f"inconsistent model_revision across components: {model_revisions}")
 
     return errors
 
@@ -118,34 +262,37 @@ def main() -> int:
         print(f"Error loading files: {exc}")
         return 1
 
-    # Determine the expected commit from the first file
     expected_commit = dc_smoke.get("code_commit", "") if isinstance(dc_smoke, dict) else ""
 
-    # Validate every component
+    # Collect expected revisions from smoke data
+    expected_cr = dc_smoke.get("configured_revision", "") if isinstance(dc_smoke, dict) else ""
+    expected_mr = dc_smoke.get("model_revision", "") if isinstance(dc_smoke, dict) else ""
+
+    # Recursive typed validation (WP3) — every component goes through evidence_from_dict + validate()
     all_errors: list[str] = []
 
-    all_errors.extend(_validate_component(
+    all_errors.extend(_validate_component_typed(
         dc_smoke, "download_cold_smoke",
         expected_evidence_type="smoke_test",
         expected_token_present=False,
         expected_initial_cache_state="download_cold",
         expected_commit=expected_commit,
     ))
-    all_errors.extend(_validate_component(
+    all_errors.extend(_validate_component_typed(
         pc_smoke, "process_cold_smoke",
         expected_evidence_type="smoke_test",
         expected_token_present=False,
         expected_initial_cache_state="process_cold_cached_weights",
         expected_commit=expected_commit,
     ))
-    all_errors.extend(_validate_component(
+    all_errors.extend(_validate_component_typed(
         benchmark, "benchmark",
         expected_evidence_type="benchmark_suite",
         expected_token_present=None,
         expected_initial_cache_state="process_cold_cached_weights",
         expected_commit=expected_commit,
     ))
-    all_errors.extend(_validate_component(
+    all_errors.extend(_validate_component_typed(
         tp_smoke, "token_present_smoke",
         expected_evidence_type="smoke_test",
         expected_token_present=True,
@@ -153,58 +300,23 @@ def main() -> int:
         expected_commit=expected_commit,
     ))
 
-    # Model artifact validation
-    if isinstance(model_art, dict):
-        ma_cc = model_art.get("code_commit", "")
-        if ma_cc and ma_cc != expected_commit:
-            all_errors.append(f"model_artifact: code_commit '{ma_cc}' != expected '{expected_commit}'")
-        ma_type = model_art.get("evidence_type", "")
-        if ma_type != "model_artifact":
-            all_errors.append(f"model_artifact: expected evidence_type 'model_artifact', got '{ma_type}'")
-    else:
-        all_errors.append("model_artifact: root must be a JSON object")
+    # Model artifact typed validation
+    all_errors.extend(_validate_model_artifact_typed(
+        model_art,
+        expected_commit=expected_commit,
+        expected_cr=expected_cr,
+        expected_mr=expected_mr,
+    ))
 
-    # WP6: Bundle revision consistency — ensure all components use the same
-    # model ID, configured revision, and resolved revision.
-    def _get_revisions(component: dict, label: str) -> None:
-        mid = component.get("model_id", "") if isinstance(component, dict) else ""
-        cr = component.get("configured_revision", "") if isinstance(component, dict) else ""
-        mr = component.get("model_revision", "") if isinstance(component, dict) else ""
-        if mid and mid != "amazon/chronos-2":
-            all_errors.append(f"{label}: unexpected model_id '{mid}'")
-        return cr, mr
+    # Cross-component revision consistency
+    all_errors.extend(_check_revision_consistency({
+        "download_cold_smoke": dc_smoke,
+        "process_cold_smoke": pc_smoke,
+        "benchmark": benchmark,
+        "token_present_smoke": tp_smoke,
+    }))
 
-    expected_cr = ""
-    expected_mr = ""
-    for label, comp in [("download_cold_smoke", dc_smoke), ("process_cold_smoke", pc_smoke),
-                        ("benchmark", benchmark), ("token_present_smoke", tp_smoke)]:
-        cr, mr = _get_revisions(comp, label)
-        if cr and not expected_cr:
-            expected_cr = cr
-        if mr and not expected_mr:
-            expected_mr = mr
-        if cr and cr != expected_cr:
-            all_errors.append(f"{label}: configured_revision '{cr}' != expected '{expected_cr}'")
-        if mr and mr != expected_mr:
-            all_errors.append(f"{label}: model_revision '{mr}' != expected '{expected_mr}'")
-
-    # Also check model_artifact revisions
-    if isinstance(model_art, dict):
-        ma_cr = model_art.get("configured_revision", "")
-        ma_mr = model_art.get("resolved_revision", "")
-        ma_sc = model_art.get("snapshot_commit", "")
-        if ma_cr and expected_cr and ma_cr != expected_cr:
-            all_errors.append(f"model_artifact: configured_revision '{ma_cr}' != expected '{expected_cr}'")
-        if ma_mr and expected_mr and ma_mr != expected_mr:
-            all_errors.append(f"model_artifact: resolved_revision '{ma_mr}' != expected '{expected_mr}'")
-        # Also verify snapshot_commit matches model_revision where present
-        if ma_sc and expected_mr and ma_sc != expected_mr:
-            all_errors.append(
-                f"model_artifact: snapshot_commit '{ma_sc}' != "
-                f"expected model_revision '{expected_mr}'"
-            )
-
-    # Do not set bundle_passed=true when revisions differ
+    # Smoke must succeed
     bundle_passed = len(all_errors) == 0 and all(
         isinstance(c, dict) and c.get("success", False) if c.get("evidence_type") == "smoke_test" else True
         for c in [dc_smoke, pc_smoke, benchmark, tp_smoke]

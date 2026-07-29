@@ -4,9 +4,10 @@
 Validates:
 - Every non-null file entry exists on disk
 - SHA-256 hash matches committed bytes
-- evidence_type matches expected values
-- code_commit is non-empty
-- evidence_schema_version matches
+- Filename/hash null consistency (both null = unpublished; one null = error)
+- Resolved path stays inside docs/evidence/stage0/
+- Internal evidence_type, evidence_schema_version, code_commit match manifest
+- Runs the matching typed schema validator on each file
 
 Usage:
     python scripts/verify_evidence_manifest.py
@@ -48,6 +49,56 @@ def _compute_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _validate_referenced_json(fpath: Path, expected_type: str, expected_commit: str) -> list[str]:
+    """Parse a referenced JSON file and validate internal metadata.
+
+    Returns a list of error messages (empty = valid).
+    """
+    errors: list[str] = []
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"cannot parse {fpath.name}: {exc}")
+        return errors
+
+    if not isinstance(data, dict):
+        errors.append(f"{fpath.name}: root must be a JSON object")
+        return errors
+
+    # Internal evidence_schema_version
+    internal_sv = data.get("evidence_schema_version", "")
+    if internal_sv != "2":
+        errors.append(f"{fpath.name}: internal evidence_schema_version expected '2', got '{internal_sv}'")
+
+    # Internal evidence_type
+    internal_et = data.get("evidence_type", "")
+    if internal_et != expected_type:
+        errors.append(f"{fpath.name}: internal evidence_type expected '{expected_type}', got '{internal_et}'")
+
+    # Internal code_commit
+    internal_cc = data.get("code_commit", "")
+    if expected_commit and internal_cc and internal_cc != expected_commit:
+        errors.append(
+            f"{fpath.name}: internal code_commit '{internal_cc}' "
+            f"!= manifest code_commit '{expected_commit}'"
+        )
+
+    # Run typed schema validator
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from src.evidence_schemas import evidence_from_dict
+        evidence_obj = evidence_from_dict(data)
+        if hasattr(evidence_obj, "validate"):
+            schema_errors = evidence_obj.validate()
+            for se in schema_errors:
+                errors.append(f"{fpath.name}: schema validation: {se}")
+    except Exception as exc:
+        errors.append(f"{fpath.name}: schema validation error: {exc}")
+
+    return errors
+
+
 def verify_manifest() -> int:
     """Verify the evidence manifest and return exit code (0=ok, 1=fail)."""
     if not MANIFEST_PATH.exists():
@@ -79,24 +130,38 @@ def verify_manifest() -> int:
         code_commit = entry.get("code_commit")
         evidence_type = entry.get("evidence_type")
 
-        # Skip null entries (not yet populated)
-        if fname is None or expected_sha is None:
+        # Consistency: both null = deliberately unpublished; one null = error
+        if (fname is None) != (expected_sha is None):
+            errors.append(
+                f"{key}: inconsistent null state — filename={fname}, sha256={expected_sha}. "
+                f"Both must be null (unpublished) or both populated."
+            )
+            continue
+
+        # Skip deliberately unpublished entries
+        if fname is None and expected_sha is None:
+            continue
+
+        # Resolve path and verify it stays inside evidence directory
+        resolved = (EVIDENCE_DIR / fname).resolve()
+        if not str(resolved).startswith(str(EVIDENCE_DIR.resolve())):
+            errors.append(f"{key}: resolved path {resolved} is outside {EVIDENCE_DIR}")
             continue
 
         # File must exist
-        fpath = EVIDENCE_DIR / fname
-        if not fpath.exists():
-            errors.append(f"{key}: file not found: {fpath}")
+        if not resolved.exists():
+            errors.append(f"{key}: file not found: {resolved}")
             continue
 
         # SHA-256 must match
-        actual_sha = _compute_sha256(fpath)
+        actual_sha = _compute_sha256(resolved)
         if actual_sha != expected_sha:
             errors.append(
                 f"{key}: SHA-256 mismatch for {fname}\n"
                 f"  expected: {expected_sha}\n"
                 f"  actual:   {actual_sha}"
             )
+            # Continue to report all errors even if hash fails
 
         # evidence_type validation
         expected_type = EXPECTED_TYPES.get(key)
@@ -113,6 +178,11 @@ def verify_manifest() -> int:
         if not code_commit:
             errors.append(f"{key}: code_commit is empty or null")
 
+        # Parse and validate internal JSON content
+        if expected_type and fname:
+            internal_errors = _validate_referenced_json(resolved, expected_type, code_commit or "")
+            errors.extend(internal_errors)
+
     # Summary
     if errors:
         print("Evidence manifest verification FAILED:")
@@ -120,7 +190,7 @@ def verify_manifest() -> int:
             print(f"  [FAIL] {err}")
         return 1
 
-    print("[OK] Evidence manifest verified — all files match their hashes.")
+    print("[OK] Evidence manifest verified — all files match their hashes and internal metadata.")
     print(f"   Manifest: {MANIFEST_PATH.name}")
     print(f"   Files checked: {sum(1 for e in files.values() if isinstance(e, dict) and e.get('filename'))}")
     return 0
