@@ -15,12 +15,15 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | CI (GitHub Actions) | ✅ Implemented |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
-| Pipeline reuse (real Chronos-2 model) | ⏳ Requires model download |
-| `main` branch CI | ⚠️ Currently under repair — see PR #6 |
-| Real Chronos-2 model smoke test | ⏳ Requires model download |
-| Local benchmark suite | ⏳ Requires model download |
+| Pipeline reuse (real Chronos-2 model) | ✅ Verified (warm 0.27s, pipeline_call_count=1) |
+| `main` branch CI | ✅ Green (93 tests, 91.53% coverage) |
+| Real Chronos-2 model smoke test | ✅ Completed (cold 23.5s, warm 0.27s) |
+| Local benchmark suite | ✅ Completed (4/4 scenarios pass) |
+| Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
+| Model file checksum | ✅ `ddcda3c7508bf2528087723e98a20707cc04b7f370ae275a9fd88078ddba4f42` |
 | Community Cloud deployment | ⏳ Pending |
 | ADR-001 inference backend | ⏳ Pending (awaiting Cloud evidence) |
+| `main` branch CI | ✅ Green (93 tests, 91.53% coverage) |
 | Phase 1 features | 🔜 Planned (see below) |
 
 ## Repository Structure

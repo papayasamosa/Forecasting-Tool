@@ -14,7 +14,7 @@ MODEL_ID: str = "amazon/chronos-2"
 # Hugging Face revision/commit pinned for this model. "main" is a placeholder
 # until the Stage 0 measured-evidence run resolves and records an exact
 # snapshot commit to pin (see docs/stage_0_benchmark_report.md).
-MODEL_REVISION: str = "main"
+MODEL_REVISION: str = "29ec3766d36d6f73f0696f85560a422f50e8498c"
 
 # ---------------------------------------------------------------------------
 # Forecast defaults

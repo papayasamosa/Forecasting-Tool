@@ -1,5 +1,7 @@
 #! /usr/bin/env python3
-"""Run the Stage 0 benchmark suite and write results to D:\Forecasting-Tool-Local\benchmarks.
+"""Run the Stage 0 benchmark suite and write results.
+
+Output directory defaults to D:\\Forecasting-Tool-Local\\benchmarks on Windows.
 
 Exits non-zero when the required suite fails (WP2).
 
