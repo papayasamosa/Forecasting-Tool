@@ -15,9 +15,6 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | CI (GitHub Actions) | ✅ Implemented |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
-| Pipeline reuse (real Chronos-2 model) | ✅ Verified (prior code — must rerun on current head) |
-| Pull-request CI | ✅ Green (175 tests, 90.28% coverage as of PR #13) |
-| `main` branch CI (post-merge) | ⏳ Verified for PR-head only; push-to-main run pending confirmation |
 | Context capping before record materialisation | ✅ Implemented |
 | Truncation warnings displayed in UI | ✅ Implemented |
 | Warm reuse enforced in benchmark gate | ✅ Implemented |
@@ -26,29 +23,29 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Summary calculations exclude aggregate | ✅ Implemented |
 | Smoke evidence written on all failure paths | ✅ Implemented |
 | Reusable telemetry module (`src/telemetry.py`) | ✅ Implemented |
-| Real Chronos-2 model smoke test | ⏳ Prior evidence exists (cold ~23.5s, warm ~0.27s); must rerun on current head |
-| Local benchmark suite | ⏳ Prior evidence exists (4/4 scenarios pass); must rerun on current head |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
-| Model file checksum scope recorded | ✅ SHA-256 recorded (must verify file name, size, shard count on current head) |
-| Community Cloud deployment | ⏳ Pending (not yet Cloud-proven) |
-| ADR-001 inference backend | ⏳ Pending (requires Cloud deployment first, then evidence, then decision) |
-| Current-head local evidence rerun | ⏳ Pending (Gate B2 — requires clean current-head commit first) |
-| Phase 1 features | 🔜 Planned (after all Stage 0 gates pass) |
-| MCP developer tooling scaffold | ✅ Optional, documentation-only, not functionally verified |
-| Evidence and MCP-security review closure | ✅ Merged (PR #10) |
-| Evidence publication hardening | ✅ Merged (PR #11) |
-| Cache state labelling (smoke + benchmark) | ✅ Implemented |
+| Evidence schemas (v2) with typed models | ✅ Implemented |
+| Evidence publisher (sanitise, copy, manifest) | ✅ Implemented |
+| Bundle builder with validation | ✅ Implemented |
+| Manifest integrity verifier | ✅ Implemented |
+| Cache preflight enforcement | ✅ Implemented |
+| HF cache discovery (huggingface_hub constant) | ✅ Implemented |
+| Cloud evidence validation (strict states, concurrency gate) | ✅ Implemented |
+| Snapshot/weight file count metadata | ✅ Implemented |
+| Producer/schema alignment (allowlist + warning) | ✅ Implemented |
 | Git traceability (trustworthy repo-root detection) | ✅ Implemented |
 | Blank/missing timestamp rejection | ✅ Implemented |
-| MCP fine-grained PAT detection | ✅ Implemented |
 | MCP static CI verification | ✅ Implemented |
-| Self-contained CPU Torch dependency declaration | ✅ Implemented (repository-contained) |
-| Windows machine CPU model detection | ✅ Implemented (platform-aware) |
-| Current-head local evidence bundle | ✅ Completed (PR #12) |
+| Self-contained CPU Torch dependency declaration | ✅ Implemented |
+| Windows machine CPU model detection | ✅ Implemented |
+| Evidence manifest hash verification (CI) | ✅ Implemented |
+| Functional evidence CLI tests (subprocess) | ✅ Implemented |
+| Real Chronos-2 local evidence | ⏳ Requires current-head rerun after this PR |
+| Community Cloud deployment | ⏳ Pending (Gate C) |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
-| Community Cloud deployment | ⏳ Pending Gate C completion |
-| Phase 1 data ingestion module | ✅ Core merged (PR #13) but not integrated |
-| Streamlit page | ⏳ Still Stage 0 — not yet consuming Phase 1 ingestion |
+| Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
+| Phase 1 features | 🔜 After Stage 0 gates pass |
+| MCP developer tooling | ✅ Optional, not functionally verified |
 
 ## Repository Structure
 
@@ -60,28 +57,36 @@ pages/
 src/
     config.py           # Centralised configuration
     schemas.py          # Canonical typed schemas with invariant validation
-    telemetry.py        # Reusable telemetry helpers (memory, package versions, evidence)
+    telemetry.py        # Reusable telemetry helpers (memory, HF cache, evidence writing)
     benchmarking.py     # Stage 0 benchmark harness
+    evidence_schemas.py # Typed evidence models (v2) with validation (WP5, WP6, WP8)
+    data_ingestion.py   # Phase 1 ingestion core (paused, not integrated)
     forecasting/
         base.py         # ForecastBackend protocol
         chronos2_adapter.py  # Chronos2Adapter class
 scripts/
-    chronos2_smoke_test.py   # Standalone smoke test
-    run_stage0_benchmark.py  # Benchmark runner
-    setup_local_windows.ps1 # Windows D: drive setup
-    verify_environment.py   # Environment verification
+    chronos2_smoke_test.py       # Standalone smoke test
+    run_stage0_benchmark.py      # Benchmark runner
+    build_local_stage0_bundle.py # Bundle builder with validation (WP1)
+    publish_evidence.py          # Sanitise, validate, copy, update manifest
+    verify_evidence_manifest.py  # Manifest integrity checker (WP9)
+    setup_local_windows.ps1     # Windows D: drive setup
+    verify_environment.py       # Environment verification
 tests/
-    test_schemas.py          # Schema + validation tests
-    test_adapter_contract.py # Adapter tests with fake pipeline
-    test_benchmarking.py     # Benchmark harness tests
-    fixtures/                # Synthetic data fixtures
+    test_schemas.py              # Schema + validation tests
+    test_adapter_contract.py     # Adapter tests with fake pipeline
+    test_benchmarking.py         # Benchmark harness tests
+    test_evidence.py             # Evidence schema, publisher, manifest, bundle tests
+    test_ingestion.py            # Phase 1 ingestion tests (paused)
+    fixtures/                    # Synthetic data fixtures
 docs/
-    evidence/stage0/                   # Sanitised evidence artefacts (WP9)
-    stage_0_benchmark_report.md        # Report (prior evidence — needs current-head rerun)
-    adr_001_inference_backend.md       # Pending — requires Cloud evidence first
-    community_cloud_test_checklist.md  # Checklist for Cloud testing
+    evidence/stage0/             # Sanitised evidence artefacts + manifest
+    stage_0_benchmark_report.md  # Benchmark report (needs current-head rerun)
+    adr_001_inference_backend.md # Provisional — pending Cloud evidence
+    community_cloud_test_checklist.md  # Cloud testing checklist
+    development/                 # MCP developer tooling (optional)
 .github/workflows/
-    ci.yml                 # CI (unit tests, lint, coverage)
+    ci.yml              # CI (unit tests, lint, coverage, evidence hash verify)
 ```
 
 ## Local Setup (Windows, D: drive)

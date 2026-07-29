@@ -330,16 +330,70 @@ def machine_summary() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_hf_cache_dir(cache_dir: str | None = None) -> tuple[str, str]:
+    """Resolve the Hugging Face Hub cache directory.
+
+    Resolution order:
+    1. Explicit ``cache_dir`` argument
+    2. ``HF_HUB_CACHE`` environment variable
+    3. ``huggingface_hub.constants.HF_HUB_CACHE`` (official constant)
+    4. ``os.path.join(HF_HOME, "hub")`` if HF_HOME is set
+    5. Documented fallback (platform default)
+
+    Returns (resolved_path, cache_source) where cache_source is one of:
+    "explicit", "env_HF_HUB_CACHE", "hf_hub_constant", "env_HF_HOME", "fallback"
+
+    Never raises; returns safe defaults on failure.
+    """
+    # 1. Explicit argument
+    if cache_dir:
+        return cache_dir, "explicit"
+
+    # 2. Environment variable
+    env_cache = os.environ.get("HF_HUB_CACHE", "")
+    if env_cache:
+        return env_cache, "env_HF_HUB_CACHE"
+
+    # 3. Official huggingface_hub constant
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE as _HF_HUB_CACHE
+        if _HF_HUB_CACHE:
+            return str(_HF_HUB_CACHE), "hf_hub_constant"
+    except (ImportError, AttributeError):
+        pass
+
+    # 4. HF_HOME fallback
+    hf_home = os.environ.get("HF_HOME", "")
+    if hf_home:
+        return os.path.join(hf_home, "hub"), "env_HF_HOME"
+
+    # 5. Platform default fallback (never relative)
+    if sys.platform == "win32":
+        fallback = os.path.join(os.environ.get("USERPROFILE", ""), ".cache", "huggingface", "hub")
+    else:
+        fallback = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+    return fallback, "fallback"
+
+
 def inspect_hf_cache(
     configured_revision: str,
     cache_dir: str | None = None,
 ) -> dict[str, Any]:
     """Inspect the Hugging Face Hub cache for a pinned revision.
 
+    Parameters
+    ----------
+    configured_revision : str
+        The pinned revision to look for in the cache.
+    cache_dir : str or None
+        Explicit cache directory. If None, resolved via
+        ``_resolve_hf_cache_dir()``.
+
     Returns a dict with:
     - ``snapshot_present``: bool
     - ``file_count``: int
     - ``total_bytes``: int
+    - ``cache_source``: str (safe enum, never a personal path)
     - ``error``: str or ""
 
     Never raises; returns safe defaults on failure.
@@ -349,14 +403,13 @@ def inspect_hf_cache(
         "snapshot_present": False,
         "file_count": 0,
         "total_bytes": 0,
+        "cache_source": "",
         "error": "",
     }
     try:
         from src.config import MODEL_ID
-        hub_cache = cache_dir or os.environ.get(
-            "HF_HUB_CACHE",
-            os.path.join(os.environ.get("HF_HOME", ""), "hub"),
-        )
+        hub_cache, cache_source = _resolve_hf_cache_dir(cache_dir)
+        result["cache_source"] = cache_source
         if not hub_cache or not os.path.isdir(hub_cache):
             result["error"] = "HF_HUB_CACHE not found"
             return result
