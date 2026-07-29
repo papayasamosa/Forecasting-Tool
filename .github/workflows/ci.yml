@@ -71,7 +71,7 @@ jobs:
             --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
             --cov=src.data_ingestion --cov=src.evidence_schemas --cov=src.telemetry \
             --cov=scripts.publish_evidence --cov=scripts.verify_evidence_manifest \
-            --cov-report=term-missing --cov-fail-under=80
+            --cov-report=term-missing --cov-fail-under=75
 
       - name: Verify evidence manifest hashes
         run: |

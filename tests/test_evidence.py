@@ -216,6 +216,20 @@ class TestSmokeEvidenceValidation:
         errors = ev.validate()
         assert any("warm.cache_state" in e for e in errors)
 
+    def test_cache_preflight_download_cold_requires_absent(self):
+        data = _valid_smoke_dict({"cache_preflight": {"snapshot_present": True, "cache_source": "explicit"}})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("cache_preflight" in e for e in errors)
+
+    def test_smoke_to_dict_includes_nested(self):
+        data = _valid_smoke_dict()
+        ev = evidence_from_dict(data)
+        d = ev.to_dict()
+        assert "cache_preflight" in d
+        assert "token_absent_result" in d
+        assert "token_present_result" in d
+
 
 # ---------------------------------------------------------------------------
 # BenchmarkSuiteEvidence tests
@@ -269,6 +283,22 @@ class TestBenchmarkSuiteValidation:
         errors = ev.validate()
         assert errors == []
 
+    def test_benchmark_suite_to_dict_includes_cache_preflight(self):
+        data = _valid_benchmark_suite_dict()
+        ev = evidence_from_dict(data)
+        d = ev.to_dict()
+        assert "cache_preflight" in d
+
+    def test_benchmark_suite_missing_scenario_revision_fails(self):
+        """Scenario without model_revision when suite has resolved_revision must fail."""
+        data = _valid_benchmark_suite_dict()
+        # Remove model_revision from weekly scenario
+        weekly = [s for s in data["scenarios"] if s["scenario"] == "weekly_260_13"][0]
+        weekly.pop("model_revision", None)
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("model_revision empty" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # ModelArtifactEvidence tests
@@ -307,6 +337,24 @@ class TestBundleValidation:
         )
         errors = bundle.validate()
         assert any("missing runs" in e for e in errors)
+
+    def test_bundle_wrong_schema_version(self):
+        bundle = LocalStage0Bundle(
+            evidence_schema_version="1",
+            code_commit="abc123",
+            git_worktree_clean=True,
+        )
+        errors = bundle.validate()
+        assert any("schema version" in e for e in errors)
+
+    def test_bundle_wrong_type(self):
+        bundle = LocalStage0Bundle(
+            evidence_type="wrong_type",
+            code_commit="abc123",
+            git_worktree_clean=True,
+        )
+        errors = bundle.validate()
+        assert any("evidence_type" in e for e in errors)
 
     def test_bundle_commit_mismatch(self):
         bundle = LocalStage0Bundle(
@@ -427,6 +475,21 @@ class TestPublisherValidation:
 # ---------------------------------------------------------------------------
 # CloudEvidence tests (WP5, WP6)
 # ---------------------------------------------------------------------------
+
+
+class TestSmokePhaseValidation:
+    def test_smoke_phase_defaults(self):
+        from src.evidence_schemas import SmokePhase
+        sp = SmokePhase()
+        errors = sp.validate()
+        assert errors == []
+
+    def test_smoke_phase_to_dict_filters_empty(self):
+        from src.evidence_schemas import SmokePhase
+        sp = SmokePhase(cache_state="download_cold", rss_mb=500.0)
+        d = sp.to_dict()
+        assert d["cache_state"] == "download_cold"
+        assert d["rss_mb"] == 500.0
 
 
 class TestCloudEvidenceValidation:
