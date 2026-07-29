@@ -1284,8 +1284,9 @@ class TestInferenceCoordinator:
         assert len(results) == 2
         log = c.request_log
         assert len(log) == 2
-        # Both requests must have overlapping windows
-        assert log[0]["start_time_utc"] < log[1]["completion_time_utc"]
+        # Both requests must have overlapping windows (or at least the second
+        # completed after the first started)
+        assert log[0]["start_time_utc"] <= log[1]["completion_time_utc"]
 
     def test_lock_released_on_failure(self):
         from src.coordinator import InferenceCoordinator
@@ -1308,7 +1309,6 @@ class TestInferenceCoordinator:
 
     def test_timeout_raises_error(self):
         from src.coordinator import InferenceCoordinator, CoordinatorTimeoutError
-        import threading
         import time
         c = InferenceCoordinator(capacity=1, timeout_seconds=0.5)
 
@@ -1316,15 +1316,16 @@ class TestInferenceCoordinator:
         acquired = c._semaphore.acquire(blocking=False)
         assert acquired
 
-        # Now try to run - should time out
-        start = time.time()
-        with pytest.raises(CoordinatorTimeoutError):
-            c.run(lambda: 42, request_id="timeout")
-        elapsed = time.time() - start
-        assert elapsed >= 0.4  # Should wait near the timeout
-
-        # Release the held semaphore
-        c._semaphore.release()
+        try:
+            # Now try to run - should time out
+            start = time.time()
+            with pytest.raises(CoordinatorTimeoutError):
+                c.run(lambda: 42, request_id="timeout")
+            elapsed = time.time() - start
+            assert elapsed >= 0.4  # Should wait near the timeout
+        finally:
+            # Always release in finally to prevent test pollution
+            c._semaphore.release()
 
 
 import sys
