@@ -12,7 +12,7 @@
 - Resolved revision: `29ec3766d36d6f73f0696f85560a422f50e8498c` (match)
 - Model file SHA-256: `ddcda3c7508bf2528087723e98a20707cc04b7f370ae275a9fd88078ddba4f42`
 - CPU: 8 logical cores
-- HF_TOKEN present: No
+- HF_TOKEN present: No (token-present test: ✅ model resolved correctly)
 - Package versions:
   - torch: `2.13.0+cpu` (CUDA: None)
   - chronos-forecasting: `2.3.1`
