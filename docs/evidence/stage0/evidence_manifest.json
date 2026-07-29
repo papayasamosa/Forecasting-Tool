@@ -1,0 +1,26 @@
+{
+  "evidence_schema_version": "1",
+  "last_updated": null,
+  "files": {
+    "local_no_token_summary": {
+      "filename": null,
+      "sha256": null,
+      "cache_state": null,
+      "code_commit": null,
+      "notes": "Populate after current-head local evidence rerun (Gate B2)"
+    },
+    "local_token_present_summary": {
+      "filename": null,
+      "sha256": null,
+      "code_commit": null,
+      "notes": "Populate after current-head token-present check"
+    },
+    "cloud_summary": {
+      "filename": null,
+      "sha256": null,
+      "code_commit": null,
+      "notes": "Populate after Community Cloud deployment (Gate C)"
+    }
+  },
+  "instructions": "After each evidence run, move the sanitised JSON into this directory, update sha256 with the file hash, set last_updated, and record the code_commit."
+}

@@ -15,25 +15,25 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | CI (GitHub Actions) | ✅ Implemented |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
-| Pipeline reuse (real Chronos-2 model) | ✅ Verified (warm 0.27s, pipeline_call_count=1) |
-| Pull-request CI | ✅ Green (98 tests, 89.91% coverage) |
-| `main` branch CI (post-merge) | ✅ Green (98 tests, 89.91% coverage) |
-| Context capping before record materialisation | ✅ Implemented (P0-1) |
-| Truncation warnings displayed in UI | ✅ Implemented (P0-2) |
-| Warm reuse enforced in benchmark gate | ✅ Implemented (P1-1) |
-| Explicit `cross_learning=False` in standard calls | ✅ Implemented (P1-2) |
-| Failure telemetry recorded | ✅ Implemented (P1-3) |
-| Summary calculations exclude aggregate | ✅ Implemented (P1-4) |
-| Smoke evidence written on all failure paths | ✅ Implemented (P1-5) |
+| Pipeline reuse (real Chronos-2 model) | ✅ Verified (prior code — must rerun on current head) |
+| Pull-request CI | ✅ Green (102 tests, 90.54% coverage as of PR #7) |
+| `main` branch CI (post-merge) | ⏳ Verified only for PR-head; push-to-main run pending confirmation |
+| Context capping before record materialisation | ✅ Implemented |
+| Truncation warnings displayed in UI | ✅ Implemented |
+| Warm reuse enforced in benchmark gate | ✅ Implemented |
+| Explicit `cross_learning=False` in standard calls | ✅ Implemented |
+| Failure telemetry recorded | ✅ Implemented |
+| Summary calculations exclude aggregate | ✅ Implemented |
+| Smoke evidence written on all failure paths | ✅ Implemented |
 | Reusable telemetry module (`src/telemetry.py`) | ✅ Implemented |
-| Real Chronos-2 model smoke test | ✅ Completed (cold 23.5s, warm 0.27s) |
-| Local benchmark suite | ✅ Completed (4/4 scenarios pass) |
+| Real Chronos-2 model smoke test | ⏳ Prior evidence exists (cold ~23.5s, warm ~0.27s); must rerun on current head |
+| Local benchmark suite | ⏳ Prior evidence exists (4/4 scenarios pass); must rerun on current head |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
 | Model file checksum | ✅ `ddcda3c7508bf2528087723e98a20707cc04b7f370ae275a9fd88078ddba4f42` |
 | Community Cloud deployment | ⏳ Pending (not yet Cloud-proven) |
-| ADR-001 inference backend | ⏳ Pending (awaiting Cloud evidence) |
-| Real-model evidence on D: drive | ⏳ Pending (Gate C) |
-| Phase 1 features | 🔜 Planned (see below) |
+| ADR-001 inference backend | ⏳ Pending (requires Cloud deployment first, then evidence, then decision) |
+| Current-head local evidence rerun | ⏳ Pending (Gate B2) |
+| Phase 1 features | 🔜 Planned (after all Stage 0 gates pass) |
 
 ## Repository Structure
 
@@ -61,8 +61,9 @@ tests/
     test_benchmarking.py     # Benchmark harness tests
     fixtures/                # Synthetic data fixtures
 docs/
-    stage_0_benchmark_report.md        # ⏳ Pending
-    adr_001_inference_backend.md       # ⏳ Pending
+    evidence/stage0/                   # Sanitised evidence artefacts (WP9)
+    stage_0_benchmark_report.md        # Report (prior evidence — needs current-head rerun)
+    adr_001_inference_backend.md       # Pending — requires Cloud evidence first
     community_cloud_test_checklist.md  # Checklist for Cloud testing
 .github/workflows/
     ci.yml                 # CI (unit tests, lint, coverage)
@@ -157,19 +158,26 @@ The `main` branch is protected in the GitHub repository settings:
 - Requires resolved review threads
 - Requires up-to-date branch
 
-PR CI must be green before merging. Push-to-main CI confirms the merge is clean.
-Real-model evidence (Gates B–C) has not yet been collected on `main`.
+PR CI must be green before merging. Push-to-main CI should confirm the merge is
+clean, but as of this PR the first post-merge commit has not yet been verified on
+main — this will be confirmed after merge.
+
+Real-model evidence (Gates B2–D) has not yet been collected on the current head.
 
 ## Remaining Stage 0 gates
 
-| Gate | Requirement | Status |
-|------|-------------|--------|
-| A6 | Evidence-integrity closure (this PR) | ✅ Implemented |
-| B | Immutable revision pin + checksum | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
-| C | Local D: drive evidence | ⏳ Pending (cold, warm, panel, rolling, memory, token) |
-| D | Community Cloud deployment | ⏳ Pending |
-| E | ADR-001 decision | ⏳ Pending |
-| F | Phase 1 start | 🔜 After all gates pass |
+| Gate | Requirement | Status | Sequence |
+|------|-------------|--------|----------|
+| A7 | Post-evidence repair (this PR) | 🔜 In progress | 1 |
+| B2 | Current-head local evidence rerun | ⏳ Pending | 2 — after A7 merges |
+| C | Community Cloud technical spike | ⏳ Pending | 3 — collect evidence on Cloud |
+| D | ADR-001 decision | ⏳ Pending | 4 — after Cloud evidence collected |
+| E | Phase 1 start | 🔜 After all gates pass | 5 |
+
+> **Sequence:** Community Cloud deployment first → evidence collection → ADR decision.
+> The benchmark report and checklist previously suggested Cloud deployment is pending
+> ADR, which is circular. Correct order: 1) deploy technical spike, 2) collect evidence,
+> 3) decide ADR.
 
 ## License
 

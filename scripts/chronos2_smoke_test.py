@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,7 +26,13 @@ from src.schemas import ForecastTask, ForecastMode  # noqa: E402
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
 )
-from src.telemetry import rss_mb, write_evidence, capture_package_versions  # noqa: E402
+from src.telemetry import (  # noqa: E402
+    rss_mb,
+    write_evidence,
+    capture_package_versions,
+    capture_traceability,
+    machine_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Default evidence output path (platform-aware)
@@ -47,16 +54,30 @@ def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
-def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
+def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR,
+                   cache_state: str = "unknown") -> dict:
     """Run the smoke test and return/export a structured evidence dict.
+
+    Parameters
+    ----------
+    evidence_dir : str
+        Directory for evidence JSON output.
+    cache_state : str
+        One of ``download_cold``, ``process_cold_cached_weights``,
+        ``same_process_warm``.  Describes the model-cache state before
+        the run (WP7).
 
     Returns a JSON-serialisable dict with all measurements, or a dict
     with ``success=False`` and error details on failure.
     """
+    _started = datetime.now(timezone.utc)
     evidence: dict = {
         "test": "chronos2_smoke_test",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": _started.isoformat(),
+        "started_at_utc": _started.isoformat(),
+        "completed_at_utc": "",
         "success": False,
+        "evidence_schema_version": "1",
         "python_version": sys.version.split()[0],
         "model_id": MODEL_ID,
         "configured_revision": MODEL_REVISION,
@@ -66,7 +87,11 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
         "warm": {},
         "package_versions": {},
         "error": "",
+        "cache_state": cache_state,
     }
+    # Capture traceability & machine info upfront
+    evidence.update(capture_traceability())
+    evidence.update(machine_summary())
 
     print("=" * 64)
     print("  Chronos-2 Smoke Test — Stage 0.1")
@@ -106,6 +131,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     except Exception as exc:
         print(f"  FAILED: {exc}")
         evidence["error"] = f"{type(exc).__name__}: {exc}"
+        evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
         evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         return evidence
     cold_time = time.perf_counter() - t0
@@ -162,6 +188,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
             "failure_phase": "warm_forecast",
         }
         evidence["error"] = f"warm_forecast: {type(exc).__name__}: {exc}"
+        evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
         evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         print(f"  WARM FAILED: {exc}")
         # Preserve cold evidence — return with warm failure recorded
@@ -180,6 +207,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     except AssertionError as exc:
         evidence["error"] = f"schema_check: {exc}"
         evidence["failure_phase"] = "schema_verification"
+        evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
         evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         print(f"  SCHEMA CHECK FAILED: {exc}")
         return evidence
@@ -192,6 +220,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
         print(f"    {k}: {v}")
 
     evidence["success"] = True
+    evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
     print(f"\n{'=' * 64}")
     print("  Smoke test completed successfully!")
     print("=" * 64)
@@ -204,9 +233,42 @@ if __name__ == "__main__":
     evidence_dir = os.environ.get(
         "BENCHMARK_OUTPUT_DIR", DEFAULT_EVIDENCE_DIR
     )
-    evidence = run_smoke_test(evidence_dir=evidence_dir)
+    try:
+        evidence = run_smoke_test(evidence_dir=evidence_dir)
+    except Exception as exc:
+        # WP5: Wrap the invocation itself to catch pre-assignment failures
+        # (fixture construction, task creation, package capture, etc.).
+        _now = datetime.now(timezone.utc)
+        evidence = {
+            "test": "chronos2_smoke_test",
+            "timestamp": _now.isoformat(),
+            "started_at_utc": _now.isoformat(),
+            "completed_at_utc": _now.isoformat(),
+            "success": False,
+            "evidence_schema_version": "1",
+            "failure_phase": "top_level_invocation",
+            "error": f"{type(exc).__name__}: {exc}",
+            "python_version": sys.version.split()[0],
+            "model_id": MODEL_ID,
+            "configured_revision": MODEL_REVISION,
+            "model_revision": "",
+            "hf_token_present": bool(os.environ.get("HF_TOKEN")),
+            "cold": {},
+            "warm": {},
+            "package_versions": {},
+            "cache_state": "unknown",
+        }
+        evidence.update(capture_traceability())
+        evidence.update(machine_summary())
+        print(f"\n  TOP-LEVEL FAILURE: {type(exc).__name__}: {exc}")
+        evidence["evidence_path"] = write_evidence(
+            evidence, evidence_dir, prefix="smoke_test"
+        )
+        sys.exit(1)
+
     if not evidence.get("success"):
         # Ensure evidence is written even on unexpected top-level failure
+        # within run_smoke_test.
         if "evidence_path" not in evidence:
             evidence["failure_phase"] = "top_level"
             evidence["evidence_path"] = write_evidence(

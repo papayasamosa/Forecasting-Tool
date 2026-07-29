@@ -240,10 +240,19 @@ if run_button and df is not None and not st.session_state.is_running:
     working_df = working_df.sort_values(ts_col).reset_index(drop=True)
 
     # ------------------------------------------------------------------
+    # Empty-data guard (P0-2): check before any iloc access. A
+    # headers-only CSV or all-NaN timestamp column yields zero rows.
+    # ------------------------------------------------------------------
+    original_rows = len(working_df)
+    if original_rows == 0:
+        st.error("The selected columns produced zero valid rows. Check that the timestamp column contains parseable dates.")
+        st.session_state.is_running = False
+        st.stop()
+
+    # ------------------------------------------------------------------
     # Preprocessing metadata — recorded BEFORE materialisation so that
     # large datasets are capped before Python dict expansion (P0-1).
     # ------------------------------------------------------------------
-    original_rows = len(working_df)
     date_range_start = str(working_df[ts_col].iloc[0])
     date_range_end = str(working_df[ts_col].iloc[-1])
 
@@ -313,20 +322,28 @@ if st.session_state.forecast_result:
 
     st.subheader("✅ Forecast Complete")
 
-    # Show warnings (WP2: display truncation and runtime warnings)
+    # Show warnings (WP2, WP3: deduplicate; render truncation independently)
     all_warnings = list(result.warnings) + list(meta.warnings)
-    if all_warnings:
-        with st.expander("⚠️ Warnings", expanded=bool(all_warnings)):
-            for w in all_warnings:
+    seen: set[str] = set()
+    deduped_warnings: list[str] = []
+    for w in all_warnings:
+        if w not in seen:
+            seen.add(w)
+            deduped_warnings.append(w)
+    if deduped_warnings:
+        with st.expander("⚠️ Warnings", expanded=bool(deduped_warnings)):
+            for w in deduped_warnings:
                 st.warning(w)
-        # Show preprocessing truncation details
-        if meta.preprocessing_original_rows > meta.preprocessing_retained_rows:
-            st.info(
-                f"Context truncated: {meta.preprocessing_original_rows} original rows "
-                f"→ {meta.preprocessing_retained_rows} retained "
-                f"(from {meta.preprocessing_date_range_start} to {meta.preprocessing_date_range_end}, "
-                f"retained from {meta.preprocessing_retained_start})."
-            )
+
+    # Show preprocessing truncation details independently of runtime warnings
+    # (P0-3: truncation must be visible even when there are no runtime warnings).
+    if meta.preprocessing_original_rows > meta.preprocessing_retained_rows:
+        st.info(
+            f"Context truncated: {meta.preprocessing_original_rows} original rows "
+            f"→ {meta.preprocessing_retained_rows} retained "
+            f"(data from {meta.preprocessing_date_range_start} to {meta.preprocessing_date_range_end}, "
+            f"retained from {meta.preprocessing_retained_start})."
+        )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Run ID", result.run_id)

@@ -5,6 +5,7 @@ and can be tested with an injected fake pipeline.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import warnings as stdlib_warnings
@@ -51,6 +52,30 @@ class InferenceError(AdapterError):
 
 class ResultSchemaError(AdapterError):
     """Raised when the model output does not match the expected schema."""
+
+
+# ---------------------------------------------------------------------------
+# Cross-learning capability detection (WP4, P1-2)
+# ---------------------------------------------------------------------------
+
+def _predict_df_accepts_cross_learning(pipeline: Any) -> bool:
+    """Return True if ``pipeline.predict_df`` accepts a ``cross_learning``
+    keyword argument.
+
+    Inspects the callable signature before the expensive inference call so
+    we never retry an arbitrary model ``TypeError``.
+    """
+    try:
+        sig = inspect.signature(pipeline.predict_df)
+    except (ValueError, TypeError):
+        return False
+    for name, param in sig.parameters.items():
+        if name == "cross_learning":
+            return True
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            # Accepts **kwargs — assume it may accept cross_learning
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -194,17 +219,17 @@ class Chronos2Adapter:
                 # WP4: Explicitly pass cross_learning=False for standard
                 # univariate to match the PRD default. The panel benchmark
                 # path (outside forecast()) also passes it explicitly.
-                # Fail safely if the parameter is not supported.
-                try:
+                # Inspect the pipeline signature before calling so we never
+                # retry an arbitrary model TypeError (P1-2).
+                _supports_cross_learning = _predict_df_accepts_cross_learning(pipeline)
+                if _supports_cross_learning:
                     predict_kwargs["cross_learning"] = task.cross_learning
-                    pred_df = pipeline.predict_df(input_df, **predict_kwargs)
-                except TypeError:
+                else:
                     captured_warnings.append(
                         "cross_learning parameter not supported by this "
                         "Chronos-2 version; using default."
                     )
-                    del predict_kwargs["cross_learning"]
-                    pred_df = pipeline.predict_df(input_df, **predict_kwargs)
+                pred_df = pipeline.predict_df(input_df, **predict_kwargs)
                 for warning in w:
                     cat = warning.category.__name__ if warning.category else "Warning"
                     msg = str(warning.message)[:200]

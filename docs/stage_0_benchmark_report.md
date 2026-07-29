@@ -1,7 +1,10 @@
 # Stage 0 Benchmark Report
 
 **Generated:** 29 July 2026  
-**Status:** ✅ Local evidence complete (D: drive — no token)
+**Status:** ⏳ Prior local evidence exists but was collected before PR #7
+evidence-integrity closure.  A current-head rerun is required after the
+post-evidence repair PR (A7) is merged.  See `docs/evidence/stage0/` for
+the sanitised evidence layout.
 
 ## Environment
 
@@ -82,4 +85,5 @@ Pipeline construction count: 1 (reused for warm, panel, and rolling)
 
 ## Community Cloud Results
 
-*Pending — deploy after ADR-001 decision.*
+*Pending — deploy technical spike, collect evidence, then decide ADR-001.
+This is the correct sequence: deployment produces the evidence the ADR needs.*

@@ -14,6 +14,10 @@ run inference via:
 
 **Choice C — Decision pending Community Cloud evidence.**
 
+> Sequencing note: Community Cloud deployment must happen BEFORE the ADR
+> decision. The deployment technical spike produces the cold/warm timing,
+> memory, concurrency and recovery evidence that the ADR evaluates.
+
 The adapter code validates that Chronos-2 can be loaded and run on CPU
 with the `predict_df` API via dependency-injected tests. However, the
 following evidence is still required before confirming choice A:
@@ -24,6 +28,7 @@ following evidence is still required before confirming choice A:
 - Stability under repeated inference
 - Behaviour when the optional `HF_TOKEN` is present vs. absent
 - Recovery after an inference failure
+- Two-session concurrency behaviour
 
 ## Consequences
 
