@@ -677,7 +677,8 @@ def run_benchmarks(
                        duration_seconds=total,
                        rss_mb=_rss_mb(),
                        baseline_rss_mb=rolling_sampler.baseline_mb,
-                       peak_rss_mb=rolling_sampler.peak_mb)
+                       peak_rss_mb=rolling_sampler.peak_mb,
+                       cache_state="aggregate")
     result3.sample_passed = successful_folds == 10
     result3.scenario_passed = result3.sample_passed
     all_results.append(result3)

@@ -1,6 +1,6 @@
 {
   "evidence_schema_version": "2",
-  "last_updated": null,
+  "last_updated": "2026-07-29T12:05:34.369865+00:00",
   "files": {
     "smoke_test": {
       "filename": null,
@@ -24,11 +24,11 @@
       "notes": "Populate after current-head local evidence rerun (Gate B2)."
     },
     "local_stage0_bundle": {
-      "filename": null,
-      "sha256": null,
-      "code_commit": null,
+      "filename": "evidence_local_stage0_bundle_20260729_130534_342298_71036f6f.json",
+      "sha256": "daee27167393e511e0affa91806a68fc678431638638c6dd2948642f5b57948c",
+      "code_commit": "ee8f89adae3087aa56b110877cf72741ce93a604",
       "evidence_type": "local_stage0_bundle",
-      "notes": "Populate after bundle builder runs (Gate B2)."
+      "notes": "Published 20260729_130534"
     },
     "cloud_summary": {
       "filename": null,
