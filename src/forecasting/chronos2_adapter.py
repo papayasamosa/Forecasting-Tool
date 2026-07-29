@@ -6,7 +6,6 @@ and can be tested with an injected fake pipeline.
 from __future__ import annotations
 
 import logging
-import sys
 import time
 import warnings as stdlib_warnings
 from datetime import datetime, timezone
@@ -24,6 +23,7 @@ from src.schemas import (
     WarningCode,
     new_run_id,
 )
+from src.telemetry import capture_package_versions
 from src.forecasting.base import ForecastBackend
 
 logger = logging.getLogger(__name__)
@@ -184,14 +184,27 @@ class Chronos2Adapter:
         try:
             with stdlib_warnings.catch_warnings(record=True) as w:
                 stdlib_warnings.simplefilter("always")
-                pred_df = pipeline.predict_df(
-                    input_df,
+                predict_kwargs: dict[str, Any] = dict(
                     prediction_length=task.prediction_length,
                     quantile_levels=list(task.quantile_levels),
                     id_column="item_id",
                     timestamp_column="timestamp",
                     target="target",
                 )
+                # WP4: Explicitly pass cross_learning=False for standard
+                # univariate to match the PRD default. The panel benchmark
+                # path (outside forecast()) also passes it explicitly.
+                # Fail safely if the parameter is not supported.
+                try:
+                    predict_kwargs["cross_learning"] = task.cross_learning
+                    pred_df = pipeline.predict_df(input_df, **predict_kwargs)
+                except TypeError:
+                    captured_warnings.append(
+                        "cross_learning parameter not supported by this "
+                        "Chronos-2 version; using default."
+                    )
+                    del predict_kwargs["cross_learning"]
+                    pred_df = pipeline.predict_df(input_df, **predict_kwargs)
                 for warning in w:
                     cat = warning.category.__name__ if warning.category else "Warning"
                     msg = str(warning.message)[:200]
@@ -299,7 +312,7 @@ class Chronos2Adapter:
         # pre-injected pipeline and a warm call after an earlier cold start.
         pipeline_reused = not model_was_loaded
 
-        pkg_versions = _capture_package_versions()
+        pkg_versions = capture_package_versions()
         model_revision = getattr(pipeline, "model_revision", "") or MODEL_REVISION
 
         meta = RunMetadata(
@@ -391,32 +404,10 @@ class Chronos2Adapter:
 
 
 def _capture_package_versions() -> dict[str, str]:
-    """Return a dict of relevant package versions for run metadata."""
-    versions: dict[str, str] = {}
-    try:
-        import chronos as _c
-        versions["chronos-forecasting"] = getattr(_c, "__version__", "unknown")
-    except ImportError:
-        versions["chronos-forecasting"] = "unknown"
-    try:
-        import torch as _t
-        versions["torch"] = _t.__version__
-    except ImportError:
-        versions["torch"] = "unknown"
-    try:
-        import pandas as _pd
-        versions["pandas"] = _pd.__version__
-    except ImportError:
-        versions["pandas"] = "unknown"
-    try:
-        import numpy as _np
-        versions["numpy"] = _np.__version__
-    except ImportError:
-        versions["numpy"] = "unknown"
-    try:
-        import streamlit as _st
-        versions["streamlit"] = _st.__version__
-    except ImportError:
-        versions["streamlit"] = "unknown"
-    versions["python"] = sys.version.split()[0]
-    return versions
+    """Return a dict of relevant package versions for run metadata.
+
+    Delegates to ``src.telemetry.capture_package_versions``. Kept as a
+    local alias for backward compatibility with existing imports from
+    other modules and scripts.
+    """
+    return capture_package_versions()

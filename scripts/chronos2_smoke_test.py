@@ -4,7 +4,8 @@
 Usage:
     python scripts/chronos2_smoke_test.py
 
-Emits a JSON evidence record alongside console output (P1-6).
+Emits a JSON evidence record alongside console output.
+Every failure phase attempts JSON evidence writing (WP7, P1-5).
 """
 from __future__ import annotations
 
@@ -23,9 +24,8 @@ from src.config import MODEL_ID, MODEL_REVISION, DEFAULT_QUANTILES  # noqa: E402
 from src.schemas import ForecastTask, ForecastMode  # noqa: E402
 from src.forecasting.chronos2_adapter import (  # noqa: E402
     Chronos2Adapter,
-    _capture_package_versions,
 )
-from src.benchmarking import _rss_mb  # noqa: E402
+from src.telemetry import rss_mb, write_evidence, capture_package_versions  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Default evidence output path (platform-aware)
@@ -72,7 +72,7 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     print("  Chronos-2 Smoke Test — Stage 0.1")
     print("=" * 64)
 
-    baseline_rss = _rss_mb()
+    baseline_rss = rss_mb()
     print(f"\n  Python version : {evidence['python_version']}")
     print(f"  Model ID       : {evidence['model_id']}")
     print(f"  HF_TOKEN       : {evidence['hf_token_present']}")
@@ -106,10 +106,10 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     except Exception as exc:
         print(f"  FAILED: {exc}")
         evidence["error"] = f"{type(exc).__name__}: {exc}"
-        _write_evidence(evidence, evidence_dir)
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         return evidence
     cold_time = time.perf_counter() - t0
-    cold_rss = _rss_mb()
+    cold_rss = rss_mb()
 
     evidence["cold"] = {
         "total_seconds": round(cold_time, 3),
@@ -129,39 +129,63 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     print(f"  Model revision : {result.model_revision}")
     print(f"  # Forecast rows: {len(result.forecast_rows)}")
 
-    # Warm forecast
+    # Warm forecast (WP7: wrapped for evidence on failure)
     print("\n  --- Warm forecast ---")
-    t1 = time.perf_counter()
-    warm_result = adapter.forecast(task)
-    warm_time = time.perf_counter() - t1
-    warm_rss = _rss_mb()
+    warm_result = None
+    try:
+        t1 = time.perf_counter()
+        warm_result = adapter.forecast(task)
+        warm_time = time.perf_counter() - t1
+        warm_rss = rss_mb()
 
-    evidence["warm"] = {
-        "total_seconds": round(warm_time, 3),
-        "model_load_seconds": warm_result.runtime_metadata.model_load_seconds,
-        "inference_seconds": warm_result.runtime_metadata.inference_seconds,
-        "result_conversion_seconds": warm_result.runtime_metadata.result_conversion_seconds,
-        "rss_mb": round(warm_rss, 1),
-        "pipeline_call_count": adapter.pipeline_call_count,
-        "pipeline_reused": warm_result.runtime_metadata.pipeline_reused,
-    }
+        evidence["warm"] = {
+            "total_seconds": round(warm_time, 3),
+            "model_load_seconds": warm_result.runtime_metadata.model_load_seconds,
+            "inference_seconds": warm_result.runtime_metadata.inference_seconds,
+            "result_conversion_seconds": warm_result.runtime_metadata.result_conversion_seconds,
+            "rss_mb": round(warm_rss, 1),
+            "pipeline_call_count": adapter.pipeline_call_count,
+            "pipeline_reused": warm_result.runtime_metadata.pipeline_reused,
+        }
 
-    print(f"  Warm time      : {warm_time:.3f}s")
-    print(f"  Pipeline calls : {adapter.pipeline_call_count} (should be 1)")
-    print(f"  RSS            : {warm_rss:.1f} MB")
+        print(f"  Warm time      : {warm_time:.3f}s")
+        print(f"  Pipeline calls : {adapter.pipeline_call_count} (should be 1)")
+        print(f"  RSS            : {warm_rss:.1f} MB")
+    except Exception as exc:
+        warm_time = time.perf_counter() - t1 if 't1' in dir() else 0
+        warm_rss = rss_mb()
+        evidence["warm"] = {
+            "total_seconds": round(warm_time, 3),
+            "rss_mb": round(warm_rss, 1),
+            "pipeline_call_count": adapter.pipeline_call_count,
+            "error": f"{type(exc).__name__}: {exc}",
+            "failure_phase": "warm_forecast",
+        }
+        evidence["error"] = f"warm_forecast: {type(exc).__name__}: {exc}"
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
+        print(f"  WARM FAILED: {exc}")
+        # Preserve cold evidence — return with warm failure recorded
+        return evidence
 
-    # Output verification
-    assert len(result.forecast_rows) == horizon
-    first = result.forecast_rows[0]
-    assert "run_id" in first
-    assert "point_prediction" in first
-    assert "quantile_0_1" in first
-    assert "quantile_0_5" in first
-    assert "quantile_0_9" in first
-    print("\n  Output schema OK")
+    # Output verification (WP7: wrapped for evidence on failure)
+    try:
+        assert len(result.forecast_rows) == horizon, f"Expected {horizon} rows, got {len(result.forecast_rows)}"
+        first = result.forecast_rows[0]
+        assert "run_id" in first
+        assert "point_prediction" in first
+        assert "quantile_0_1" in first
+        assert "quantile_0_5" in first
+        assert "quantile_0_9" in first
+        print("\n  Output schema OK")
+    except AssertionError as exc:
+        evidence["error"] = f"schema_check: {exc}"
+        evidence["failure_phase"] = "schema_verification"
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
+        print(f"  SCHEMA CHECK FAILED: {exc}")
+        return evidence
 
     # Package versions
-    pkg = _capture_package_versions()
+    pkg = capture_package_versions()
     evidence["package_versions"] = pkg
     print("\n  Package versions:")
     for k, v in pkg.items():
@@ -172,19 +196,8 @@ def run_smoke_test(evidence_dir: str = DEFAULT_EVIDENCE_DIR) -> dict:
     print("  Smoke test completed successfully!")
     print("=" * 64)
 
-    _write_evidence(evidence, evidence_dir)
+    evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
     return evidence
-
-
-def _write_evidence(evidence: dict, evidence_dir: str) -> str:
-    """Write evidence dict to a JSON file and return the path."""
-    os.makedirs(evidence_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(evidence_dir, f"smoke_test_{timestamp}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(evidence, f, indent=2, default=str)
-    print(f"\n  Evidence written to: {path}")
-    return path
 
 
 if __name__ == "__main__":
@@ -193,4 +206,10 @@ if __name__ == "__main__":
     )
     evidence = run_smoke_test(evidence_dir=evidence_dir)
     if not evidence.get("success"):
+        # Ensure evidence is written even on unexpected top-level failure
+        if "evidence_path" not in evidence:
+            evidence["failure_phase"] = "top_level"
+            evidence["evidence_path"] = write_evidence(
+                evidence, evidence_dir, prefix="smoke_test"
+            )
         sys.exit(1)

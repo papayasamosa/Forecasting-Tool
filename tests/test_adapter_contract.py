@@ -215,6 +215,8 @@ class TestChronos2AdapterContract:
         kwargs = fake.last_kwargs
         assert kwargs["prediction_length"] == 7
         assert kwargs["quantile_levels"] == [0.05, 0.5, 0.95]
+        # WP4: standard univariate must pass cross_learning=False explicitly
+        assert kwargs.get("cross_learning") is False
 
     def test_context_truncation(self):
         fake = FakePipeline()

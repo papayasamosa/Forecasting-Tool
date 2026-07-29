@@ -198,6 +198,13 @@ class RunMetadata:
     data_fingerprint: str = ""
     warnings: tuple[str, ...] = ()
     runtime_seconds: float = 0.0  # Deprecated: kept for backward compat
+    # Preprocessing metadata — populated before record materialisation so
+    # that large datasets are capped before Python dict expansion (P0-1).
+    preprocessing_original_rows: int = 0
+    preprocessing_retained_rows: int = 0
+    preprocessing_retained_start: str = ""  # ISO date of first retained row
+    preprocessing_date_range_start: str = ""  # ISO date of earliest original row
+    preprocessing_date_range_end: str = ""  # ISO date of latest original row
     model_load_seconds: float = 0.0
     inference_seconds: float = 0.0
     result_conversion_seconds: float = 0.0
