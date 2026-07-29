@@ -85,12 +85,13 @@ def run_smoke_test(
     """
     _started = datetime.now(timezone.utc)
     evidence: dict = {
+        "evidence_schema_version": "2",
+        "evidence_type": "smoke_test",
         "test": "chronos2_smoke_test",
         "timestamp": _started.isoformat(),
         "started_at_utc": _started.isoformat(),
         "completed_at_utc": "",
         "success": False,
-        "evidence_schema_version": "1",
         "python_version": sys.version.split()[0],
         "model_id": MODEL_ID,
         "configured_revision": MODEL_REVISION,
@@ -201,6 +202,7 @@ def run_smoke_test(
             "pipeline_call_count": adapter.pipeline_call_count,
             "error": f"{type(exc).__name__}: {exc}",
             "failure_phase": "warm_forecast",
+            "cache_state": "same_process_warm",
         }
         evidence["error"] = f"warm_forecast: {type(exc).__name__}: {exc}"
         evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -298,6 +300,7 @@ if __name__ == "__main__":
     except Exception as exc:
         # WP5: Wrap the invocation itself to catch pre-assignment failures
         # (fixture construction, task creation, package capture, etc.).
+        # Preserve parsed initial_cache_state even on failure (WP6).
         _now = datetime.now(timezone.utc)
         evidence = {
             "test": "chronos2_smoke_test",
@@ -305,7 +308,8 @@ if __name__ == "__main__":
             "started_at_utc": _now.isoformat(),
             "completed_at_utc": _now.isoformat(),
             "success": False,
-            "evidence_schema_version": "1",
+            "evidence_schema_version": "2",
+            "evidence_type": "smoke_test",
             "failure_phase": "top_level_invocation",
             "error": f"{type(exc).__name__}: {exc}",
             "python_version": sys.version.split()[0],
@@ -316,7 +320,7 @@ if __name__ == "__main__":
             "cold": {},
             "warm": {},
             "package_versions": {},
-            "initial_cache_state": "",
+            "initial_cache_state": initial_cache_state,
         }
         evidence.update(capture_traceability())
         evidence.update(machine_summary())
