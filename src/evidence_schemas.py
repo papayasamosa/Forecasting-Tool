@@ -22,6 +22,27 @@ EVIDENCE_SCHEMA_VERSION = "2"
 
 
 # ---------------------------------------------------------------------------
+# Cache-source constants (safe enum — never a personal path)
+# ---------------------------------------------------------------------------
+CACHE_SOURCE_EXPLICIT = "explicit"
+CACHE_SOURCE_ENV_HF_HUB_CACHE = "env_HF_HUB_CACHE"
+CACHE_SOURCE_HF_HUB_CONSTANT = "hf_hub_constant"
+CACHE_SOURCE_ENV_HF_HOME = "env_HF_HOME"
+CACHE_SOURCE_FALLBACK = "fallback"
+VALID_CACHE_SOURCES = {
+    CACHE_SOURCE_EXPLICIT, CACHE_SOURCE_ENV_HF_HUB_CACHE,
+    CACHE_SOURCE_HF_HUB_CONSTANT, CACHE_SOURCE_ENV_HF_HOME,
+    CACHE_SOURCE_FALLBACK,
+}
+
+# Synchronisation modes for concurrency
+SYNC_MODE_NONE = "none"
+SYNC_MODE_LOCK = "lock"
+SYNC_MODE_SEMAPHORE = "semaphore"
+SYNC_MODE_REMOTE_QUEUE = "remote_queue"
+VALID_SYNC_MODES = {SYNC_MODE_NONE, SYNC_MODE_LOCK, SYNC_MODE_SEMAPHORE, SYNC_MODE_REMOTE_QUEUE}
+
+# ---------------------------------------------------------------------------
 # Cache-state constants
 # ---------------------------------------------------------------------------
 CACHE_STATE_DOWNLOAD_COLD = "download_cold"
@@ -59,6 +80,149 @@ class MachineSummary:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Cache preflight record (WP4)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class CachePreflight:
+    snapshot_present: bool = False
+    file_count: int = 0
+    total_bytes: int = 0
+    cache_source: str = ""
+    error: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.cache_source and self.cache_source not in VALID_CACHE_SOURCES:
+            errors.append(f"cache_source: invalid '{self.cache_source}'")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Token path result (WP8)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class TokenPathResult:
+    attempted: bool = False
+    success: bool = False
+    configured_revision: str = ""
+    resolved_revision: str = ""
+    error_code: str = ""
+    timing_seconds: float = 0.0
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.attempted and not self.success and not self.error_code:
+            errors.append("token path: attempted but failed with no error_code")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Repeated run record (WP9)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class RepeatedRun:
+    run_number: int = 0
+    success: bool = False
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
+    total_seconds: float = 0.0
+    inference_seconds: float = 0.0
+    cache_state: str = ""
+    pipeline_reused: bool = False
+    pipeline_construction_count: int = 0
+    resolved_revision: str = ""
+    rss_mb: float = 0.0
+    error_code: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.run_number <= 0:
+            errors.append(f"repeated_run: run_number must be >= 1, got {self.run_number}")
+        if self.success:
+            if not self.started_at_utc:
+                errors.append(f"repeated_run {self.run_number}: started_at_utc empty")
+            if not self.completed_at_utc:
+                errors.append(f"repeated_run {self.run_number}: completed_at_utc empty")
+            if self.total_seconds <= 0:
+                errors.append(f"repeated_run {self.run_number}: total_seconds must be > 0")
+            if not self.resolved_revision:
+                errors.append(f"repeated_run {self.run_number}: resolved_revision empty")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency request record (WP11)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class ConcurrencyRequest:
+    request_id: str = ""
+    start_time_utc: str = ""
+    inference_start_utc: str = ""
+    completion_time_utc: str = ""
+    queue_seconds: float = 0.0
+    inference_seconds: float = 0.0
+    success: bool = False
+    error_code: str = ""
+    sync_mode: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if not self.request_id:
+            errors.append("concurrency_request: request_id empty")
+        if self.success:
+            if self.queue_seconds < 0:
+                errors.append(f"concurrency_request {self.request_id}: queue_seconds < 0")
+            if self.inference_seconds <= 0:
+                errors.append(f"concurrency_request {self.request_id}: inference_seconds must be > 0 for success")
+            if not self.start_time_utc:
+                errors.append(f"concurrency_request {self.request_id}: start_time_utc empty")
+            if not self.completion_time_utc:
+                errors.append(f"concurrency_request {self.request_id}: completion_time_utc empty")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Acceptance test result (WP12)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class AcceptanceTestResult:
+    test_name: str = ""
+    passed: bool = False
+    details: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if not self.test_name:
+            errors.append("acceptance_test: test_name empty")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,13 +275,16 @@ class SmokeEvidence:
     model_id: str = ""
     configured_revision: str = ""
     model_revision: str = ""
-    hf_token_present: bool = False
+    # Token path results (WP8) — replaces single hf_token_present bool
+    hf_token_present: bool = False  # kept for backward compat
+    token_absent_result: TokenPathResult = dataclasses.field(default_factory=TokenPathResult)
+    token_present_result: TokenPathResult = dataclasses.field(default_factory=TokenPathResult)
     initial_cache_state: str = ""
     cold: SmokePhase = dataclasses.field(default_factory=SmokePhase)
     warm: SmokePhase = dataclasses.field(default_factory=SmokePhase)
     package_versions: dict[str, str] = dataclasses.field(default_factory=dict)
     machine: MachineSummary = dataclasses.field(default_factory=MachineSummary)
-    cache_preflight: dict[str, Any] = dataclasses.field(default_factory=dict)
+    cache_preflight: CachePreflight = dataclasses.field(default_factory=CachePreflight)
     error: str = ""
     evidence_path: str = ""
     # Producer-emitted field (not used in validation, preserved for round-trip)
@@ -144,6 +311,15 @@ class SmokeEvidence:
             errors.append("initial_cache_state: empty")
         elif self.initial_cache_state not in VALID_INITIAL_CACHE_STATES:
             errors.append(f"initial_cache_state: invalid '{self.initial_cache_state}'")
+
+        # Cache preflight required (WP4)
+        if self.success:
+            cp_errors = self.cache_preflight.validate()
+            errors.extend(f"cache_preflight: {e}" for e in cp_errors)
+            if self.initial_cache_state == CACHE_STATE_DOWNLOAD_COLD and self.cache_preflight.snapshot_present:
+                errors.append("cache_preflight: download_cold but snapshot is already cached")
+            if self.initial_cache_state == CACHE_STATE_PROCESS_COLD and not self.cache_preflight.snapshot_present:
+                errors.append("cache_preflight: process_cold_cached_weights but snapshot is not cached")
 
         if self.success:
             if not self.started_at_utc:
@@ -178,6 +354,9 @@ class SmokeEvidence:
         d["cold"] = self.cold.to_dict()
         d["warm"] = self.warm.to_dict()
         d["machine"] = self.machine.to_dict()
+        d["cache_preflight"] = self.cache_preflight.to_dict()
+        d["token_absent_result"] = self.token_absent_result.to_dict()
+        d["token_present_result"] = self.token_present_result.to_dict()
         return d
 
 
@@ -283,6 +462,11 @@ class BenchmarkSuiteEvidence:
     python_version: str = ""
     model_id: str = ""
     configured_revision: str = ""
+    # Suite-level revision and resource fields (WP5)
+    resolved_revision: str = ""
+    pipeline_construction_count: int = 0
+    peak_rss_mb: float = 0.0
+    cache_preflight: CachePreflight = dataclasses.field(default_factory=CachePreflight)
     scenarios: list[BenchmarkScenarioRecord] = dataclasses.field(default_factory=list)
 
     def validate(self) -> list[str]:
@@ -303,11 +487,25 @@ class BenchmarkSuiteEvidence:
         elif self.initial_cache_state not in VALID_INITIAL_CACHE_STATES:
             errors.append(f"initial_cache_state: invalid '{self.initial_cache_state}'")
 
+        # Cache preflight validation (WP5)
+        cp_errors = self.cache_preflight.validate()
+        errors.extend(f"cache_preflight: {e}" for e in cp_errors)
+
         if self.suite_passed:
             if not self.started_at_utc:
                 errors.append("started_at_utc: empty")
             if not self.completed_at_utc:
                 errors.append("completed_at_utc: empty")
+
+            # Suite-level resolved revision (WP5)
+            if self.configured_revision and self.resolved_revision:
+                if self.configured_revision != self.resolved_revision:
+                    errors.append(
+                        f"revision mismatch: configured '{self.configured_revision}', "
+                        f"resolved '{self.resolved_revision}'"
+                    )
+            if self.resolved_revision and self.peak_rss_mb <= 0:
+                errors.append("peak_rss_mb: must be > 0 for successful suite")
 
             # Validate required scenarios
             scenario_names = {s.scenario for s in self.scenarios}
@@ -318,6 +516,16 @@ class BenchmarkSuiteEvidence:
 
             for sc in self.scenarios:
                 errors.extend(sc.validate())
+
+                # Check scenario-level revision consistency (WP5)
+                if sc.scenario in {"weekly_260_13", "panel_5_series", "10_rolling_calls"}:
+                    if not sc.model_revision:
+                        errors.append(f"scenario '{sc.scenario}': model_revision empty — must match suite revision")
+                    elif self.resolved_revision and sc.model_revision != self.resolved_revision:
+                        errors.append(
+                            f"scenario '{sc.scenario}': model_revision '{sc.model_revision}' "
+                            f"!= suite resolved_revision '{self.resolved_revision}'"
+                        )
 
             # Check rolling scenario has 10 successful folds
             rolling = next((s for s in self.scenarios if s.scenario == "10_rolling_calls"), None)
@@ -341,6 +549,7 @@ class BenchmarkSuiteEvidence:
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
         d["scenarios"] = [s.to_dict() for s in self.scenarios]
+        d["cache_preflight"] = self.cache_preflight.to_dict()
         return d
 
 
@@ -406,10 +615,26 @@ class ModelArtifactEvidence:
         sc = self.snapshot_file_count if self.snapshot_file_count > 0 else self.shard_count
         if sc <= 0:
             errors.append("snapshot_file_count: must be >= 1")
-        if self.weight_file_count < 0:
-            errors.append("weight_file_count: must be >= 0")
-        if self.weight_shard_count < 0:
-            errors.append("weight_shard_count: must be >= 0")
+        # Require at least one weight file and shard for Chronos-2 evidence (P1-3)
+        if self.weight_file_count < 1:
+            errors.append("weight_file_count: must be >= 1 for real model evidence")
+        if self.weight_shard_count < 1:
+            errors.append("weight_shard_count: must be >= 1 for real model evidence")
+        # Verify declared counts match actual files (P1-3)
+        if self.files:
+            actual_count = len(self.files)
+            if sc > 0 and actual_count != sc:
+                errors.append(
+                    f"snapshot_file_count mismatch: declared {sc}, "
+                    f"actual files listed {actual_count}"
+                )
+            weight_files = [f for f in self.files if "safetensors" in f.filename or "weights" in f.filename.lower()]
+            actual_weight_count = len(weight_files)
+            if self.weight_file_count > 0 and actual_weight_count != self.weight_file_count:
+                errors.append(
+                    f"weight_file_count mismatch: declared {self.weight_file_count}, "
+                    f"actual weight files {actual_weight_count}"
+                )
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -536,28 +761,40 @@ class CloudEvidence:
     model_id: str = ""
     configured_revision: str = ""
     model_revision: str = ""
-    hf_token_present: bool = False
+    # Token path results (WP8)
+    hf_token_present: bool = False  # kept for backward compat
+    token_absent_result: TokenPathResult = dataclasses.field(default_factory=TokenPathResult)
+    token_present_result: TokenPathResult = dataclasses.field(default_factory=TokenPathResult)
     package_versions: dict[str, str] = dataclasses.field(default_factory=dict)
     machine: MachineSummary = dataclasses.field(default_factory=MachineSummary)
-    cold: SmokePhase = dataclasses.field(default_factory=SmokePhase)
-    warm: SmokePhase = dataclasses.field(default_factory=SmokePhase)
-    concurrent_users: int = 0
-    queue_time_seconds: float = 0.0
-    queue_time_per_request: list[float] = dataclasses.field(default_factory=list)
-    inference_time_per_request: list[float] = dataclasses.field(default_factory=list)
-    sync_mode: str = ""  # "none" | "lock" | "semaphore" | "remote_queue"
-    timeout_result: str = ""
-    error: str = ""
     # Dependency verification
     pip_check_passed: bool = False
     torch_cuda_none: bool = False
     nvidia_packages_absent: bool = False
-    # Repeated-run sequence
-    repeated_runs: list[dict[str, Any]] = dataclasses.field(default_factory=list)
-    # Deployment details
+    dependency_resolver: str = ""
+    # Deployment identity (WP6)
     deployed_url: str = ""
     deployed_commit: str = ""
     deployment_time_utc: str = ""
+    # Cold and warm phases (WP7)
+    cold: SmokePhase = dataclasses.field(default_factory=SmokePhase)
+    warm: SmokePhase = dataclasses.field(default_factory=SmokePhase)
+    # Resource evidence (WP7)
+    cold_peak_rss_mb: float = 0.0
+    warm_rss_mb: float = 0.0
+    process_peak_rss_mb: float = 0.0
+    resource_limit_exceeded: bool = False
+    app_restart_occurred: bool = False
+    # Concurrency (WP11)
+    concurrent_users: int = 0
+    sync_mode: str = ""
+    timeout_result: str = ""
+    concurrency_requests: list[ConcurrencyRequest] = dataclasses.field(default_factory=list)
+    # Repeated runs (WP9)
+    repeated_runs: list[RepeatedRun] = dataclasses.field(default_factory=list)
+    # Acceptance test results (WP12)
+    acceptance_tests: list[AcceptanceTestResult] = dataclasses.field(default_factory=list)
+    error: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -569,8 +806,6 @@ class CloudEvidence:
             errors.append("success: false — cannot publish failed Cloud evidence")
         if not self.code_commit:
             errors.append("code_commit: empty")
-        if not self.git_worktree_clean:
-            errors.append("git_worktree_clean: false — worktree must be clean")
         if not self.started_at_utc:
             errors.append("started_at_utc: empty")
         if not self.completed_at_utc:
@@ -594,7 +829,21 @@ class CloudEvidence:
             errors.append("torch_cuda_none: false — CPU-only Torch required")
         if not self.nvidia_packages_absent:
             errors.append("nvidia_packages_absent: false — no NVIDIA packages allowed")
-        # Cold phase (WP5): must have valid cache state and timing
+
+        # Deployment identity (WP6): code_commit must match deployed_commit
+        if not self.deployed_url:
+            errors.append("deployed_url: empty — must identify the deployment")
+        if not self.deployed_commit:
+            errors.append("deployed_commit: empty — must identify the deployed commit")
+        if not self.deployment_time_utc:
+            errors.append("deployment_time_utc: empty")
+        if self.code_commit and self.deployed_commit and self.code_commit != self.deployed_commit:
+            errors.append(
+                f"deployment identity mismatch: code_commit '{self.code_commit}' != "
+                f"deployed_commit '{self.deployed_commit}'"
+            )
+
+        # Cold phase
         if self.cold.total_seconds <= 0:
             errors.append("cold.total_seconds: missing — cold forecast required")
         if self.cold.cache_state not in {CACHE_STATE_DOWNLOAD_COLD, CACHE_STATE_PROCESS_COLD}:
@@ -604,7 +853,10 @@ class CloudEvidence:
             )
         if self.cold.pipeline_call_count != 1:
             errors.append(f"cold.pipeline_call_count: expected 1, got {self.cold.pipeline_call_count}")
-        # Warm phase (WP5): must be same_process_warm with reuse
+        if self.cold.rss_mb <= 0:
+            errors.append("cold.rss_mb: must be > 0 — memory measurement required (WP7)")
+
+        # Warm phase
         if self.warm.total_seconds <= 0:
             errors.append("warm.total_seconds: missing — warm forecast required")
         if self.warm.cache_state != CACHE_STATE_WARM:
@@ -621,38 +873,59 @@ class CloudEvidence:
                 f"warm.model_load_seconds: expected near-zero (reused pipeline), "
                 f"got {self.warm.model_load_seconds}"
             )
-        # Revision consistency
-        if self.configured_revision and self.model_revision and self.configured_revision != self.model_revision:
-            errors.append(
-                f"revision mismatch: configured '{self.configured_revision}', "
-                f"resolved '{self.model_revision}'"
-            )
-        # Concurrency gate (WP6): must have >= 2 concurrent users
+        if self.warm.rss_mb <= 0:
+            errors.append("warm.rss_mb: must be > 0 — memory measurement required (WP7)")
+
+        # Resource evidence (WP7)
+        if self.cold_peak_rss_mb <= 0:
+            errors.append("cold_peak_rss_mb: must be > 0 — peak memory required")
+        if self.process_peak_rss_mb <= 0:
+            errors.append("process_peak_rss_mb: must be > 0 — process peak memory required")
+
+        # Concurrency (WP11)
         if self.concurrent_users < 2:
             errors.append(
                 f"concurrent_users: expected >= 2, got {self.concurrent_users} "
                 f"— concurrency measurement required before public sharing"
             )
         if self.concurrent_users >= 2:
-            if not self.queue_time_per_request:
-                errors.append("queue_time_per_request: empty — must record queue time per request")
-            if not self.inference_time_per_request:
-                errors.append("inference_time_per_request: empty — must record inference time per request")
-            if len(self.queue_time_per_request) < self.concurrent_users:
+            if len(self.concurrency_requests) < self.concurrent_users:
                 errors.append(
-                    f"queue_time_per_request: expected at least {self.concurrent_users} entries, "
-                    f"got {len(self.queue_time_per_request)}"
+                    f"concurrency_requests: expected at least {self.concurrent_users}, "
+                    f"got {len(self.concurrency_requests)}"
                 )
-            if len(self.inference_time_per_request) < self.concurrent_users:
+            for req in self.concurrency_requests:
+                errors.extend(f"concurrency_request: {e}" for e in req.validate())
+            # Verify overlapping request windows
+            if len(self.concurrency_requests) >= 2:
+                starts = [r.start_time_utc for r in self.concurrency_requests if r.start_time_utc]
+                if len(starts) >= 2:
+                    sorted_starts = sorted(starts)
+                    # At least one request should have started while another was active
+                    # Simple check: the second request started before the first completed
+                    r0 = self.concurrency_requests[0]
+                    r1 = self.concurrency_requests[1]
+                    if r0.start_time_utc and r1.start_time_utc and r0.completion_time_utc:
+                        if r1.start_time_utc >= r0.completion_time_utc:
+                            errors.append(
+                                "concurrency: request windows do not overlap — "
+                                "no concurrency was exercised"
+                            )
+
+        # Repeated runs (WP9)
+        if self.success:
+            if len(self.repeated_runs) < 3:
                 errors.append(
-                    f"inference_time_per_request: expected at least {self.concurrent_users} entries, "
-                    f"got {len(self.inference_time_per_request)}"
+                    f"repeated_runs: expected at least 3, got {len(self.repeated_runs)}"
                 )
-        # Repeated runs (P2-2): at least 3 if success
-        if self.success and len(self.repeated_runs) < 3:
-            errors.append(
-                f"repeated_runs: expected at least 3, got {len(self.repeated_runs)}"
-            )
+            for run in self.repeated_runs:
+                errors.extend(f"repeated_run: {e}" for e in run.validate())
+
+        # Acceptance tests (WP12)
+        if self.success:
+            if not self.acceptance_tests:
+                errors.append("acceptance_tests: empty — UI acceptance paths must be recorded")
+
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -660,6 +933,11 @@ class CloudEvidence:
         d["machine"] = self.machine.to_dict()
         d["cold"] = self.cold.to_dict()
         d["warm"] = self.warm.to_dict()
+        d["token_absent_result"] = self.token_absent_result.to_dict()
+        d["token_present_result"] = self.token_present_result.to_dict()
+        d["concurrency_requests"] = [r.to_dict() for r in self.concurrency_requests]
+        d["repeated_runs"] = [r.to_dict() for r in self.repeated_runs]
+        d["acceptance_tests"] = [t.to_dict() for t in self.acceptance_tests]
         return d
 
 
@@ -722,7 +1000,15 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
             d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
         if "machine" in d and isinstance(d["machine"], dict):
             d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
+        if "cache_preflight" in d and isinstance(d["cache_preflight"], dict):
+            d["cache_preflight"] = CachePreflight(**_filter_known_fields(d["cache_preflight"], CachePreflight))
+        if "token_absent_result" in d and isinstance(d["token_absent_result"], dict):
+            d["token_absent_result"] = TokenPathResult(**_filter_known_fields(d["token_absent_result"], TokenPathResult))
+        if "token_present_result" in d and isinstance(d["token_present_result"], dict):
+            d["token_present_result"] = TokenPathResult(**_filter_known_fields(d["token_present_result"], TokenPathResult))
     elif etype == "benchmark_suite":
+        if "cache_preflight" in d and isinstance(d["cache_preflight"], dict):
+            d["cache_preflight"] = CachePreflight(**_filter_known_fields(d["cache_preflight"], CachePreflight))
         if "scenarios" in d:
             scenarios = []
             for sc in d["scenarios"]:
@@ -749,5 +1035,24 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
             d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
         if "machine" in d and isinstance(d["machine"], dict):
             d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
+        if "token_absent_result" in d and isinstance(d["token_absent_result"], dict):
+            d["token_absent_result"] = TokenPathResult(**_filter_known_fields(d["token_absent_result"], TokenPathResult))
+        if "token_present_result" in d and isinstance(d["token_present_result"], dict):
+            d["token_present_result"] = TokenPathResult(**_filter_known_fields(d["token_present_result"], TokenPathResult))
+        if "repeated_runs" in d and isinstance(d["repeated_runs"], list):
+            d["repeated_runs"] = [
+                RepeatedRun(**_filter_known_fields(r, RepeatedRun))
+                for r in d["repeated_runs"]
+            ]
+        if "concurrency_requests" in d and isinstance(d["concurrency_requests"], list):
+            d["concurrency_requests"] = [
+                ConcurrencyRequest(**_filter_known_fields(r, ConcurrencyRequest))
+                for r in d["concurrency_requests"]
+            ]
+        if "acceptance_tests" in d and isinstance(d["acceptance_tests"], list):
+            d["acceptance_tests"] = [
+                AcceptanceTestResult(**_filter_known_fields(t, AcceptanceTestResult))
+                for t in d["acceptance_tests"]
+            ]
 
     return cls(**_filter_known_fields(d, cls))

@@ -42,6 +42,7 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
     data = {
         "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
         "evidence_type": "smoke_test",
+        "test": "chronos2_smoke_test",
         "code_commit": "abc123",
         "git_worktree_clean": True,
         "success": True,
@@ -52,13 +53,27 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
         "configured_revision": "rev1",
         "model_revision": "rev1",
         "hf_token_present": False,
+        "token_absent_result": {"attempted": True, "success": True, "configured_revision": "rev1", "resolved_revision": "rev1"},
+        "token_present_result": {"attempted": False},
         "initial_cache_state": "download_cold",
-        "cold": {"cache_state": "download_cold", "pipeline_call_count": 1},
-        "warm": {"cache_state": "same_process_warm", "pipeline_reused": True},
+        "cold": {"cache_state": "download_cold", "pipeline_call_count": 1, "rss_mb": 500.0},
+        "warm": {"cache_state": "same_process_warm", "pipeline_reused": True, "rss_mb": 500.0},
         "package_versions": {"torch": "2.13.0"},
+        "cache_preflight": {"snapshot_present": False, "cache_source": "explicit"},
     }
     if overrides:
         data.update(overrides)
+        # Derive cache_preflight from initial_cache_state if not explicitly set
+        if "initial_cache_state" in overrides and "cache_preflight" not in overrides:
+            ics = overrides["initial_cache_state"]
+            data["cache_preflight"] = {
+                "snapshot_present": ics == "process_cold_cached_weights",
+                "cache_source": "explicit",
+            }
+        # Derive token result from hf_token_present if not explicitly set
+        if "hf_token_present" in overrides and "token_absent_result" not in overrides and "token_present_result" not in overrides:
+            data["token_absent_result"] = {"attempted": not overrides["hf_token_present"], "success": not overrides["hf_token_present"]}
+            data["token_present_result"] = {"attempted": overrides["hf_token_present"], "success": overrides["hf_token_present"]}
     return data
 
 
@@ -75,10 +90,15 @@ def _valid_benchmark_suite_dict(overrides: dict | None = None) -> dict:
         "python_version": "3.12",
         "model_id": "amazon/chronos-2",
         "configured_revision": "rev1",
+        "resolved_revision": "rev1",
+        "pipeline_construction_count": 1,
+        "peak_rss_mb": 800.0,
+        "cache_preflight": {"snapshot_present": True, "cache_source": "explicit"},
         "scenarios": [
             {
                 "scenario": "weekly_260_13",
                 "scenario_passed": True,
+                "model_revision": "rev1",
                 "samples": [
                     {"label": "cold_forecast", "cache_state": "process_cold_cached_weights", "success": True},
                     {"label": "warm_forecast", "cache_state": "same_process_warm", "success": True},
@@ -87,6 +107,7 @@ def _valid_benchmark_suite_dict(overrides: dict | None = None) -> dict:
             {
                 "scenario": "panel_5_series",
                 "scenario_passed": True,
+                "model_revision": "rev1",
                 "samples": [
                     {"label": "panel_forecast_direct", "cache_state": "same_process_warm", "success": True},
                 ],
@@ -94,6 +115,7 @@ def _valid_benchmark_suite_dict(overrides: dict | None = None) -> dict:
             {
                 "scenario": "10_rolling_calls",
                 "scenario_passed": True,
+                "model_revision": "rev1",
                 "samples": [{"label": f"fold_{i}", "cache_state": "same_process_warm", "success": True} for i in range(10)]
                 + [{"label": "total_10_folds", "cache_state": "aggregate", "success": True}],
             },
@@ -428,10 +450,14 @@ class TestCloudEvidenceValidation:
             "pip_check_passed": True,
             "torch_cuda_none": True,
             "nvidia_packages_absent": True,
+            "deployed_url": "https://example.com/app",
+            "deployed_commit": "abc123",
+            "deployment_time_utc": "2026-07-29T00:00:00",
             "cold": {
                 "total_seconds": 120.0,
                 "cache_state": "download_cold",
                 "pipeline_call_count": 1,
+                "rss_mb": 600.0,
             },
             "warm": {
                 "total_seconds": 2.0,
@@ -439,14 +465,35 @@ class TestCloudEvidenceValidation:
                 "pipeline_reused": True,
                 "pipeline_call_count": 1,
                 "model_load_seconds": 0.0,
+                "rss_mb": 600.0,
             },
+            "cold_peak_rss_mb": 800.0,
+            "warm_rss_mb": 600.0,
+            "process_peak_rss_mb": 850.0,
             "concurrent_users": 2,
-            "queue_time_per_request": [1.5, 2.0],
-            "inference_time_per_request": [1.0, 1.2],
+            "concurrency_requests": [
+                {"request_id": "req1", "start_time_utc": "2026-07-29T00:00:00",
+                 "completion_time_utc": "2026-07-29T00:02:00",
+                 "queue_seconds": 0.0, "inference_seconds": 120.0, "success": True},
+                {"request_id": "req2", "start_time_utc": "2026-07-29T00:00:30",
+                 "completion_time_utc": "2026-07-29T00:02:30",
+                 "queue_seconds": 30.0, "inference_seconds": 90.0, "success": True},
+            ],
             "repeated_runs": [
-                {"run": 1, "total_seconds": 120.0},
-                {"run": 2, "total_seconds": 2.0},
-                {"run": 3, "total_seconds": 2.1},
+                {"run_number": 1, "success": True, "total_seconds": 120.0,
+                 "started_at_utc": "2026-07-29T00:00:00", "completed_at_utc": "2026-07-29T00:02:00",
+                 "resolved_revision": "rev1", "cache_state": "download_cold", "pipeline_reused": False},
+                {"run_number": 2, "success": True, "total_seconds": 2.0,
+                 "started_at_utc": "2026-07-29T00:02:00", "completed_at_utc": "2026-07-29T00:02:02",
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm", "pipeline_reused": True},
+                {"run_number": 3, "success": True, "total_seconds": 2.1,
+                 "started_at_utc": "2026-07-29T00:02:02", "completed_at_utc": "2026-07-29T00:02:04",
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm", "pipeline_reused": True},
+            ],
+            "acceptance_tests": [
+                {"test_name": "valid_csv", "passed": True},
+                {"test_name": "oversized_rejection", "passed": True},
+                {"test_name": "bad_timestamps", "passed": True},
             ],
         }
         if overrides:
@@ -501,16 +548,14 @@ class TestCloudEvidenceValidation:
         errors = ev.validate()
         assert any("concurrent_users" in e for e in errors)
 
-    def test_concurrency_requires_queue_and_inference_times(self):
+    def test_concurrency_requires_requests(self):
         data = self._valid_cloud_dict({
             "concurrent_users": 2,
-            "queue_time_per_request": [],
-            "inference_time_per_request": [],
+            "concurrency_requests": [],
         })
         ev = evidence_from_dict(data)
         errors = ev.validate()
-        assert any("queue_time_per_request" in e for e in errors)
-        assert any("inference_time_per_request" in e for e in errors)
+        assert any("concurrency_requests" in e for e in errors)
 
     def test_requires_at_least_3_repeated_runs(self):
         data = self._valid_cloud_dict({"repeated_runs": [{"run": 1}]})
@@ -544,14 +589,14 @@ class TestModelArtifactFields:
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
-            snapshot_file_count=2,
+            snapshot_file_count=1,
             weight_file_count=1,
             weight_shard_count=1,
             total_bytes=500000000,
             files=[ModelArtifactFile(filename="model.safetensors", size_bytes=500000000, sha256="abc")],
             manifest_sha256="def",
         )
-        assert ev.snapshot_file_count == 2
+        assert ev.snapshot_file_count == 1
         assert ev.weight_file_count == 1
         assert ev.weight_shard_count == 1
         errors = ev.validate()
@@ -568,8 +613,8 @@ class TestModelArtifactFields:
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "snapshot_commit": "rev1",
-            "shard_count": 2,
-            "snapshot_file_count": 2,
+            "shard_count": 1,
+            "snapshot_file_count": 1,
             "weight_file_count": 1,
             "weight_shard_count": 1,
             "total_bytes": 500000000,
@@ -577,8 +622,8 @@ class TestModelArtifactFields:
             "manifest_sha256": "def",
         })
         # Both snapshot_file_count and shard_count can be set
-        assert ev.snapshot_file_count == 2
-        assert ev.shard_count == 2
+        assert ev.snapshot_file_count == 1
+        assert ev.shard_count == 1
         errors = ev.validate()
         assert errors == []
 
@@ -611,9 +656,25 @@ class TestManifestVerifier:
             evidence_dir = Path(tmp)
             manifest_path = evidence_dir / "evidence_manifest.json"
 
-            # Create a test file
+            # Create a valid local_stage0_bundle JSON file
+            valid_bundle = {
+                "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+                "evidence_type": "local_stage0_bundle",
+                "bundle_passed": True,
+                "code_commit": "abc123",
+                "git_worktree_clean": True,
+                "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:01:00",
+                "runs": {
+                    "download_cold_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "process_cold_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "benchmark": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "token_present_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                },
+                "model_artifact": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+            }
             test_file = evidence_dir / "test_bundle.json"
-            test_content = b'{"test": true}'
+            test_content = json.dumps(valid_bundle).encode()
             test_file.write_bytes(test_content)
             test_hash = hashlib.sha256(test_content).hexdigest()
 
@@ -655,9 +716,25 @@ class TestManifestVerifier:
             evidence_dir = Path(tmp)
             manifest_path = evidence_dir / "evidence_manifest.json"
 
-            # Create a test file with known content
+            # Create a valid bundle file
+            valid_bundle = {
+                "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+                "evidence_type": "local_stage0_bundle",
+                "bundle_passed": True,
+                "code_commit": "abc123",
+                "git_worktree_clean": True,
+                "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:01:00",
+                "runs": {
+                    "download_cold_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "process_cold_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "benchmark": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                    "token_present_smoke": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+                },
+                "model_artifact": {"code_commit": "abc123", "model_id": "amazon/chronos-2"},
+            }
             test_file = evidence_dir / "test_bundle.json"
-            test_file.write_text('{"test": true}')
+            test_file.write_text(json.dumps(valid_bundle))
 
             # Manifest with WRONG hash
             manifest = {
@@ -699,7 +776,7 @@ class TestManifestVerifier:
                 "files": {
                     "local_stage0_bundle": {
                         "filename": "nonexistent.json",
-                        "sha256": "abc123",
+                        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
                         "code_commit": "abc123",
                         "evidence_type": "local_stage0_bundle",
                     },
@@ -755,10 +832,15 @@ class TestProducerSchemaAlignment:
             "python_version": "3.12",
             "model_id": "amazon/chronos-2",
             "configured_revision": "rev1",
+            "resolved_revision": "rev1",
+            "pipeline_construction_count": 1,
+            "peak_rss_mb": 800.0,
+            "cache_preflight": {"snapshot_present": True, "cache_source": "explicit"},
             "scenarios": [
                 {
                     "scenario": "weekly_260_13",
                     "scenario_passed": True,
+                    "model_revision": "rev1",
                     "evidence_schema_version": "2",  # producer-only field
                     "samples": [
                         {"label": "cold_forecast", "cache_state": "process_cold_cached_weights", "success": True},
@@ -768,6 +850,7 @@ class TestProducerSchemaAlignment:
                 {
                     "scenario": "panel_5_series",
                     "scenario_passed": True,
+                    "model_revision": "rev1",
                     "samples": [
                         {"label": "panel_forecast_direct", "cache_state": "same_process_warm", "success": True},
                     ],
@@ -775,6 +858,7 @@ class TestProducerSchemaAlignment:
                 {
                     "scenario": "10_rolling_calls",
                     "scenario_passed": True,
+                    "model_revision": "rev1",
                     "samples": [{"label": f"fold_{i}", "cache_state": "same_process_warm", "success": True} for i in range(10)]
                     + [{"label": "total_10_folds", "cache_state": "aggregate", "success": True}],
                 },
@@ -979,6 +1063,109 @@ class TestManifestVerifierSubprocess:
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Coordinator tests (WP10)
+# ---------------------------------------------------------------------------
+
+
+class TestInferenceCoordinator:
+    """Test the process-wide inference coordinator."""
+
+    def test_coordinator_importable(self):
+        from src.coordinator import InferenceCoordinator, CoordinatorTimeoutError
+        assert InferenceCoordinator is not None
+        assert CoordinatorTimeoutError is not None
+
+    def test_coordinator_defaults(self):
+        from src.coordinator import InferenceCoordinator
+        c = InferenceCoordinator()
+        assert c.capacity == 1
+        assert c.timeout_seconds == 300
+        assert c.sync_mode == "semaphore"
+
+    def test_single_request_succeeds(self):
+        from src.coordinator import InferenceCoordinator
+        c = InferenceCoordinator(capacity=1, timeout_seconds=10)
+
+        def dummy_fn(x: int) -> int:
+            return x * 2
+
+        result = c.run(dummy_fn, 21, request_id="test1")
+        assert result == 42
+        log = c.request_log
+        assert len(log) == 1
+        assert log[0]["success"] is True
+        assert log[0]["request_id"] == "test1"
+        assert log[0]["queue_seconds"] >= 0
+        assert log[0]["inference_seconds"] >= 0
+
+    def test_two_sequential_requests(self):
+        from src.coordinator import InferenceCoordinator
+        import threading
+        c = InferenceCoordinator(capacity=1, timeout_seconds=10)
+        results: list[int] = []
+        errors: list[Exception] = []
+
+        def worker(n: int):
+            try:
+                r = c.run(lambda x: x, n, request_id=f"req_{n}")
+                results.append(r)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert len(errors) == 0, f"Unexpected errors: {errors}"
+        assert len(results) == 2
+        log = c.request_log
+        assert len(log) == 2
+        # Both requests must have overlapping windows
+        assert log[0]["start_time_utc"] < log[1]["completion_time_utc"]
+
+    def test_lock_released_on_failure(self):
+        from src.coordinator import InferenceCoordinator
+        c = InferenceCoordinator(capacity=1, timeout_seconds=10)
+
+        def failing_fn():
+            raise ValueError("test error")
+
+        with pytest.raises(ValueError, match="test error"):
+            c.run(failing_fn, request_id="fail")
+
+        # After failure, the semaphore must be released so a new request works
+        result = c.run(lambda: 42, request_id="recovery")
+        assert result == 42
+        log = c.request_log
+        assert len(log) == 2
+        assert log[0]["success"] is False
+        assert log[0]["error_code"] == "ValueError"
+        assert log[1]["success"] is True
+
+    def test_timeout_raises_error(self):
+        from src.coordinator import InferenceCoordinator, CoordinatorTimeoutError
+        import threading
+        import time
+        c = InferenceCoordinator(capacity=1, timeout_seconds=0.5)
+
+        # Hold the semaphore
+        acquired = c._semaphore.acquire(blocking=False)
+        assert acquired
+
+        # Now try to run - should time out
+        start = time.time()
+        with pytest.raises(CoordinatorTimeoutError):
+            c.run(lambda: 42, request_id="timeout")
+        elapsed = time.time() - start
+        assert elapsed >= 0.4  # Should wait near the timeout
+
+        # Release the held semaphore
+        c._semaphore.release()
 
 
 import sys
