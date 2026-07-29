@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -65,6 +66,23 @@ def _build_weekly_fixture(n_points: int = 260) -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
+def _apply_token_result(evidence: dict, result: dict) -> None:
+    """Populate whichever token-path slot matches this run's HF_TOKEN state.
+
+    Only the attempted path is ever populated with real data; the other path
+    is always recorded as not attempted. This is producer-emitted from the
+    actual runtime environment and forecast outcome — evidence fields must
+    never be hand-edited or copied from a different run to simulate a path
+    that was not exercised.
+    """
+    if evidence["hf_token_present"]:
+        evidence["token_present_result"] = result
+        evidence["token_absent_result"] = {"attempted": False}
+    else:
+        evidence["token_absent_result"] = result
+        evidence["token_present_result"] = {"attempted": False}
+
+
 def run_smoke_test(
     evidence_dir: str = DEFAULT_EVIDENCE_DIR,
     initial_cache_state: str = "",
@@ -84,6 +102,7 @@ def run_smoke_test(
     with ``success=False`` and error details on failure.
     """
     _started = datetime.now(timezone.utc)
+    _run_id = str(uuid.uuid4())
 
     # Cache preflight (WP5): inspect HF cache before the run
     from src.telemetry import inspect_hf_cache
@@ -206,10 +225,22 @@ def run_smoke_test(
         print(f"  FAILED: {exc}")
         evidence["error"] = f"{type(exc).__name__}: {exc}"
         evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        _apply_token_result(evidence, {
+            "attempted": True,
+            "success": False,
+            "configured_revision": MODEL_REVISION,
+            "resolved_revision": "",
+            "timing_seconds": round(time.perf_counter() - t0, 3),
+            "error_code": type(exc).__name__,
+            "run_id": _run_id,
+            "started_at_utc": evidence["started_at_utc"],
+            "completed_at_utc": evidence["completed_at_utc"],
+        })
         evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         return evidence
     cold_time = time.perf_counter() - t0
     cold_rss = rss_mb()
+    _cold_completed_at = datetime.now(timezone.utc).isoformat()
 
     evidence["cold"] = {
         "total_seconds": round(cold_time, 3),
@@ -222,6 +253,21 @@ def run_smoke_test(
         "cache_state": initial_cache_state,
     }
     evidence["model_revision"] = result.model_revision
+
+    # Token path result (WP8): the cold phase is where the model is resolved
+    # under the current HF_TOKEN state, so a successful cold forecast means
+    # this token path succeeded — independent of whether the warm phase or
+    # schema checks below later fail the overall smoke test.
+    _apply_token_result(evidence, {
+        "attempted": True,
+        "success": True,
+        "configured_revision": MODEL_REVISION,
+        "resolved_revision": result.model_revision,
+        "timing_seconds": round(cold_time, 3),
+        "run_id": _run_id,
+        "started_at_utc": evidence["started_at_utc"],
+        "completed_at_utc": _cold_completed_at,
+    })
 
     print(f"  Cold time      : {cold_time:.3f}s")
     print(f"  Pipeline calls : {adapter.pipeline_call_count}")

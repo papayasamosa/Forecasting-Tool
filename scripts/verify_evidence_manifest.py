@@ -110,6 +110,7 @@ def verify_manifest() -> int:
         manifest = json.load(f)
 
     errors: list[str] = []
+    invalidated: list[str] = []
 
     # Check schema version
     schema_ver = manifest.get("evidence_schema_version", "")
@@ -122,6 +123,8 @@ def verify_manifest() -> int:
         errors.append("files: manifest has no file entries")
 
     for key, entry in files.items():
+        if isinstance(entry, dict) and entry.get("status") == "invalidated":
+            invalidated.append(key)
         if not isinstance(entry, dict):
             errors.append(f"{key}: entry must be a dict, got {type(entry).__name__}")
             continue
@@ -191,9 +194,17 @@ def verify_manifest() -> int:
             print(f"  [FAIL] {err}")
         return 1
 
-    print("[OK] Evidence manifest verified — all files match their hashes and internal metadata.")
+    print("[OK] Evidence manifest hashes and internal metadata verified.")
     print(f"   Manifest: {MANIFEST_PATH.name}")
     print(f"   Files checked: {sum(1 for e in files.values() if isinstance(e, dict) and e.get('filename'))}")
+    if invalidated:
+        print()
+        print("  [WARNING] The following manifest entries are marked INVALIDATED")
+        print("  and must NOT be treated as passing Stage 0 release evidence,")
+        print("  even though their hashes and internal schema checks pass:")
+        for key in invalidated:
+            note = files.get(key, {}).get("notes", "") if isinstance(files.get(key), dict) else ""
+            print(f"    - {key}: {note}")
     return 0
 
 

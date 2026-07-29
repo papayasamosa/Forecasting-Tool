@@ -28,7 +28,8 @@
       "sha256": "76b43ef014ce8ebc21406116b4522e72c0936379a0ce239cf880324aa8f308ea",
       "code_commit": "3710e6b3051262ac19e4dcaef17cf58b71540cae",
       "evidence_type": "local_stage0_bundle",
-      "notes": "Published 20260729_162933"
+      "status": "invalidated",
+      "notes": "INVALIDATED — do not treat as passing Stage 0 release evidence. The runs.token_present_smoke record in this file is byte-for-byte identical to runs.process_cold_smoke (same started_at_utc/completed_at_utc, same cold/warm timings and RSS); only hf_token_present and the token_*_result objects were changed. It is not an independently executed token-present run. The PR #18 commit message that produced this file states HF_TOKEN was unavailable and token-present evidence was omitted, which contradicts token_present_smoke.success=true here. The file is retained unmodified for audit; it is superseded once a genuine token-present rerun (using the hardened chronos2_smoke_test.py producer and build_local_stage0_bundle.py duplicate-evidence checks) is published under a new filename."
     },
     "cloud_summary": {
       "filename": null,
