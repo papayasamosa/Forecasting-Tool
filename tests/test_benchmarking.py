@@ -62,12 +62,15 @@ class TestBenchmarkResult:
         r.samples.append(BenchmarkSample(label="test", duration_seconds=1.0))
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "test.json")
-            _write_json([r], path)
+            _write_json([r], path, suite_passed=True, initial_cache_state="process_cold_cached_weights")
             with open(path) as f:
                 data = json.load(f)
-            assert len(data) == 1
-            assert data[0]["scenario"] == "test"
-            assert len(data[0]["samples"]) == 1
+            # v2 envelope: object with "scenarios" list
+            assert isinstance(data, dict)
+            assert data["evidence_type"] == "benchmark_suite"
+            assert len(data["scenarios"]) == 1
+            assert data["scenarios"][0]["scenario"] == "test"
+            assert len(data["scenarios"][0]["samples"]) == 1
 
     def test_markdown_output(self):
         r = BenchmarkResult(scenario="test_md", context_rows=50, horizon=5)
@@ -716,15 +719,17 @@ class TestEvidenceOnFailure:
             md_files = [f for f in files if f.endswith(".md")]
             assert len(json_files) >= 1, "No JSON evidence on failure"
             assert len(md_files) >= 1, "No Markdown evidence on failure"
-            # JSON evidence must contain failure info
+            # JSON evidence must contain failure info (v2 envelope)
             with open(os.path.join(tmp, json_files[0])) as f:
                 data = json.load(f)
-            assert isinstance(data, list)
-            assert len(data) >= 1
+            assert isinstance(data, dict), "Expected v2 envelope dict"
+            assert data["evidence_type"] == "benchmark_suite"
+            assert "scenarios" in data
+            assert len(data["scenarios"]) >= 1
             # Factory-dependent scenarios must have recorded failures.
             # failure_and_retry creates its own adapter so may still work.
             factory_scenarios = {"weekly_260_13", "panel_5_series", "10_rolling_calls"}
-            for r in data:
+            for r in data["scenarios"]:
                 if r["scenario"] in factory_scenarios:
                     assert not r["scenario_passed"], (
                         f"Scenario {r['scenario']} should have failed"
@@ -819,10 +824,13 @@ class TestEvidenceOnFailure:
             json_files = [f for f in files if f.endswith(".json")]
             with open(os.path.join(tmp, json_files[0])) as f:
                 data = json.load(f)
+            # v2 envelope: data is a dict with "scenarios" list
+            assert isinstance(data, dict)
+            scenarios = data.get("scenarios", [])
             # Find the error in any sample
             errors_found = []
-            for r in data:
-                for s in r["samples"]:
+            for r in scenarios:
+                for s in r.get("samples", []):
                     if not s["success"]:
                         errors_found.append((s["error_type"], s["error_message"]))
             assert len(errors_found) > 0, "No failure samples in evidence"

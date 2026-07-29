@@ -756,18 +756,22 @@ def run_benchmarks(
     # Evaluate suite pass/fail
     # ------------------------------------------------------------------
     suite_ok = _evaluate_suite(all_results)
+    started_at = all_results[0].run_timestamp if all_results else datetime.now(timezone.utc).isoformat()
+    completed_at = datetime.now(timezone.utc).isoformat()
     for r in all_results:
         # Write configured revision into each result
         r.configured_revision = CONFIGURED_REVISION
 
     # ------------------------------------------------------------------
-    # Write results (do NOT filter successful zero-duration samples)
+    # Write results (suite envelope v2)
     # ------------------------------------------------------------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = os.path.join(output_dir, f"benchmark_{timestamp}.json")
     md_path = os.path.join(output_dir, f"benchmark_{timestamp}.md")
 
-    _write_json(all_results, json_path)
+    _write_json(all_results, json_path, suite_passed=suite_ok,
+                initial_cache_state=initial_cache_state,
+                started_at_utc=started_at, completed_at_utc=completed_at)
     _write_markdown(all_results, md_path)
 
     print(f"\nResults written to:\n  {json_path}\n  {md_path}")
@@ -779,14 +783,41 @@ def run_benchmarks(
     return all_results
 
 
-def _write_json(results: list[BenchmarkResult], path: str) -> None:
-    data = []
+def _write_json(results: list[BenchmarkResult], path: str, *,
+                suite_passed: bool = False,
+                initial_cache_state: str = "",
+                started_at_utc: str = "",
+                completed_at_utc: str = "") -> None:
+    """Write benchmark results as a v2 suite envelope."""
+    trace = capture_traceability()
+    scenarios = []
     for r in results:
         d = asdict(r)
         d["samples"] = [asdict(s) for s in r.samples]
-        data.append(d)
+        # Add traceability fields if not already present
+        if not d.get("code_commit"):
+            d["code_commit"] = trace.get("code_commit", "")
+        if not d.get("git_worktree_clean"):
+            d["git_worktree_clean"] = trace.get("git_worktree_clean", False)
+        scenarios.append(d)
+
+    envelope = {
+        "evidence_schema_version": "2",
+        "evidence_type": "benchmark_suite",
+        "suite_passed": suite_passed,
+        "code_commit": trace.get("code_commit", ""),
+        "git_worktree_clean": trace.get("git_worktree_clean", False),
+        "git_traceability_error": trace.get("git_traceability_error", ""),
+        "initial_cache_state": initial_cache_state,
+        "started_at_utc": started_at_utc,
+        "completed_at_utc": completed_at_utc,
+        "python_version": sys.version.split()[0] if scenarios else "",
+        "model_id": MODEL_ID,
+        "configured_revision": results[0].configured_revision if results else "",
+        "scenarios": scenarios,
+    }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(envelope, f, indent=2, default=str)
 
 
 def _write_markdown(results: list[BenchmarkResult], path: str) -> None:

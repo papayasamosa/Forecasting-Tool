@@ -323,3 +323,68 @@ def machine_summary() -> dict[str, Any]:
         result["cpu_model"] = ""
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Cache-state verification helpers (WP5)
+# ---------------------------------------------------------------------------
+
+
+def inspect_hf_cache(
+    configured_revision: str,
+    cache_dir: str | None = None,
+) -> dict[str, Any]:
+    """Inspect the Hugging Face Hub cache for a pinned revision.
+
+    Returns a dict with:
+    - ``snapshot_present``: bool
+    - ``file_count``: int
+    - ``total_bytes``: int
+    - ``error``: str or ""
+
+    Never raises; returns safe defaults on failure.
+    Does not return personal paths.
+    """
+    result: dict[str, Any] = {
+        "snapshot_present": False,
+        "file_count": 0,
+        "total_bytes": 0,
+        "error": "",
+    }
+    try:
+        from src.config import MODEL_ID
+        hub_cache = cache_dir or os.environ.get(
+            "HF_HUB_CACHE",
+            os.path.join(os.environ.get("HF_HOME", ""), "hub"),
+        )
+        if not hub_cache or not os.path.isdir(hub_cache):
+            result["error"] = "HF_HUB_CACHE not found"
+            return result
+
+        model_dir = os.path.join(
+            hub_cache,
+            f"models--{MODEL_ID.replace('/', '--')}",
+            "snapshots",
+            configured_revision,
+        )
+        if os.path.isdir(model_dir):
+            result["snapshot_present"] = True
+            total_bytes = 0
+            file_count = 0
+            for dirpath, _dirnames, filenames in os.walk(model_dir):
+                for fname in filenames:
+                    fpath = os.path.join(dirpath, fname)
+                    try:
+                        total_bytes += os.path.getsize(fpath)
+                        file_count += 1
+                    except OSError:
+                        pass
+            result["file_count"] = file_count
+            result["total_bytes"] = total_bytes
+        else:
+            result["snapshot_present"] = False
+            result["error"] = f"snapshot for revision '{configured_revision}' not found"
+    except Exception as exc:
+        result["error"] = f"cache inspection failed: {exc}"
+
+    return result

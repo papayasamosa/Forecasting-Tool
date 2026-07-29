@@ -33,10 +33,11 @@ jobs:
       - name: Verify dependency consistency
         run: pip check
 
-      - name: Verify CPU-only PyTorch
+      - name: Verify CPU-only PyTorch (no CUDA, no NVIDIA packages)
         run: |
           python -c "import torch; assert torch.version.cuda is None, f'CUDA available: {torch.version.cuda}'"
           echo "CPU-only PyTorch confirmed: $(python -c 'import torch; print(torch.__version__)')"
+          pip list 2>/dev/null | grep -i nvidia && { echo "ERROR: NVIDIA packages found"; exit 1; } || echo "No NVIDIA/CUDA runtime packages installed"
 
       - name: Compile-check all executable files
         run: |

@@ -1,25 +1,41 @@
 {
-  "evidence_schema_version": "1",
+  "evidence_schema_version": "2",
   "last_updated": null,
   "files": {
-    "local_no_token_summary": {
+    "smoke_test": {
       "filename": null,
       "sha256": null,
-      "cache_state": null,
       "code_commit": null,
-      "notes": "Populate after current-head local evidence rerun (Gate B2). Use publish_evidence.py script."
+      "evidence_type": "smoke_test",
+      "notes": "Populate after current-head local evidence rerun (Gate B2)."
     },
-    "local_token_present_summary": {
+    "benchmark_suite": {
       "filename": null,
       "sha256": null,
       "code_commit": null,
-      "notes": "Populate after current-head token-present check. Use publish_evidence.py script."
+      "evidence_type": "benchmark_suite",
+      "notes": "Populate after current-head local evidence rerun (Gate B2)."
+    },
+    "model_artifact": {
+      "filename": null,
+      "sha256": null,
+      "code_commit": null,
+      "evidence_type": "model_artifact",
+      "notes": "Populate after current-head local evidence rerun (Gate B2)."
+    },
+    "local_stage0_bundle": {
+      "filename": null,
+      "sha256": null,
+      "code_commit": null,
+      "evidence_type": "local_stage0_bundle",
+      "notes": "Populate after bundle builder runs (Gate B2)."
     },
     "cloud_summary": {
       "filename": null,
       "sha256": null,
       "code_commit": null,
-      "notes": "Populate after Community Cloud deployment (Gate C). Use publish_evidence.py script."
+      "evidence_type": "cloud_stage0",
+      "notes": "Populate after Community Cloud deployment (Gate C)."
     }
   },
   "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand."
