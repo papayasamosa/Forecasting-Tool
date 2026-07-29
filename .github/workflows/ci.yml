@@ -22,9 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install production dependencies (Cloud-identical path)
-        env:
-          PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      - name: Install production dependencies (candidate Cloud path)
         run: |
           pip install -r requirements.txt
 
@@ -48,6 +46,10 @@ jobs:
         run: |
           flake8 app.py pages/ src/ scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 app.py pages/ src/ scripts/ tests/ --count --exit-zero --max-complexity=10 --statistics
+
+      - name: MCP static verification (no D-drive, no network, no credentials)
+        run: |
+          python scripts/verify_mcp_static.py
 
       - name: Run unit tests with coverage (offline mode)
         env:

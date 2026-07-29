@@ -6,10 +6,11 @@ Output directory defaults to D:\\Forecasting-Tool-Local\\benchmarks on Windows.
 Exits non-zero when the required suite fails (WP2).
 
 Usage:
-    D:\Forecasting-Tool-Local\venv\Scripts\python.exe scripts\run_stage0_benchmark.py
+    D:\Forecasting-Tool-Local\venv\Scripts\python.exe scripts\run_stage0_benchmark.py --initial-cache-state process_cold_cached_weights
 """
 from __future__ import annotations
 
+import argparse
 import sys
 import os
 
@@ -21,13 +22,50 @@ from src.benchmarking import (
 )
 
 
-def main() -> int:
-    output_dir = os.environ.get(
-        "BENCHMARK_OUTPUT_DIR",
-        r"D:\Forecasting-Tool-Local\benchmarks",
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the benchmark runner."""
+    parser = argparse.ArgumentParser(
+        description="Stage 0 benchmark suite",
     )
+    parser.add_argument(
+        "--initial-cache-state",
+        type=str,
+        default=os.environ.get("BENCHMARK_INITIAL_CACHE_STATE", ""),
+        choices=["download_cold", "process_cold_cached_weights"],
+        help=(
+            "Model-cache state at the start of the run. "
+            "Required for release-evidence mode. "
+            "Environment fallback: BENCHMARK_INITIAL_CACHE_STATE."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=os.environ.get("BENCHMARK_OUTPUT_DIR", r"D:\Forecasting-Tool-Local\benchmarks"),
+        help="Output directory for benchmark results.",
+    )
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
+    output_dir = args.output_dir
+    initial_cache_state = args.initial_cache_state
+
+    if not initial_cache_state:
+        print(
+            "ERROR: --initial-cache-state is required for release-evidence mode.\n"
+            "  Valid values: download_cold, process_cold_cached_weights\n"
+            "  Set via --initial-cache-state or BENCHMARK_INITIAL_CACHE_STATE env var."
+        )
+        return 1
+
     print(f"Benchmark output directory: {output_dir}")
-    results = run_benchmarks(output_dir=output_dir)
+    print(f"Initial cache state: {initial_cache_state}")
+    results = run_benchmarks(
+        output_dir=output_dir,
+        initial_cache_state=initial_cache_state,
+    )
 
     suite_ok = _evaluate_suite(results)
 

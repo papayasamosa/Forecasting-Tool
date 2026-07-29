@@ -16,8 +16,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Pipeline reuse (real Chronos-2 model) | ✅ Verified (prior code — must rerun on current head) |
-| Pull-request CI | ✅ Green (102 tests, 90.54% coverage as of PR #7) |
-| `main` branch CI (post-merge) | ⏳ Verified only for PR-head; push-to-main run pending confirmation |
+| Pull-request CI | ✅ Green (120 tests, 90.73% coverage as of PR #8 and PR #9) |
+| `main` branch CI (post-merge) | ⏳ Verified for PR-head only; push-to-main run pending confirmation |
 | Context capping before record materialisation | ✅ Implemented |
 | Truncation warnings displayed in UI | ✅ Implemented |
 | Warm reuse enforced in benchmark gate | ✅ Implemented |
@@ -29,11 +29,20 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Real Chronos-2 model smoke test | ⏳ Prior evidence exists (cold ~23.5s, warm ~0.27s); must rerun on current head |
 | Local benchmark suite | ⏳ Prior evidence exists (4/4 scenarios pass); must rerun on current head |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
-| Model file checksum | ✅ `ddcda3c7508bf2528087723e98a20707cc04b7f370ae275a9fd88078ddba4f42` |
+| Model file checksum scope recorded | ✅ SHA-256 recorded (must verify file name, size, shard count on current head) |
 | Community Cloud deployment | ⏳ Pending (not yet Cloud-proven) |
 | ADR-001 inference backend | ⏳ Pending (requires Cloud deployment first, then evidence, then decision) |
-| Current-head local evidence rerun | ⏳ Pending (Gate B2) |
+| Current-head local evidence rerun | ⏳ Pending (Gate B2 — requires clean current-head commit first) |
 | Phase 1 features | 🔜 Planned (after all Stage 0 gates pass) |
+| MCP developer tooling scaffold | ✅ Optional, documentation-only, not functionally verified |
+| Evidence and MCP-security review closure | ✅ Merged (PR #10 — this PR) |
+| Cache state labelling (smoke + benchmark) | ✅ Implemented |
+| Git traceability (trustworthy repo-root detection) | ✅ Implemented |
+| Blank/missing timestamp rejection | ✅ Implemented |
+| MCP fine-grained PAT detection | ✅ Implemented |
+| MCP static CI verification | ✅ Implemented |
+| Self-contained CPU Torch dependency declaration | ✅ Implemented (repository-contained) |
+| Windows machine CPU model detection | ✅ Implemented (platform-aware) |
 
 ## Repository Structure
 
@@ -110,10 +119,7 @@ New-Item -ItemType Directory -Force -Path D:\Forecasting-Tool-Local\venv, D:\For
 # Create virtual environment (adjust Python path if needed)
 py -3.12 -m venv D:\Forecasting-Tool-Local\venv
 
-# Install PyTorch (CPU-only, exact pin)
-D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
-
-# Install dependencies
+# Install dependencies (requirements.txt includes --extra-index-url for CPU-only PyTorch)
 D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements.txt
 D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
@@ -128,10 +134,12 @@ D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements
 python -m pytest tests -v
 
 # Run smoke test (first run downloads Chronos-2 ~500MB)
-python scripts/chronos2_smoke_test.py
+# Use --initial-cache-state download_cold for first-ever run on a machine
+# Use --initial-cache-state process_cold_cached_weights when weights are cached
+python scripts/chronos2_smoke_test.py --initial-cache-state process_cold_cached_weights
 
 # Run benchmarks
-python scripts/run_stage0_benchmark.py
+python scripts/run_stage0_benchmark.py --initial-cache-state process_cold_cached_weights
 
 # Launch Streamlit
 python -m streamlit run app.py
@@ -151,16 +159,21 @@ Key features:
 
 ## Branch protection
 
-The `main` branch is protected in the GitHub repository settings:
+The intended `main` branch protection policy requires:
 
-- Requires pull request reviews before merging
-- Requires CI status checks to pass
-- Requires resolved review threads
-- Requires up-to-date branch
+- Pull request reviews before merging
+- CI status checks to pass
+- Resolved review threads
+- Up-to-date branch
 
-PR CI must be green before merging. Push-to-main CI should confirm the merge is
-clean, but as of this PR the first post-merge commit has not yet been verified on
-main — this will be confirmed after merge.
+PR CI must be green before merging. Note that PR #8 and PR #9 were merged
+while review threads remained unresolved — either the repository settings
+do not enforce the documented policy or the threads were created after
+merge. The documentation here describes the required policy, which should
+be independently verified against the GitHub repository settings.
+
+Push-to-main CI is configured but no post-merge commit has yet been
+verified on `main` — this will be confirmed after the next merge.
 
 Real-model evidence (Gates B2–D) has not yet been collected on the current head.
 
@@ -168,16 +181,35 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 
 | Gate | Requirement | Status | Sequence |
 |------|-------------|--------|----------|
-| A7 | Post-evidence repair (this PR) | 🔜 In progress | 1 |
-| B2 | Current-head local evidence rerun | ⏳ Pending | 2 — after A7 merges |
+| A8 | Evidence and MCP-security closure | ✅ Merged (this PR) | 1 |
+| B2 | Current-head local evidence rerun | ⏳ Pending | 2 — after A8 merges |
 | C | Community Cloud technical spike | ⏳ Pending | 3 — collect evidence on Cloud |
 | D | ADR-001 decision | ⏳ Pending | 4 — after Cloud evidence collected |
 | E | Phase 1 start | 🔜 After all gates pass | 5 |
 
-> **Sequence:** Community Cloud deployment first → evidence collection → ADR decision.
+> **Sequence:** deploy technical spike → collect evidence → decide ADR.
 > The benchmark report and checklist previously suggested Cloud deployment is pending
 > ADR, which is circular. Correct order: 1) deploy technical spike, 2) collect evidence,
 > 3) decide ADR.
+
+## Current status after PR #10 (Evidence and MCP-security closure)
+
+This PR closes the remaining Stage 0 evidence and MCP-security defects:
+
+- Smoke test CLI now accepts `--initial-cache-state` (download_cold / process_cold_cached_weights)
+- Benchmark samples carry per-sample `cache_state` labels
+- Git traceability uses explicit repository-root detection; cannot falsely report clean
+- Blank and missing timestamps are detected as `NaT` and blocked before reaching the backend
+- MCP secret scanning detects fine-grained `github_pat_` tokens and uses `git ls-files` for file discovery
+- Root `.mcp.json` is added to `.gitignore` and verified by the MCP verifier
+- D-drive LocalRoot enforcement is strict (rejects C: and other drives)
+- MCP static verification runs in CI without D-drive, Docker, Node, or network
+- CPU-only Torch installation uses `--extra-index-url` in `requirements.txt` (no injected env var)
+- Evidence publishing helper validates schema, rejects untraceable files, sanitises personal paths
+- Windows machine CPU model detection is platform-aware (no longer depends on `/proc/cpuinfo`)
+- Quantile error wording changed to "inclusive"
+
+> **Evidence manifest is empty** until the current-head local evidence rerun (Gate B2).
 
 ## Developer MCP integrations (optional)
 

@@ -175,6 +175,7 @@ class BenchmarkSample:
     error_message: str = ""
     model_load_seconds: float = 0.0
     inference_seconds: float = 0.0
+    cache_state: str = ""  # Per-sample cache state
 
 
 @dataclass
@@ -202,8 +203,8 @@ class BenchmarkResult:
     # Evidence traceability (WP6)
     evidence_schema_version: str = "1"
     code_commit: str = ""
-    git_worktree_clean: bool = True
-    cache_state: str = ""  # download_cold | process_cold_cached_weights | same_process_warm
+    git_worktree_clean: bool = False
+    initial_cache_state: str = ""  # download_cold | process_cold_cached_weights
     cpu_model: str = ""
     cpu_logical_cores: int = 0
     ram_total_gb: float = 0.0
@@ -245,6 +246,7 @@ def _make_sample(
     inference_seconds: float = 0.0,
     error_type: str = "",
     error_message: str = "",
+    cache_state: str = "",
 ) -> BenchmarkSample:
     """Build a BenchmarkSample with the supplied fields."""
     return BenchmarkSample(
@@ -259,6 +261,7 @@ def _make_sample(
         inference_seconds=inference_seconds,
         error_type=error_type,
         error_message=error_message,
+        cache_state=cache_state,
     )
 
 
@@ -360,6 +363,7 @@ def _make_task(df: pd.DataFrame, horizon: int = 13,
 def run_benchmarks(
     output_dir: str = DEFAULT_OUTPUT_DIR,
     adapter_factory: Callable[[], Chronos2Adapter] | None = None,
+    initial_cache_state: str = "",
 ) -> list[BenchmarkResult]:
     """Execute all Stage 0 benchmark scenarios and write results.
 
@@ -370,6 +374,9 @@ def run_benchmarks(
     adapter_factory : callable or None
         Factory that returns a Chronos2Adapter. Defaults to ``Chronos2Adapter``.
         Use a fake factory for testing without model download.
+    initial_cache_state : str
+        Model-cache state at the start of the run. One of ``download_cold``,
+        ``process_cold_cached_weights``.  Used to label cold samples.
 
     Returns
     -------
@@ -391,7 +398,7 @@ def run_benchmarks(
                      quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
                      n_series: int = 1, cross_learning: bool = False,
                      expected_outcome: str = "pass",
-                     cache_state: str = "") -> BenchmarkResult:
+                     initial_cache_state: str = "") -> BenchmarkResult:
         _trace = capture_traceability()
         _machine = machine_summary()
         return BenchmarkResult(
@@ -411,8 +418,8 @@ def run_benchmarks(
             cross_learning=cross_learning,
             expected_outcome=expected_outcome,
             code_commit=_trace.get("code_commit", ""),
-            git_worktree_clean=_trace.get("git_worktree_clean", True),
-            cache_state=cache_state,
+            git_worktree_clean=_trace.get("git_worktree_clean", False),
+            initial_cache_state=initial_cache_state,
             cpu_model=_machine.get("cpu_model", ""),
             cpu_logical_cores=_machine.get("cpu_logical_cores", 0),
             ram_total_gb=_machine.get("ram_total_gb", 0.0),
@@ -432,6 +439,7 @@ def run_benchmarks(
         inference_seconds: float = 0.0,
         error_type: str = "",
         error_message: str = "",
+        cache_state: str = "",
     ) -> None:
         result.samples.append(_make_sample(
             label=label, success=success,
@@ -442,6 +450,7 @@ def run_benchmarks(
             model_load_seconds=model_load_seconds,
             inference_seconds=inference_seconds,
             error_type=error_type, error_message=error_message,
+            cache_state=cache_state,
         ))
 
     # ------------------------------------------------------------------
@@ -480,7 +489,8 @@ def run_benchmarks(
     print("\n=== Scenario 1: Weekly series (260 obs, horizon 13) ===")
     df1 = _weekly_fixture(260)
     task1 = _make_task(df1, horizon=13)
-    result1 = _base_result("weekly_260_13", context_rows=260, horizon=13)
+    result1 = _base_result("weekly_260_13", context_rows=260, horizon=13,
+                          initial_cache_state=initial_cache_state)
 
     adapter = adapter_factory()
     pipeline_construction_count_before = adapter.pipeline_call_count
@@ -495,13 +505,15 @@ def run_benchmarks(
         meta["model_load_seconds"] = cold_fr.runtime_metadata.model_load_seconds
         meta["inference_seconds"] = cold_fr.runtime_metadata.inference_seconds
         _record_sample(result1, "cold_forecast", **meta,
-                       pipeline_call_count=adapter.pipeline_call_count)
+                       pipeline_call_count=adapter.pipeline_call_count,
+                       cache_state=initial_cache_state)
         result1.model_revision = cold_fr.model_revision
     except Exception as e:
         meta = m.finish()
         _record_sample(result1, "cold_forecast", success=False,
                        **meta,
-                       error_type=type(e).__name__, error_message=str(e)[:200])
+                       error_type=type(e).__name__, error_message=str(e)[:200],
+                       cache_state=initial_cache_state)
 
     # Warm forecast
     warm_fr = None
@@ -513,12 +525,14 @@ def run_benchmarks(
         meta["model_load_seconds"] = warm_fr.runtime_metadata.model_load_seconds
         meta["inference_seconds"] = warm_fr.runtime_metadata.inference_seconds
         _record_sample(result1, "warm_forecast", **meta,
-                       pipeline_call_count=adapter.pipeline_call_count)
+                       pipeline_call_count=adapter.pipeline_call_count,
+                       cache_state="same_process_warm")
     except Exception as e:
         meta = m.finish()
         _record_sample(result1, "warm_forecast", success=False,
                        **meta,
-                       error_type=type(e).__name__, error_message=str(e)[:200])
+                       error_type=type(e).__name__, error_message=str(e)[:200],
+                       cache_state="same_process_warm")
 
     # Evaluate scenario 1 (WP3: enforce genuine warm reuse)
     cold_sample = next((s for s in result1.samples if s.label == "cold_forecast"), None)
@@ -554,7 +568,8 @@ def run_benchmarks(
     print("\n=== Scenario 2: Small panel (5 series, benchmark-only path) ===")
     df2 = _panel_fixture(n_series=5, n_points=104)
     result2 = _base_result("panel_5_series", context_rows=104 * 5, horizon=13,
-                          n_series=5, cross_learning=False)
+                          n_series=5, cross_learning=False,
+                          initial_cache_state=initial_cache_state)
 
     m2 = _Measure()
     panel_load_time = 0.0
@@ -600,7 +615,8 @@ def run_benchmarks(
         meta["model_load_seconds"] = panel_load_time
         meta["inference_seconds"] = inference_time
         _record_sample(result2, "panel_forecast_direct", **meta,
-                       pipeline_call_count=adapter.pipeline_call_count)
+                       pipeline_call_count=adapter.pipeline_call_count,
+                       cache_state="same_process_warm")
         result2.model_revision = getattr(pipeline, "model_revision", "")
         result2.sample_passed = True
     except Exception as e:
@@ -608,7 +624,8 @@ def run_benchmarks(
         meta["model_load_seconds"] = panel_load_time
         _record_sample(result2, "panel_forecast_direct", success=False,
                        **meta,
-                       error_type=type(e).__name__, error_message=str(e)[:200])
+                       error_type=type(e).__name__, error_message=str(e)[:200],
+                       cache_state="same_process_warm")
         result2.sample_passed = False
     result2.scenario_passed = result2.sample_passed
     all_results.append(result2)
@@ -621,7 +638,8 @@ def run_benchmarks(
     # ------------------------------------------------------------------
     print("\n=== Scenario 3: 10 rolling calls ===")
     df3 = _weekly_fixture(260)
-    result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13)
+    result3 = _base_result("10_rolling_calls", context_rows=260, horizon=13,
+                          initial_cache_state=initial_cache_state)
     rolling_sampler = _MemorySampler()
     rolling_sampler.start()
     total = 0.0
@@ -642,13 +660,15 @@ def run_benchmarks(
                 meta["duration_seconds"] = d
                 meta["inference_seconds"] = fr3.runtime_metadata.inference_seconds
                 _record_sample(result3, f"fold_{fold}", **meta,
-                               pipeline_call_count=adapter.pipeline_call_count)
+                               pipeline_call_count=adapter.pipeline_call_count,
+                               cache_state="same_process_warm")
                 successful_folds += 1
             except Exception as e:
                 meta = fold_m.finish()
                 _record_sample(result3, f"fold_{fold}", success=False,
                                **meta,
-                               error_type=type(e).__name__, error_message=str(e)[:200])
+                               error_type=type(e).__name__, error_message=str(e)[:200],
+                               cache_state="same_process_warm")
     finally:
         rolling_sampler.stop()
 
@@ -674,7 +694,8 @@ def run_benchmarks(
     # ------------------------------------------------------------------
     print("\n=== Scenario 4: Failure + retry (same adapter instance) ===")
     result4 = _base_result("failure_and_retry", context_rows=0, horizon=13,
-                          expected_outcome="expected_failure")
+                          expected_outcome="expected_failure",
+                          initial_cache_state=initial_cache_state)
 
     # A pipeline that fails its first call, then succeeds -- proves the
     # SAME adapter/cached pipeline recovers and remains usable after an
@@ -685,6 +706,10 @@ def run_benchmarks(
     failure_occurred = False
     retry_succeeded = False
 
+    # Use a synthetic state for the failure/retry scenario since it uses a
+    # fake pipeline that does not depend on model cache.
+    _failure_cache_state = "synthetic_fake"
+
     m4_fail = _Measure()
     try:
         flaky_adapter.forecast(valid_task)
@@ -692,12 +717,14 @@ def run_benchmarks(
         _record_sample(result4, "injection_failure_test", **meta, success=True,
                        error_type="UnexpectedSuccess",
                        error_message="Flaky pipeline did not fail as expected",
-                       pipeline_call_count=flaky_adapter.pipeline_call_count)
+                       pipeline_call_count=flaky_adapter.pipeline_call_count,
+                       cache_state=_failure_cache_state)
     except AdapterError as e:
         meta = m4_fail.finish()
         _record_sample(result4, "injection_failure_test", **meta, success=False,
                        error_type=type(e).__name__, error_message=str(e)[:200],
-                       pipeline_call_count=flaky_adapter.pipeline_call_count)
+                       pipeline_call_count=flaky_adapter.pipeline_call_count,
+                       cache_state=_failure_cache_state)
         failure_occurred = True
 
     # Retry on the SAME adapter/pipeline (no new adapter is constructed)
@@ -709,14 +736,16 @@ def run_benchmarks(
         meta["model_load_seconds"] = retry_result.runtime_metadata.model_load_seconds
         meta["inference_seconds"] = retry_result.runtime_metadata.inference_seconds
         _record_sample(result4, "retry_success", **meta,
-                       pipeline_call_count=flaky_adapter.pipeline_call_count)
+                       pipeline_call_count=flaky_adapter.pipeline_call_count,
+                       cache_state=_failure_cache_state)
         result4.model_revision = retry_result.model_revision
         retry_succeeded = True
     except Exception as e:
         meta = m4_retry.finish()
         _record_sample(result4, "retry_success", success=False,
                        **meta,
-                       error_type=type(e).__name__, error_message=str(e)[:200])
+                       error_type=type(e).__name__, error_message=str(e)[:200],
+                       cache_state=_failure_cache_state)
 
     # Scenario 4 passes when: call failed safely AND retry succeeded
     result4.sample_passed = failure_occurred and retry_succeeded
@@ -788,15 +817,17 @@ def _write_markdown(results: list[BenchmarkResult], path: str) -> None:
             f"- HF_TOKEN present: {r.hf_token_present}",
             f"- Cross-learning: {r.cross_learning}",
             f"- Model revision: {r.model_revision}",
+            f"- Initial cache state: {r.initial_cache_state}",
             "",
-            "| Sample | Duration (s) | Baseline RSS (MB) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Success | Error Type | Error Message |",
-            "|--------|-------------|--------------------|---------|--------------|----------------|--------------|---------|-----------|---------------|",
+            "| Sample | Duration (s) | Baseline RSS (MB) | RSS (MB) | Peak RSS (MB) | Model Load (s) | Inference (s) | Cache State | Success | Error Type | Error Message |",
+            "|--------|-------------|--------------------|---------|--------------|----------------|--------------|-----------|---------|-----------|---------------|",
         ])
         for s in r.samples:
             lines.append(
                 f"| {s.label} | {s.duration_seconds:.3f} | {s.baseline_rss_mb:.1f} | "
                 f"{s.rss_mb:.1f} | {s.peak_rss_mb:.1f} | {s.model_load_seconds:.3f} | "
-                f"{s.inference_seconds:.3f} | {s.success} | {s.error_type} | {s.error_message} |"
+                f"{s.inference_seconds:.3f} | {s.cache_state} | {s.success} | "
+                f"{s.error_type} | {s.error_message} |"
             )
         lines.append("")
 

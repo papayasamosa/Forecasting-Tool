@@ -837,12 +837,12 @@ class TestEvidenceTraceability:
     """WP6: Evidence records must include traceability fields."""
 
     def test_benchmark_result_has_traceability(self):
-        """BenchmarkResult must include code_commit, git_worktree_clean, cache_state."""
+        """BenchmarkResult must include code_commit, git_worktree_clean, initial_cache_state."""
         from src.benchmarking import BenchmarkResult
         r = BenchmarkResult(scenario="test")
         assert hasattr(r, "code_commit")
         assert hasattr(r, "git_worktree_clean")
-        assert hasattr(r, "cache_state")
+        assert hasattr(r, "initial_cache_state")
         assert hasattr(r, "evidence_schema_version")
         assert r.evidence_schema_version == "1"
 
@@ -855,10 +855,10 @@ class TestEvidenceTraceability:
                 assert isinstance(r.git_worktree_clean, bool)
 
     def test_cache_state_in_result(self):
-        """BenchmarkResult should accept and store cache_state."""
+        """BenchmarkResult should accept and store initial_cache_state."""
         from src.benchmarking import BenchmarkResult
-        r = BenchmarkResult(scenario="test", cache_state="process_cold_cached_weights")
-        assert r.cache_state == "process_cold_cached_weights"
+        r = BenchmarkResult(scenario="test", initial_cache_state="process_cold_cached_weights")
+        assert r.initial_cache_state == "process_cold_cached_weights"
 
     def test_machine_summary_fields(self):
         """BenchmarkResult should include cpu_model, cpu_logical_cores, ram_total_gb."""

@@ -170,55 +170,156 @@ def write_evidence(
 # ---------------------------------------------------------------------------
 
 
+def _find_repo_root(path: str | None = None) -> str | None:
+    """Determine the repository root directory from a starting path.
+
+    Uses ``git rev-parse --show-toplevel`` if Git is available, falling
+    back to climbing up from the caller's location looking for a ``.git``
+    directory. Returns ``None`` if no repository root can be found.
+    """
+    try:
+        cwd = path or os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        )
+        if out.returncode == 0:
+            root = out.stdout.strip()
+            if root:
+                return root
+    except Exception:
+        pass
+    # Fallback: climb up from the script location
+    try:
+        cwd = path or os.path.dirname(os.path.abspath(__file__))
+        while True:
+            if os.path.isdir(os.path.join(cwd, ".git")):
+                return cwd
+            parent = os.path.dirname(cwd)
+            if parent == cwd:
+                return None
+            cwd = parent
+    except Exception:
+        return None
+
+
 def capture_traceability() -> dict[str, Any]:
     """Return Git commit, worktree status, and evidence schema version.
 
-    Never raises; returns empty strings on failure.
+    Determines the repository root explicitly and runs all Git commands
+    with ``cwd`` set to that root. Requires return code zero from each
+    command.
+
+    Never raises; returns safe defaults on failure.
     """
-    result: dict[str, Any] = {}
+    result: dict[str, Any] = {
+        "code_commit": "",
+        "git_worktree_clean": False,
+        "git_traceability_error": "",
+    }
+
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        result["git_traceability_error"] = "repo_root_not_found"
+        return result
+
     try:
-        # Git commit
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
         )
-        result["code_commit"] = out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
+        if out.returncode == 0:
+            result["code_commit"] = out.stdout.strip()
+        else:
+            result["git_traceability_error"] = "git_rev_parse_failed"
+            result["code_commit"] = ""
+    except Exception as exc:
+        result["git_traceability_error"] = f"git_rev_parse_error: {exc}"
         result["code_commit"] = ""
 
     try:
         out = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
         )
-        result["git_worktree_clean"] = out.stdout.strip() == ""
-    except Exception:
+        if out.returncode == 0:
+            result["git_worktree_clean"] = out.stdout.strip() == ""
+        else:
+            result["git_traceability_error"] = (
+                result.get("git_traceability_error") or ""
+            ) + "; git_status_failed"
+            result["git_worktree_clean"] = False
+    except Exception as exc:
+        result["git_traceability_error"] = (
+            result.get("git_traceability_error") or ""
+        ) + f"; git_status_error: {exc}"
         result["git_worktree_clean"] = False
 
+    # code_commit empty implies not clean (safety invariant)
+    if not result["code_commit"]:
+        result["git_worktree_clean"] = False
+        if not result["git_traceability_error"]:
+            result["git_traceability_error"] = "code_commit_empty"
+
     return result
+
+
+def _cpu_model_windows() -> str:
+    """Get CPU model on Windows using environment variables.
+
+    Falls back to ``platform.processor()``. Never raises.
+    """
+    try:
+        # Windows environment variable set by the OS
+        proc_id = os.environ.get("PROCESSOR_IDENTIFIER", "")
+        if proc_id:
+            return proc_id.strip()
+        import platform
+        proc = platform.processor()
+        if proc:
+            return proc.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _cpu_model_linux() -> str:
+    """Get CPU model on Linux via /proc/cpuinfo."""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
 
 
 def machine_summary() -> dict[str, Any]:
     """Return CPU model, logical core count, and total RAM.
 
-    Never raises; returns empty strings on failure.
+    Platform-aware CPU model detection. Never raises; returns empty
+    strings on failure. Does not include hostnames, usernames, or
+    serial numbers.
     """
     result: dict[str, Any] = {}
     try:
         import psutil
         result["cpu_logical_cores"] = psutil.cpu_count(logical=True)
         result["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
-        try:
-            # CPU model on Linux/macOS
-            with open("/proc/cpuinfo") as f:
-                for line in f:
-                    if line.startswith("model name"):
-                        result["cpu_model"] = line.split(":", 1)[1].strip()
-                        break
-        except Exception:
-            result["cpu_model"] = ""
     except ImportError:
         result["cpu_logical_cores"] = 0
         result["ram_total_gb"] = 0.0
+
+    try:
+        if sys.platform == "win32":
+            result["cpu_model"] = _cpu_model_windows()
+        elif sys.platform == "linux":
+            result["cpu_model"] = _cpu_model_linux()
+        else:
+            import platform
+            result["cpu_model"] = platform.processor() or ""
+    except Exception:
         result["cpu_model"] = ""
+
     return result

@@ -5,6 +5,8 @@
 # Last resolved: 2026-07-28 with Python 3.12
 # =============================================================================
 
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 streamlit==1.60.0
 pandas==3.0.5
 numpy==2.4.6
@@ -13,22 +15,20 @@ chronos-forecasting==2.3.1
 torch==2.13.0
 
 # ---------------------------------------------------------------------------
-# IMPORTANT: CPU-only PyTorch installation
+# CPU-only PyTorch installation
 #
-# The pinned torch==2.13.0 above resolves to the CUDA-enabled package by
-# default. To install the CPU-only variant, pip MUST use the CPU-only index:
-#
-#   PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
-#
-# Set this environment variable in:
-#   - GitHub Actions CI (already configured)
-#   - Streamlit Community Cloud secrets/settings
-#   - Local D: drive environment (already configured in activate script)
+# The --extra-index-url directive above tells pip to use the PyTorch CPU
+# wheel index as an additional source when resolving torch==2.13.0, so the
+# CPU-only build is installed by default without requiring an externally
+# injected PIP_EXTRA_INDEX_URL environment variable.
 #
 # To verify CPU-only installation after pip install:
 #   python -c "import torch; assert torch.version.cuda is None"
 #
-# This environment variable is the only supported mechanism. Do NOT add a
-# separate `pip install torch --index-url ...` step -- that would diverge
-# from the Cloud installation path.
+# Streamlit Community Cloud reads requirements.txt directly and will
+# use the extra index URL from this directive.
+#
+# NOTE on dependency-confusion risk: adding an extra index URL means pip
+# searches both PyPI and the extra index. The pinned exact version ensures
+# deterministic resolution. Review the index order when changing packages.
 # ---------------------------------------------------------------------------
