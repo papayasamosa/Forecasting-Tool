@@ -17,6 +17,7 @@ all files, and produces a single ``local_stage0_bundle`` JSON file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -31,6 +32,89 @@ def _load_json(path: str) -> Any:
     """Load and parse a JSON file."""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _sha256_file(path: str) -> str:
+    """Compute the SHA-256 of a file's raw bytes."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_distinct_token_evidence(
+    process_cold_path: str,
+    token_present_path: str,
+    pc_smoke: Any,
+    tp_smoke: Any,
+) -> list[str]:
+    """Reject a token-present smoke file that duplicates the no-token
+    process-cold file (the Gate B3 defect: identical timestamps and
+    measurements with only ``hf_token_present`` and the token-result objects
+    flipped).
+
+    Uses immutable provenance — distinct file bytes, distinct run IDs, and
+    distinct start/completion identities — rather than comparing timing
+    values, since two genuinely independent real-model runs can coincidentally
+    round to the same duration.
+    """
+    errors: list[str] = []
+
+    if os.path.abspath(process_cold_path) == os.path.abspath(token_present_path):
+        errors.append(
+            "token_present_smoke: same file path as process_cold_smoke — a "
+            "token-present run must be a separate, independently executed "
+            "evidence file"
+        )
+        return errors
+
+    try:
+        pc_hash = _sha256_file(process_cold_path)
+        tp_hash = _sha256_file(token_present_path)
+    except OSError as exc:
+        errors.append(f"token_present_smoke: could not hash evidence files: {exc}")
+        return errors
+
+    if pc_hash == tp_hash:
+        errors.append(
+            "token_present_smoke: byte-identical to process_cold_smoke "
+            f"(sha256={pc_hash}) — cannot be an independently executed run"
+        )
+
+    if not isinstance(pc_smoke, dict) or not isinstance(tp_smoke, dict):
+        return errors
+
+    pc_started = pc_smoke.get("started_at_utc", "")
+    tp_started = tp_smoke.get("started_at_utc", "")
+    if pc_started and tp_started and pc_started == tp_started:
+        errors.append(
+            "token_present_smoke: started_at_utc identical to "
+            f"process_cold_smoke ('{tp_started}') — not an independent run"
+        )
+
+    pc_completed = pc_smoke.get("completed_at_utc", "")
+    tp_completed = tp_smoke.get("completed_at_utc", "")
+    if pc_completed and tp_completed and pc_completed == tp_completed:
+        errors.append(
+            "token_present_smoke: completed_at_utc identical to "
+            f"process_cold_smoke ('{tp_completed}') — not an independent run"
+        )
+
+    pc_run_id = (pc_smoke.get("token_absent_result") or {}).get("run_id", "")
+    tp_run_id = (tp_smoke.get("token_present_result") or {}).get("run_id", "")
+    if not pc_run_id:
+        errors.append("process_cold_smoke: token_absent_result.run_id is empty")
+    if not tp_run_id:
+        errors.append("token_present_smoke: token_present_result.run_id is empty")
+    if pc_run_id and tp_run_id and pc_run_id == tp_run_id:
+        errors.append(
+            "token_present_smoke: token_present_result.run_id identical to "
+            f"process_cold_smoke's token_absent_result.run_id ('{tp_run_id}') "
+            "— not an independent run"
+        )
+
+    return errors
 
 
 def _validate_component_typed(
@@ -315,6 +399,12 @@ def main() -> int:
         "benchmark": benchmark,
         "token_present_smoke": tp_smoke,
     }))
+
+    # Evidence-integrity closure: reject a token-present record that
+    # duplicates the no-token process-cold record (Gate B3 defect).
+    all_errors.extend(_check_distinct_token_evidence(
+        args.process_cold_smoke, args.token_present_smoke, pc_smoke, tp_smoke,
+    ))
 
     # Smoke must succeed
     bundle_passed = len(all_errors) == 0 and all(

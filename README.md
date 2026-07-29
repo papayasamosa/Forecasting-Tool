@@ -49,7 +49,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
 | Historical Chronos-2 local evidence (commit ee8f89...) | ✅ Collected prior |
-| Current release-candidate local evidence | ⏳ Pending — requires final rerun after this PR |
+| Current release-candidate local evidence | ❌ Invalidated (Gate B3 bundle) — see "Current status" below |
 | Community Cloud deployment (Gate C) | ⏳ Pending — checklist blank |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
@@ -205,9 +205,10 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 | A8 | Evidence and MCP-security closure | ✅ Merged (PR #10) | 1 |
 | A9 | Evidence publication hardening | ✅ Merged (PR #11) | 2 |
 | B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
-| C | Community Cloud technical spike | ⏳ Pending — needs completion | 4 |
-| D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 5 |
-| E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 6 |
+| B3 | Current-head local evidence bundle | ❌ Invalidated (PR #18) — fabricated token-present record; genuine rerun required | 4 |
+| C | Community Cloud technical spike | ⏳ Pending — needs completion | 5 |
+| D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 6 |
+| E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 7 |
 
 > **Correct sequence:** deploy to Cloud → collect evidence → decide ADR.
 > Phase 1 ingestion core was merged before Stage 0 passed. Additional Phase 1
@@ -216,18 +217,38 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 ## Current status
 
 - **Local evidence (Gate B2)**: Completed and committed. See `docs/evidence/stage0/`.
+- **Local evidence bundle (Gate B3, PR #18)**: **Invalidated.** The published
+  bundle's `runs.token_present_smoke` record is byte-for-byte identical to
+  `runs.process_cold_smoke` (same timestamps, timings, RSS) — only
+  `hf_token_present` and the token-result objects were changed. It is not an
+  independently executed token-present run; the PR #18 commit message itself
+  states `HF_TOKEN` was unavailable and token-present evidence was omitted,
+  which contradicts the bundle's `token_present_smoke.success=true`. The file
+  is kept for audit (see `docs/evidence/stage0/evidence_manifest.json`,
+  `status: "invalidated"`) but must not be treated as passing Gate B3.
+  `scripts/chronos2_smoke_test.py` and `scripts/build_local_stage0_bundle.py`
+  now emit and require independently-provenanced token-path evidence
+  (unique `run_id`, timestamps, matching revisions per attempted path) so a
+  duplicated record like this is mechanically rejected going forward. A
+  genuine token-present rerun and superseding bundle are still required.
 - **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
-  is still empty. This is the current blocker.
+  is still empty. This is the current blocker, in addition to the Gate B3 rerun.
 - **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
-- **Evidence defects**: This PR corrects remaining PR #11 and PR #12 findings.
+- **Inference coordinator**: `src/coordinator.py` implements a bounded semaphore
+  and request telemetry, but the production Streamlit page
+  (`pages/1_Forecast.py`) does not yet route forecasts through it — it still
+  calls `backend.forecast(task)` directly. Cloud concurrency evidence is not
+  meaningful until this is wired up.
 
 > **Evidence manifest** contains the local Stage 0 bundle hash. CI verifies its
-> integrity on every run. Cloud evidence entry remains null until Gate C.
-> Direct dependency pins are not a complete lock — capture a lock file after
-> Cloud success. Community Cloud may process `requirements.txt` with `uv`
-> before falling back to `pip`.
+> integrity on every run — hash/schema verification passing does **not**
+> imply the evidence is trustworthy release evidence; check `status` in
+> `evidence_manifest.json` for entries marked `invalidated`. Cloud evidence
+> entry remains null until Gate C. Direct dependency pins are not a complete
+> lock — capture a lock file after Cloud success. Community Cloud may process
+> `requirements.txt` with `uv` before falling back to `pip`.
 
 ## Developer MCP integrations (optional)
 

@@ -122,11 +122,39 @@ class TokenPathResult:
     resolved_revision: str = ""
     error_code: str = ""
     timing_seconds: float = 0.0
+    # Provenance fields (evidence-integrity closure): a successful attempted
+    # path must carry a unique run identity and real timing, so a copied or
+    # hand-edited record cannot be mistaken for an independently executed run.
+    run_id: str = ""
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
         if self.attempted and not self.success and not self.error_code:
             errors.append("token path: attempted but failed with no error_code")
+        if self.attempted and self.success:
+            if not self.run_id:
+                errors.append("token path: attempted successful run missing run_id")
+            if not self.started_at_utc:
+                errors.append("token path: attempted successful run missing started_at_utc")
+            if not self.completed_at_utc:
+                errors.append("token path: attempted successful run missing completed_at_utc")
+            if self.timing_seconds <= 0:
+                errors.append("token path: attempted successful run must have timing_seconds > 0")
+            if not self.configured_revision:
+                errors.append("token path: attempted successful run missing configured_revision")
+            if not self.resolved_revision:
+                errors.append("token path: attempted successful run missing resolved_revision")
+            if (
+                self.configured_revision
+                and self.resolved_revision
+                and self.configured_revision != self.resolved_revision
+            ):
+                errors.append(
+                    f"token path: configured_revision '{self.configured_revision}' != "
+                    f"resolved_revision '{self.resolved_revision}'"
+                )
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -311,6 +339,34 @@ class SmokeEvidence:
             errors.append("initial_cache_state: empty")
         elif self.initial_cache_state not in VALID_INITIAL_CACHE_STATES:
             errors.append(f"initial_cache_state: invalid '{self.initial_cache_state}'")
+
+        # Token path provenance: the flag and the two attempted-path results
+        # must agree, and each nested result must satisfy its own rules
+        # (evidence-integrity closure — prevents a duplicated/hand-edited
+        # token-present record from being accepted as an independent run).
+        errors.extend(f"token_absent_result: {e}" for e in self.token_absent_result.validate())
+        errors.extend(f"token_present_result: {e}" for e in self.token_present_result.validate())
+        if self.success:
+            if self.hf_token_present and self.token_absent_result.attempted:
+                errors.append(
+                    "token_absent_result: attempted=true but hf_token_present=true "
+                    "for this run"
+                )
+            if self.hf_token_present and not self.token_present_result.attempted:
+                errors.append(
+                    "token_present_result: attempted=false but hf_token_present=true "
+                    "for this run"
+                )
+            if not self.hf_token_present and self.token_present_result.attempted:
+                errors.append(
+                    "token_present_result: attempted=true but hf_token_present=false "
+                    "for this run"
+                )
+            if not self.hf_token_present and not self.token_absent_result.attempted:
+                errors.append(
+                    "token_absent_result: attempted=false but hf_token_present=false "
+                    "for this run"
+                )
 
         # Cache preflight required (WP4)
         if self.success:

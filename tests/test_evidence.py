@@ -53,7 +53,14 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
         "configured_revision": "rev1",
         "model_revision": "rev1",
         "hf_token_present": False,
-        "token_absent_result": {"attempted": True, "success": True, "configured_revision": "rev1", "resolved_revision": "rev1"},
+        "token_absent_result": {
+            "attempted": True, "success": True,
+            "configured_revision": "rev1", "resolved_revision": "rev1",
+            "run_id": "run-absent-1",
+            "started_at_utc": "2026-07-29T00:00:00",
+            "completed_at_utc": "2026-07-29T00:00:30",
+            "timing_seconds": 10.0,
+        },
         "token_present_result": {"attempted": False},
         "initial_cache_state": "download_cold",
         "cold": {"cache_state": "download_cold", "pipeline_call_count": 1, "rss_mb": 500.0},
@@ -72,8 +79,14 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
             }
         # Derive token result from hf_token_present if not explicitly set
         if "hf_token_present" in overrides and "token_absent_result" not in overrides and "token_present_result" not in overrides:
-            data["token_absent_result"] = {"attempted": not overrides["hf_token_present"], "success": not overrides["hf_token_present"]}
-            data["token_present_result"] = {"attempted": overrides["hf_token_present"], "success": overrides["hf_token_present"]}
+            common = {
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-x", "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:00:30", "timing_seconds": 10.0,
+            }
+            token_present = overrides["hf_token_present"]
+            data["token_absent_result"] = {"attempted": not token_present, "success": not token_present, **common}
+            data["token_present_result"] = {"attempted": token_present, "success": token_present, **common}
     return data
 
 
@@ -229,6 +242,71 @@ class TestSmokeEvidenceValidation:
         assert "cache_preflight" in d
         assert "token_absent_result" in d
         assert "token_present_result" in d
+
+    def test_valid_smoke_with_token_present_passes(self):
+        data = _valid_smoke_dict({"hf_token_present": True})
+        ev = evidence_from_dict(data)
+        assert ev.validate() == []
+
+    def test_token_absent_result_missing_provenance_rejected(self):
+        """A successful attempted token_absent_result without run_id/timestamps
+        (e.g. a hand-edited or copy-pasted record) must fail validation."""
+        data = _valid_smoke_dict({
+            "token_absent_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+            },
+        })
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("token_absent_result" in e and "run_id" in e for e in errors)
+
+    def test_hf_token_present_true_but_absent_path_attempted_rejected(self):
+        """hf_token_present=true but token_absent_result also claims to have
+        been attempted must be rejected — exactly one path may be attempted."""
+        data = _valid_smoke_dict({
+            "hf_token_present": True,
+            "token_absent_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-1", "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:00:10", "timing_seconds": 10.0,
+            },
+            "token_present_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-2", "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:00:10", "timing_seconds": 10.0,
+            },
+        })
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("token_absent_result" in e and "hf_token_present" in e for e in errors)
+
+    def test_hf_token_present_false_but_neither_path_attempted_rejected(self):
+        data = _valid_smoke_dict({"token_absent_result": {"attempted": False}})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("token_absent_result" in e and "attempted=false" in e for e in errors)
+
+    def test_duplicated_token_present_record_is_rejected(self):
+        """Reproduces the Gate B3 defect: a token-present record that is an
+        exact copy of the no-token process-cold record (only hf_token_present
+        and the token result objects flipped) must fail schema validation
+        because the copied token_present_result carries no provenance."""
+        pc_smoke = _valid_smoke_dict({"initial_cache_state": "process_cold_cached_weights"})
+        fabricated_tp_smoke = dict(pc_smoke)
+        fabricated_tp_smoke["hf_token_present"] = True
+        fabricated_tp_smoke["token_absent_result"] = {"attempted": False}
+        fabricated_tp_smoke["token_present_result"] = {
+            "attempted": True, "success": True,
+            "configured_revision": "rev1", "resolved_revision": "rev1",
+            # No run_id/started_at_utc/completed_at_utc/timing_seconds — this is
+            # exactly what a copy-and-flip of the no-token record would produce.
+        }
+        ev = evidence_from_dict(fabricated_tp_smoke)
+        errors = ev.validate()
+        assert any("token_present_result" in e and "run_id" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -991,12 +1069,33 @@ class TestBundleBuilderSubprocess:
         pc = self._make_smoke_json(tmpdir, "pc.json", {
             "initial_cache_state": "process_cold_cached_weights",
             "code_commit": "abc123",
+            "started_at_utc": "2026-07-29T10:00:00",
+            "completed_at_utc": "2026-07-29T10:00:20",
+            "token_absent_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-pc-1",
+                "started_at_utc": "2026-07-29T10:00:00",
+                "completed_at_utc": "2026-07-29T10:00:20",
+                "timing_seconds": 20.0,
+            },
         })
         bm = self._make_benchmark_json(tmpdir, "bm.json", {"code_commit": "abc123"})
         tp = self._make_smoke_json(tmpdir, "tp.json", {
             "hf_token_present": True,
             "initial_cache_state": "process_cold_cached_weights",
             "code_commit": "abc123",
+            "started_at_utc": "2026-07-29T11:00:00",
+            "completed_at_utc": "2026-07-29T11:00:20",
+            "token_absent_result": {"attempted": False},
+            "token_present_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-tp-1",
+                "started_at_utc": "2026-07-29T11:00:00",
+                "completed_at_utc": "2026-07-29T11:00:20",
+                "timing_seconds": 20.0,
+            },
         })
         art = self._make_artifact_json(tmpdir, "art.json", {"code_commit": "abc123"})
         output = os.path.join(tmpdir, "bundle.json")
@@ -1110,6 +1209,100 @@ class TestBundleBuilderSubprocess:
         assert result.returncode != 0, "Should fail with malformed JSON"
 
 
+class TestBundleBuilderTokenDuplicationDetection:
+    """Reproduces the Gate B3 defect: a token-present smoke record that is a
+    byte-for-byte or field-for-field duplicate of the no-token process-cold
+    record (only hf_token_present and the token-result objects flipped) must
+    be rejected by the bundle builder, not silently accepted."""
+
+    def test_duplicate_function_flags_identical_files(self, tmp_path):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from scripts.build_local_stage0_bundle import _check_distinct_token_evidence
+
+        pc_data = _valid_smoke_dict({
+            "initial_cache_state": "process_cold_cached_weights",
+            "started_at_utc": "2026-07-29T15:27:20.773785",
+            "completed_at_utc": "2026-07-29T15:27:39.746224",
+        })
+        # Exactly reproduces the Gate B3 bug: copy the process-cold record and
+        # only flip hf_token_present + the two token result objects.
+        tp_data = dict(pc_data)
+        tp_data["hf_token_present"] = True
+        tp_data["token_absent_result"] = {"attempted": False}
+        tp_data["token_present_result"] = {
+            "attempted": True, "success": True,
+            "configured_revision": "rev1", "resolved_revision": "rev1",
+        }
+
+        pc_path = tmp_path / "pc.json"
+        tp_path = tmp_path / "tp.json"
+        pc_path.write_text(json.dumps(pc_data))
+        tp_path.write_text(json.dumps(tp_data))
+
+        errors = _check_distinct_token_evidence(str(pc_path), str(tp_path), pc_data, tp_data)
+        assert any("started_at_utc identical" in e for e in errors)
+        assert any("completed_at_utc identical" in e for e in errors)
+        assert any("run_id is empty" in e for e in errors)
+
+    def test_duplicate_bundle_rejected_end_to_end(self, tmpdir):
+        """Same reproduction, run through the full bundle-builder subprocess."""
+        builder = TestBundleBuilderSubprocess()
+        dc = builder._make_smoke_json(tmpdir, "dc.json", {"initial_cache_state": "download_cold"})
+        pc_data = _valid_smoke_dict({
+            "initial_cache_state": "process_cold_cached_weights",
+            "code_commit": "abc123",
+            "started_at_utc": "2026-07-29T15:27:20.773785",
+            "completed_at_utc": "2026-07-29T15:27:39.746224",
+        })
+        pc = os.path.join(tmpdir, "pc.json")
+        with open(pc, "w") as f:
+            json.dump(pc_data, f)
+
+        tp_data = dict(pc_data)
+        tp_data["hf_token_present"] = True
+        tp_data["token_absent_result"] = {"attempted": False}
+        tp_data["token_present_result"] = {
+            "attempted": True, "success": True,
+            "configured_revision": "rev1", "resolved_revision": "rev1",
+        }
+        tp = os.path.join(tmpdir, "tp.json")
+        with open(tp, "w") as f:
+            json.dump(tp_data, f)
+
+        bm = builder._make_benchmark_json(tmpdir, "bm.json", {"code_commit": "abc123"})
+        art = builder._make_artifact_json(tmpdir, "art.json", {"code_commit": "abc123"})
+        output = os.path.join(tmpdir, "bundle.json")
+        result = builder._run_bundle_builder([
+            "--download-cold-smoke", dc,
+            "--process-cold-smoke", pc,
+            "--benchmark", bm,
+            "--token-present-smoke", tp,
+            "--model-artifact", art,
+            "--output", output,
+        ])
+        assert result.returncode != 0, "Duplicated token-present evidence must be rejected"
+        assert not os.path.exists(output), "No bundle should be written for duplicated evidence"
+        assert "identical" in result.stdout or "run_id" in result.stdout
+
+    def test_same_file_path_rejected(self, tmpdir):
+        builder = TestBundleBuilderSubprocess()
+        dc = builder._make_smoke_json(tmpdir, "dc.json", {"initial_cache_state": "download_cold"})
+        pc = builder._make_smoke_json(tmpdir, "pc.json", {
+            "initial_cache_state": "process_cold_cached_weights",
+            "code_commit": "abc123",
+        })
+        bm = builder._make_benchmark_json(tmpdir, "bm.json", {"code_commit": "abc123"})
+        art = builder._make_artifact_json(tmpdir, "art.json", {"code_commit": "abc123"})
+        result = builder._run_bundle_builder([
+            "--download-cold-smoke", dc,
+            "--process-cold-smoke", pc,
+            "--benchmark", bm,
+            "--token-present-smoke", pc,  # same file reused as token-present
+            "--model-artifact", art,
+        ])
+        assert result.returncode != 0, "Reusing the same file for both paths must be rejected"
+
+
 # ---------------------------------------------------------------------------
 # Manifest verifier subprocess test (WP10)
 # ---------------------------------------------------------------------------
@@ -1126,6 +1319,47 @@ class TestManifestVerifierSubprocess:
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
+
+    def test_invalidated_entry_still_passes_but_warns(self, tmp_path):
+        """An entry marked status=invalidated must still pass hash/schema
+        checks (the file itself is untouched, retained for audit) but the
+        verifier must print an explicit warning naming it — hash/schema
+        success must never be read as 'this is trustworthy release evidence'."""
+        import hashlib
+
+        smoke_path = tmp_path / "smoke.json"
+        smoke_data = _valid_smoke_dict()
+        smoke_path.write_text(json.dumps(smoke_data))
+        sha = hashlib.sha256(smoke_path.read_bytes()).hexdigest()
+
+        manifest = {
+            "evidence_schema_version": "2",
+            "last_updated": "2026-07-29T00:00:00+00:00",
+            "files": {
+                "smoke_test": {
+                    "filename": "smoke.json",
+                    "sha256": sha,
+                    "code_commit": "abc123",
+                    "evidence_type": "smoke_test",
+                    "status": "invalidated",
+                    "notes": "INVALIDATED for test purposes",
+                },
+            },
+        }
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        result = subprocess.run(
+            [
+                sys.executable, self.VERIFIER,
+                "--manifest-path", str(manifest_path),
+                "--evidence-dir", str(tmp_path),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "INVALIDATED" in result.stdout
+        assert "smoke_test" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1165,6 +1399,60 @@ class TestTokenPathResult:
         tp = TokenPathResult(attempted=True, success=False, error_code="HTTP_403")
         errors = tp.validate()
         assert errors == []
+
+    def test_successful_run_requires_run_id(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(
+            attempted=True, success=True,
+            configured_revision="rev1", resolved_revision="rev1",
+            started_at_utc="2026-07-29T00:00:00", completed_at_utc="2026-07-29T00:00:10",
+            timing_seconds=10.0,
+        )
+        errors = tp.validate()
+        assert any("run_id" in e for e in errors)
+
+    def test_successful_run_requires_positive_timing(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(
+            attempted=True, success=True, run_id="run-1",
+            configured_revision="rev1", resolved_revision="rev1",
+            started_at_utc="2026-07-29T00:00:00", completed_at_utc="2026-07-29T00:00:10",
+            timing_seconds=0.0,
+        )
+        errors = tp.validate()
+        assert any("timing_seconds" in e for e in errors)
+
+    def test_successful_run_requires_timestamps(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(
+            attempted=True, success=True, run_id="run-1",
+            configured_revision="rev1", resolved_revision="rev1",
+            timing_seconds=10.0,
+        )
+        errors = tp.validate()
+        assert any("started_at_utc" in e for e in errors)
+        assert any("completed_at_utc" in e for e in errors)
+
+    def test_successful_run_requires_matching_revisions(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(
+            attempted=True, success=True, run_id="run-1",
+            configured_revision="rev1", resolved_revision="rev2",
+            started_at_utc="2026-07-29T00:00:00", completed_at_utc="2026-07-29T00:00:10",
+            timing_seconds=10.0,
+        )
+        errors = tp.validate()
+        assert any("resolved_revision" in e for e in errors)
+
+    def test_fully_populated_successful_run_passes(self):
+        from src.evidence_schemas import TokenPathResult
+        tp = TokenPathResult(
+            attempted=True, success=True, run_id="run-1",
+            configured_revision="rev1", resolved_revision="rev1",
+            started_at_utc="2026-07-29T00:00:00", completed_at_utc="2026-07-29T00:00:10",
+            timing_seconds=10.0,
+        )
+        assert tp.validate() == []
 
 
 class TestRepeatedRun:

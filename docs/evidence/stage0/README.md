@@ -4,6 +4,20 @@ This directory stores sanitised evidence records from local and Cloud
 Stage 0 runs.  No model weights, caches, venv, tokens, credentials,
 personal paths or unsanitised logs are committed here.
 
+## Invalidated evidence
+
+`evidence_local_stage0_bundle_20260729_162933_791384_10def382.json` (Gate B3,
+PR #18) is marked `"status": "invalidated"` in `evidence_manifest.json` and
+must **not** be treated as passing Stage 0 release evidence. Its
+`runs.token_present_smoke` record is an exact duplicate of
+`runs.process_cold_smoke` (identical `started_at_utc`/`completed_at_utc`,
+cold/warm timings, and RSS) with only `hf_token_present` and the token-result
+objects changed — it is not an independently executed token-present run. The
+file is retained unmodified for audit; a genuine token-present rerun,
+produced with the hardened `scripts/chronos2_smoke_test.py` and validated by
+`scripts/build_local_stage0_bundle.py`'s duplicate-evidence checks, will
+supersede it under a new filename.
+
 ## Layout
 
 ```
