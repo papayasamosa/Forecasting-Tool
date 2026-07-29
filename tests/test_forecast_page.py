@@ -25,6 +25,13 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAS_APPTEST = False
 
+# Check if streamlit itself is importable (the page module requires it)
+try:
+    import streamlit as _st
+    HAS_STREAMLIT = True
+except (ImportError, ModuleNotFoundError):
+    HAS_STREAMLIT = False
+
 # Ensure we can import from src
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -159,6 +166,7 @@ class TestForecastPageAppTest:
         assert fake_pipeline.call_count == 2
 
 
+@pytest.mark.skipif(not HAS_STREAMLIT, reason="streamlit not installed")
 class TestForecastPageLogic:
     """Unit tests for page helper functions.
 

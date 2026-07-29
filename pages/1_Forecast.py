@@ -239,11 +239,26 @@ if run_button and df is not None and not st.session_state.is_running:
 
     working_df = working_df.sort_values(ts_col).reset_index(drop=True)
 
-    # Convert to records for ForecastTask
+    # ------------------------------------------------------------------
+    # Preprocessing metadata — recorded BEFORE materialisation so that
+    # large datasets are capped before Python dict expansion (P0-1).
+    # ------------------------------------------------------------------
+    original_rows = len(working_df)
+    date_range_start = str(working_df[ts_col].iloc[0])
+    date_range_end = str(working_df[ts_col].iloc[-1])
+
+    # Cap context BEFORE converting to dict records
+    retained_rows = original_rows
+    retained_start = date_range_start
+    if CONTEXT_WINDOW_CAP is not None and original_rows > CONTEXT_WINDOW_CAP:
+        working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
+        retained_rows = len(working_df)
+        retained_start = str(working_df[ts_col].iloc[0])
+
+    # Only materialise retained rows
     records = tuple(working_df.to_dict("records"))
 
-    # Build task with context_window_cap — the adapter handles truncation
-    # and produces consistent RunMetadata warnings (WP5).
+    # Build task with context_window_cap set to None (already capped)
     try:
         task = ForecastTask(
             mode=ForecastMode.STANDARD_UNIVARIATE,
@@ -252,7 +267,7 @@ if run_button and df is not None and not st.session_state.is_running:
             target_columns=(target_col,),
             prediction_length=int(horizon),
             quantile_levels=tuple(q_levels),
-            context_window_cap=CONTEXT_WINDOW_CAP,
+            context_window_cap=None,
         )
     except ValueError as e:
         st.error(f"Configuration error: {e}")
@@ -265,6 +280,18 @@ if run_button and df is not None and not st.session_state.is_running:
         # Run forecast
         with st.spinner("Running Chronos-2 forecast (may load model on first call)..."):
             result = backend.forecast(task)
+            # Attach preprocessing metadata captured before materialisation
+            import dataclasses
+            old_meta = result.runtime_metadata
+            new_meta = dataclasses.replace(
+                old_meta,
+                preprocessing_original_rows=original_rows,
+                preprocessing_retained_rows=retained_rows,
+                preprocessing_retained_start=retained_start,
+                preprocessing_date_range_start=date_range_start,
+                preprocessing_date_range_end=date_range_end,
+            )
+            result = dataclasses.replace(result, runtime_metadata=new_meta)
             st.session_state.forecast_result = result
             st.session_state.run_id = result.run_id
     except AdapterError as e:
@@ -285,6 +312,22 @@ if st.session_state.forecast_result:
     label = "cold" if meta.model_was_loaded_this_run else "warm"
 
     st.subheader("✅ Forecast Complete")
+
+    # Show warnings (WP2: display truncation and runtime warnings)
+    all_warnings = list(result.warnings) + list(meta.warnings)
+    if all_warnings:
+        with st.expander("⚠️ Warnings", expanded=bool(all_warnings)):
+            for w in all_warnings:
+                st.warning(w)
+        # Show preprocessing truncation details
+        if meta.preprocessing_original_rows > meta.preprocessing_retained_rows:
+            st.info(
+                f"Context truncated: {meta.preprocessing_original_rows} original rows "
+                f"→ {meta.preprocessing_retained_rows} retained "
+                f"(from {meta.preprocessing_date_range_start} to {meta.preprocessing_date_range_end}, "
+                f"retained from {meta.preprocessing_retained_start})."
+            )
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Run ID", result.run_id)
     c2.metric("Horizon", meta.prediction_length)

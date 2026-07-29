@@ -10,7 +10,6 @@ import logging
 import os
 import sys
 import time
-import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -20,6 +19,7 @@ import pandas as pd
 
 from src.config import MODEL_ID
 from src.schemas import ForecastMode, ForecastTask
+from src.telemetry import rss_mb, cpu_info, capture_package_versions
 from src.forecasting.chronos2_adapter import (
     Chronos2Adapter,
     AdapterError,
@@ -43,57 +43,8 @@ else:
 # ---------------------------------------------------------------------------
 # Lightweight RSS monitor thread (approximate peak)
 # ---------------------------------------------------------------------------
-
-
-class _MemorySampler:
-    """Samples process RSS in a background thread to approximate peak memory."""
-
-    def __init__(self, interval: float = 0.05):
-        self._interval = interval
-        self._peak_mb: float = 0.0
-        self._baseline_mb: float = 0.0
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self._imported_psutil = False
-        self._process = None
-        try:
-            import psutil
-            self._process = psutil.Process()
-            self._imported_psutil = True
-        except ImportError:
-            pass
-
-    def start(self) -> None:
-        if not self._imported_psutil:
-            return
-        self._baseline_mb = self._process.memory_info().rss / 1024 / 1024  # type: ignore[union-attr]
-        self._peak_mb = self._baseline_mb
-        self._running = True
-        self._thread = threading.Thread(target=self._sample, daemon=True)
-        self._thread.start()
-
-    def _sample(self) -> None:
-        while self._running:
-            try:
-                rss = self._process.memory_info().rss / 1024 / 1024  # type: ignore[union-attr]
-                if rss > self._peak_mb:
-                    self._peak_mb = rss
-            except Exception:
-                pass
-            time.sleep(self._interval)
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2)
-
-    @property
-    def peak_mb(self) -> float:
-        return self._peak_mb
-
-    @property
-    def baseline_mb(self) -> float:
-        return self._baseline_mb
+# Re-exported from src.telemetry for backward compat with existing imports.
+from src.telemetry import MemorySampler as _MemorySampler
 
 
 # ---------------------------------------------------------------------------
@@ -304,33 +255,18 @@ def _make_sample(
 
 
 def _rss_mb() -> float:
-    try:
-        import psutil
-        return psutil.Process().memory_info().rss / 1024 / 1024
-    except ImportError:
-        return 0.0
+    """Delegate to src.telemetry.rss_mb."""
+    return rss_mb()
 
 
 def _cpu_info() -> str:
-    try:
-        import psutil
-        return f"{psutil.cpu_count()} logical cores"
-    except ImportError:
-        return "unknown"
+    """Delegate to src.telemetry.cpu_info."""
+    return cpu_info()
 
 
 def _package_versions() -> dict[str, str]:
-    versions: dict[str, str] = {}
-    for mod_name, alias in [("torch", "torch"), ("chronos", "chronos-forecasting"),
-                            ("pandas", "pandas"), ("numpy", "numpy"),
-                            ("streamlit", "streamlit")]:
-        try:
-            mod = __import__(mod_name)
-            versions[alias] = getattr(mod, "__version__", "unknown")
-        except ImportError:
-            versions[alias] = "not found"
-    versions["python"] = sys.version.split()[0]
-    return versions
+    """Delegate to src.telemetry.capture_package_versions."""
+    return capture_package_versions()
 
 
 class _TransientFailurePipeline:
@@ -533,16 +469,17 @@ def run_benchmarks(
     pipeline_construction_count_before = adapter.pipeline_call_count
 
     # Cold forecast
+    cold_fr = None
     m = _Measure()
     try:
-        fr = adapter.forecast(task1)
+        cold_fr = adapter.forecast(task1)
         meta = m.finish()
-        meta["duration_seconds"] = fr.runtime_metadata.total_runtime_seconds
-        meta["model_load_seconds"] = fr.runtime_metadata.model_load_seconds
-        meta["inference_seconds"] = fr.runtime_metadata.inference_seconds
+        meta["duration_seconds"] = cold_fr.runtime_metadata.total_runtime_seconds
+        meta["model_load_seconds"] = cold_fr.runtime_metadata.model_load_seconds
+        meta["inference_seconds"] = cold_fr.runtime_metadata.inference_seconds
         _record_sample(result1, "cold_forecast", **meta,
                        pipeline_call_count=adapter.pipeline_call_count)
-        result1.model_revision = fr.model_revision
+        result1.model_revision = cold_fr.model_revision
     except Exception as e:
         meta = m.finish()
         _record_sample(result1, "cold_forecast", success=False,
@@ -550,13 +487,14 @@ def run_benchmarks(
                        error_type=type(e).__name__, error_message=str(e)[:200])
 
     # Warm forecast
+    warm_fr = None
     m = _Measure()
     try:
-        fr2 = adapter.forecast(task1)
+        warm_fr = adapter.forecast(task1)
         meta = m.finish()
-        meta["duration_seconds"] = fr2.runtime_metadata.total_runtime_seconds
-        meta["model_load_seconds"] = fr2.runtime_metadata.model_load_seconds
-        meta["inference_seconds"] = fr2.runtime_metadata.inference_seconds
+        meta["duration_seconds"] = warm_fr.runtime_metadata.total_runtime_seconds
+        meta["model_load_seconds"] = warm_fr.runtime_metadata.model_load_seconds
+        meta["inference_seconds"] = warm_fr.runtime_metadata.inference_seconds
         _record_sample(result1, "warm_forecast", **meta,
                        pipeline_call_count=adapter.pipeline_call_count)
     except Exception as e:
@@ -565,11 +503,28 @@ def run_benchmarks(
                        **meta,
                        error_type=type(e).__name__, error_message=str(e)[:200])
 
-    # Evaluate scenario 1
-    cold_ok = any(s.label == "cold_forecast" and s.success for s in result1.samples)
-    warm_ok = any(s.label == "warm_forecast" and s.success for s in result1.samples)
+    # Evaluate scenario 1 (WP3: enforce genuine warm reuse)
+    cold_sample = next((s for s in result1.samples if s.label == "cold_forecast"), None)
+    warm_sample = next((s for s in result1.samples if s.label == "warm_forecast"), None)
+
+    cold_ok = cold_sample is not None and cold_sample.success
+    warm_ok = warm_sample is not None and warm_sample.success
+
+    # Reuse gate conditions (WP3):
+    # 1. Warm must report pipeline_reused=True
+    # 2. Warm model_load_seconds must be near zero (< 0.001)
+    # 3. Pipeline construction count must not have increased during warm
+    warm_reused = bool(warm_fr and warm_fr.runtime_metadata.pipeline_reused)
+    warm_load_zero = warm_sample is not None and warm_sample.model_load_seconds < 0.001
+    pc_after_warm = adapter.pipeline_call_count
+    pc_no_growth = pc_after_warm == pipeline_construction_count_before + (
+        1 if (cold_fr and cold_fr.runtime_metadata.model_was_loaded_this_run) else 0
+    )
+
     result1.sample_passed = cold_ok and warm_ok
-    result1.scenario_passed = result1.sample_passed
+    result1.scenario_passed = (
+        cold_ok and warm_ok and warm_reused and warm_load_zero and pc_no_growth
+    )
     all_results.append(result1)
 
     # ------------------------------------------------------------------
@@ -716,14 +671,16 @@ def run_benchmarks(
     m4_fail = _Measure()
     try:
         flaky_adapter.forecast(valid_task)
-        m4_fail.finish()
-        _record_sample(result4, "injection_failure_test", success=True,
+        meta = m4_fail.finish()
+        _record_sample(result4, "injection_failure_test", **meta, success=True,
                        error_type="UnexpectedSuccess",
-                       error_message="Flaky pipeline did not fail as expected")
+                       error_message="Flaky pipeline did not fail as expected",
+                       pipeline_call_count=flaky_adapter.pipeline_call_count)
     except AdapterError as e:
-        m4_fail.finish()
-        _record_sample(result4, "injection_failure_test", success=False,
-                       error_type=type(e).__name__, error_message=str(e)[:200])
+        meta = m4_fail.finish()
+        _record_sample(result4, "injection_failure_test", **meta, success=False,
+                       error_type=type(e).__name__, error_message=str(e)[:200],
+                       pipeline_call_count=flaky_adapter.pipeline_call_count)
         failure_occurred = True
 
     # Retry on the SAME adapter/pipeline (no new adapter is constructed)

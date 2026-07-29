@@ -785,20 +785,16 @@ class TestEvidenceOnFailure:
         # pipeline that fails on construction. Instead, test that the
         # evidence-writing path works by calling _write_evidence directly
         # and verifying the run_smoke_test returns failure dict.
-        from scripts.chronos2_smoke_test import run_smoke_test, _write_evidence
+        from src.telemetry import write_evidence
 
         with tempfile.TemporaryDirectory() as tmp:
-            # Run smoke test — without a real model it will fail with
-            # ModelLoadError (the default provider has no real model).
-            # But in testing we don't want it to actually try loading.
-            # Instead, test that _write_evidence works on a failure dict.
             failure_evidence = {
                 "test": "chronos2_smoke_test",
                 "success": False,
                 "error": "SimulatedFailure: test error",
                 "timestamp": "2026-07-29T00:00:00",
             }
-            path = _write_evidence(failure_evidence, tmp)
+            path = write_evidence(failure_evidence, tmp, prefix="smoke_test")
             assert os.path.exists(path)
             with open(path) as f:
                 data = json.load(f)

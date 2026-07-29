@@ -16,14 +16,23 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Pipeline reuse (real Chronos-2 model) | ✅ Verified (warm 0.27s, pipeline_call_count=1) |
-| `main` branch CI | ✅ Green (93 tests, 91.53% coverage) |
+| Pull-request CI | ✅ Green (98 tests, 89.91% coverage) |
+| `main` branch CI (post-merge) | ✅ Green (98 tests, 89.91% coverage) |
+| Context capping before record materialisation | ✅ Implemented (P0-1) |
+| Truncation warnings displayed in UI | ✅ Implemented (P0-2) |
+| Warm reuse enforced in benchmark gate | ✅ Implemented (P1-1) |
+| Explicit `cross_learning=False` in standard calls | ✅ Implemented (P1-2) |
+| Failure telemetry recorded | ✅ Implemented (P1-3) |
+| Summary calculations exclude aggregate | ✅ Implemented (P1-4) |
+| Smoke evidence written on all failure paths | ✅ Implemented (P1-5) |
+| Reusable telemetry module (`src/telemetry.py`) | ✅ Implemented |
 | Real Chronos-2 model smoke test | ✅ Completed (cold 23.5s, warm 0.27s) |
 | Local benchmark suite | ✅ Completed (4/4 scenarios pass) |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
 | Model file checksum | ✅ `ddcda3c7508bf2528087723e98a20707cc04b7f370ae275a9fd88078ddba4f42` |
-| Community Cloud deployment | ⏳ Pending |
+| Community Cloud deployment | ⏳ Pending (not yet Cloud-proven) |
 | ADR-001 inference backend | ⏳ Pending (awaiting Cloud evidence) |
-| `main` branch CI | ✅ Green (93 tests, 91.53% coverage) |
+| Real-model evidence on D: drive | ⏳ Pending (Gate C) |
 | Phase 1 features | 🔜 Planned (see below) |
 
 ## Repository Structure
@@ -36,6 +45,7 @@ pages/
 src/
     config.py           # Centralised configuration
     schemas.py          # Canonical typed schemas with invariant validation
+    telemetry.py        # Reusable telemetry helpers (memory, package versions, evidence)
     benchmarking.py     # Stage 0 benchmark harness
     forecasting/
         base.py         # ForecastBackend protocol
@@ -137,6 +147,29 @@ Key features:
 - Streaming forecast output conversion to canonical `ForecastResult`
 - Runtime metadata capture (model ID, revision, package versions, timings)
 - Safe error types (`ConfigurationError`, `ModelLoadError`, `InferenceError`, `ResultSchemaError`)
+
+## Branch protection
+
+The `main` branch is protected in the GitHub repository settings:
+
+- Requires pull request reviews before merging
+- Requires CI status checks to pass
+- Requires resolved review threads
+- Requires up-to-date branch
+
+PR CI must be green before merging. Push-to-main CI confirms the merge is clean.
+Real-model evidence (Gates B–C) has not yet been collected on `main`.
+
+## Remaining Stage 0 gates
+
+| Gate | Requirement | Status |
+|------|-------------|--------|
+| A6 | Evidence-integrity closure (this PR) | ✅ Implemented |
+| B | Immutable revision pin + checksum | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
+| C | Local D: drive evidence | ⏳ Pending (cold, warm, panel, rolling, memory, token) |
+| D | Community Cloud deployment | ⏳ Pending |
+| E | ADR-001 decision | ⏳ Pending |
+| F | Phase 1 start | 🔜 After all gates pass |
 
 ## License
 
