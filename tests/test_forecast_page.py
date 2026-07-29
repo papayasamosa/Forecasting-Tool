@@ -200,3 +200,98 @@ class TestForecastPageLogic:
         mod = self._get_page_module()
         with pytest.raises(Exception):
             mod._parse_csv_bytes(b"")
+
+
+@pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
+class TestForecastPageEmptyData:
+    """WP1: Headers-only / zero-row CSV must not crash or leave button disabled."""
+
+    def _make_headers_only_csv_bytes(self) -> bytes:
+        return b"timestamp,target\n"
+
+    def test_headers_only_csv_does_not_crash(self):
+        """A headers-only CSV should not raise IndexError or leave button disabled."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.run()
+
+        # Switch to upload mode
+        at.radio[0].set_value("Upload CSV")
+        at.run()
+
+        # Upload a headers-only CSV
+        csv_bytes = self._make_headers_only_csv_bytes()
+        at.file_uploader[0].set_value(("empty.csv", csv_bytes, "text/csv"))
+        at.run()
+        assert not at.exception
+
+        # Try to run forecast (should fail gracefully)
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+
+    def test_headers_only_csv_shows_error(self):
+        """A headers-only CSV should show a specific error about zero rows."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.run()
+
+        at.radio[0].set_value("Upload CSV")
+        at.run()
+
+        csv_bytes = self._make_headers_only_csv_bytes()
+        at.file_uploader[0].set_value(("empty.csv", csv_bytes, "text/csv"))
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        # Should show zero-rows error
+        error_texts = [e.value for e in at.error]
+        has_zero_error = any("zero valid rows" in e.lower() or "0 rows" in e for e in error_texts)
+        assert has_zero_error, f"No zero-rows error found in: {error_texts}"
+
+    def test_headers_only_csv_button_re_enabled(self):
+        """The run button should be re-enabled after a zero-rows error."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.run()
+
+        at.radio[0].set_value("Upload CSV")
+        at.run()
+
+        csv_bytes = self._make_headers_only_csv_bytes()
+        at.file_uploader[0].set_value(("empty.csv", csv_bytes, "text/csv"))
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+
+        # is_running should be reset to False
+        assert at.session_state["is_running"] is False, "Button should be re-enabled after error"
+
+    def test_headers_only_csv_no_backend_construction(self):
+        """Backend forecast should not be called for headers-only data."""
+        call_count = [0]
+
+        class TrackingBackend:
+            def forecast(self, task):
+                call_count[0] += 1
+                raise AssertionError("forecast() must not be called")
+
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = TrackingBackend()
+        at.run()
+
+        at.radio[0].set_value("Upload CSV")
+        at.run()
+
+        csv_bytes = self._make_headers_only_csv_bytes()
+        at.file_uploader[0].set_value(("empty.csv", csv_bytes, "text/csv"))
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert call_count[0] == 0, "forecast() should not be called for empty dataset"

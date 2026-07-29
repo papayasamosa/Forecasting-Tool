@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import threading
@@ -162,3 +163,62 @@ def write_evidence(
     with open(path, "w", encoding="utf-8") as f:
         json.dump(evidence, f, indent=2, default=str)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Traceability helpers (WP6: evidence reproducibility)
+# ---------------------------------------------------------------------------
+
+
+def capture_traceability() -> dict[str, Any]:
+    """Return Git commit, worktree status, and evidence schema version.
+
+    Never raises; returns empty strings on failure.
+    """
+    result: dict[str, Any] = {}
+    try:
+        # Git commit
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        result["code_commit"] = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        result["code_commit"] = ""
+
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+        result["git_worktree_clean"] = out.stdout.strip() == ""
+    except Exception:
+        result["git_worktree_clean"] = False
+
+    return result
+
+
+def machine_summary() -> dict[str, Any]:
+    """Return CPU model, logical core count, and total RAM.
+
+    Never raises; returns empty strings on failure.
+    """
+    result: dict[str, Any] = {}
+    try:
+        import psutil
+        result["cpu_logical_cores"] = psutil.cpu_count(logical=True)
+        result["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
+        try:
+            # CPU model on Linux/macOS
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        result["cpu_model"] = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            result["cpu_model"] = ""
+    except ImportError:
+        result["cpu_logical_cores"] = 0
+        result["ram_total_gb"] = 0.0
+        result["cpu_model"] = ""
+    return result

@@ -831,3 +831,58 @@ class TestEvidenceOnFailure:
                 for _, msg in errors_found
             )
             assert has_specific, "Expected error message not found in evidence"
+
+
+class TestEvidenceTraceability:
+    """WP6: Evidence records must include traceability fields."""
+
+    def test_benchmark_result_has_traceability(self):
+        """BenchmarkResult must include code_commit, git_worktree_clean, cache_state."""
+        from src.benchmarking import BenchmarkResult
+        r = BenchmarkResult(scenario="test")
+        assert hasattr(r, "code_commit")
+        assert hasattr(r, "git_worktree_clean")
+        assert hasattr(r, "cache_state")
+        assert hasattr(r, "evidence_schema_version")
+        assert r.evidence_schema_version == "1"
+
+    def test_traceability_captured_in_run(self):
+        """A benchmark run with fake pipeline should populate traceability."""
+        with tempfile.TemporaryDirectory() as tmp:
+            results = run_benchmarks(output_dir=tmp, adapter_factory=_fake_adapter_factory)
+            for r in results:
+                assert isinstance(r.code_commit, str)
+                assert isinstance(r.git_worktree_clean, bool)
+
+    def test_cache_state_in_result(self):
+        """BenchmarkResult should accept and store cache_state."""
+        from src.benchmarking import BenchmarkResult
+        r = BenchmarkResult(scenario="test", cache_state="process_cold_cached_weights")
+        assert r.cache_state == "process_cold_cached_weights"
+
+    def test_machine_summary_fields(self):
+        """BenchmarkResult should include cpu_model, cpu_logical_cores, ram_total_gb."""
+        from src.benchmarking import BenchmarkResult
+        r = BenchmarkResult(scenario="test", cpu_logical_cores=8, ram_total_gb=16.0)
+        assert r.cpu_logical_cores == 8
+        assert r.ram_total_gb == 16.0
+
+
+class TestTelemetryCapture:
+    """Tests for telemetry helper functions."""
+
+    def test_capture_traceability_returns_dict(self):
+        from src.telemetry import capture_traceability
+        result = capture_traceability()
+        assert isinstance(result, dict)
+        assert "code_commit" in result
+        assert "git_worktree_clean" in result
+
+    def test_machine_summary_returns_dict(self):
+        from src.telemetry import machine_summary
+        result = machine_summary()
+        assert isinstance(result, dict)
+        # These may be 0/empty if psutil not available
+        assert "cpu_logical_cores" in result
+        assert "ram_total_gb" in result
+        assert "cpu_model" in result

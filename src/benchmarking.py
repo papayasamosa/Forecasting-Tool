@@ -19,7 +19,7 @@ import pandas as pd
 
 from src.config import MODEL_ID
 from src.schemas import ForecastMode, ForecastTask
-from src.telemetry import rss_mb, cpu_info, capture_package_versions
+from src.telemetry import rss_mb, cpu_info, capture_package_versions, capture_traceability, machine_summary
 from src.forecasting.chronos2_adapter import (
     Chronos2Adapter,
     AdapterError,
@@ -199,6 +199,14 @@ class BenchmarkResult:
     expected_outcome: str = "pass"  # pass | expected_failure
     sample_passed: bool = False
     scenario_passed: bool = False
+    # Evidence traceability (WP6)
+    evidence_schema_version: str = "1"
+    code_commit: str = ""
+    git_worktree_clean: bool = True
+    cache_state: str = ""  # download_cold | process_cold_cached_weights | same_process_warm
+    cpu_model: str = ""
+    cpu_logical_cores: int = 0
+    ram_total_gb: float = 0.0
 
 
 def _evaluate_suite(results: list[BenchmarkResult]) -> bool:
@@ -382,7 +390,10 @@ def run_benchmarks(
     def _base_result(scenario: str, context_rows: int = 0, horizon: int = 13,
                      quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
                      n_series: int = 1, cross_learning: bool = False,
-                     expected_outcome: str = "pass") -> BenchmarkResult:
+                     expected_outcome: str = "pass",
+                     cache_state: str = "") -> BenchmarkResult:
+        _trace = capture_traceability()
+        _machine = machine_summary()
         return BenchmarkResult(
             scenario=scenario,
             python_version=sys.version.split()[0],
@@ -399,6 +410,12 @@ def run_benchmarks(
             n_series=n_series,
             cross_learning=cross_learning,
             expected_outcome=expected_outcome,
+            code_commit=_trace.get("code_commit", ""),
+            git_worktree_clean=_trace.get("git_worktree_clean", True),
+            cache_state=cache_state,
+            cpu_model=_machine.get("cpu_model", ""),
+            cpu_logical_cores=_machine.get("cpu_logical_cores", 0),
+            ram_total_gb=_machine.get("ram_total_gb", 0.0),
         )
 
     def _record_sample(

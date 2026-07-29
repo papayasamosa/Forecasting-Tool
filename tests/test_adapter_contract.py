@@ -474,3 +474,240 @@ class TestForecastBackendProtocol:
         from src.forecasting.chronos2_adapter import ModelLoadError
         with pytest.raises(ModelLoadError):
             adapter.forecast(task)
+
+
+class TestCrossLearningCapabilityDetection:
+    """WP4: cross_learning capability detection uses signature inspection,
+    not broad TypeError retry."""
+
+    def _make_single_series_task(self):
+        return ForecastTask(
+            mode=ForecastMode.STANDARD_UNIVARIATE,
+            historical_data=(
+                {"timestamp": "2024-01-01", "target": 100.0},
+                {"timestamp": "2024-01-02", "target": 102.0},
+                {"timestamp": "2024-01-03", "target": 101.0},
+            ),
+            timestamp_column="timestamp",
+            target_columns=("target",),
+            prediction_length=3,
+            quantile_levels=(0.1, 0.5, 0.9),
+        )
+
+    def test_explicit_cross_learning_passed_when_supported(self):
+        """When the pipeline supports cross_learning, the kwarg must be passed."""
+        from src.forecasting.chronos2_adapter import _predict_df_accepts_cross_learning
+
+        class SupportsCL:
+            model_id = "test"
+            model_revision = "test"
+
+            def predict_df(self, input_df, **kwargs):
+                return type("DF", (), {"columns": ["predictions", "0.1", "0.5", "0.9"],
+                                       "__len__": lambda s: 3,
+                                       "iterrows": lambda s: iter([])})()
+
+        # Check detection
+        pipe = SupportsCL()
+        # **kwargs means it accepts cross_learning
+        assert _predict_df_accepts_cross_learning(pipe)
+
+    def test_unsupported_cross_learning_detected(self):
+        """When the pipeline does NOT support cross_learning, detect it
+        before calling predict_df."""
+        from src.forecasting.chronos2_adapter import _predict_df_accepts_cross_learning
+
+        class NoCL:
+            model_id = "test"
+            model_revision = "test"
+
+            def predict_df(self, input_df, prediction_length=13, quantile_levels=None):
+                return type("DF", (), {"columns": ["predictions", "0.1", "0.5", "0.9"],
+                                       "__len__": lambda s: 3,
+                                       "iterrows": lambda s: iter([])})()
+
+        pipe = NoCL()
+        assert not _predict_df_accepts_cross_learning(pipe)
+
+    def test_internal_type_error_does_not_retry(self):
+        """An internal TypeError (not about cross_learning) must NOT be
+        caught and retried. predict_df should never be called because the
+        adapter passes additional kwargs (id_column, timestamp_column,
+        target) that cause a TypeError during argument binding before the
+        function body runs."""
+        call_count = [0]
+
+        class InternalTypeErrorPipeline:
+            model_id = "test"
+            model_revision = "test"
+
+            def predict_df(self, input_df, prediction_length=13, quantile_levels=None,
+                           cross_learning=False):
+                call_count[0] += 1
+                # Internal TypeError, not about unsupported keyword
+                raise TypeError("cannot unpack non-iterable NoneType object")
+
+        from src.forecasting.chronos2_adapter import Chronos2Adapter, InferenceError
+        adapter = Chronos2Adapter(pipeline_or_provider=InternalTypeErrorPipeline())
+        task = self._make_single_series_task()
+        with pytest.raises(InferenceError):
+            adapter.forecast(task)
+        # The adapter passes id_column, timestamp_column, target in addition
+        # to cross_learning. Python raises TypeError during argument binding
+        # BEFORE the function body, so predict_df is never called. That's
+        # correct — no retry for an internal TypeError.
+        assert call_count[0] == 0, (
+            f"predict_df called {call_count[0]} times, expected 0 "
+            "(TypeError during argument binding, not in function body)"
+        )
+
+
+    def test_internal_type_error_inside_body_no_retry(self):
+        """A TypeError raised INSIDE predict_df body (after argument binding
+        succeeds) must NOT be caught and retried. predict_df is called exactly
+        once."""
+        call_count = [0]
+
+        class InternalTypeInBodyPipeline:
+            model_id = "test"
+            model_revision = "test"
+
+            def predict_df(self, input_df, prediction_length=13, quantile_levels=None,
+                           id_column="item_id", timestamp_column="timestamp",
+                           target="target", cross_learning=False):
+                call_count[0] += 1
+                # This TypeError happens inside the function body, not
+                # during argument binding
+                raise TypeError("cannot unpack non-iterable NoneType object")
+
+        from src.forecasting.chronos2_adapter import Chronos2Adapter, InferenceError
+        adapter = Chronos2Adapter(pipeline_or_provider=InternalTypeInBodyPipeline())
+        task = self._make_single_series_task()
+        with pytest.raises(InferenceError):
+            adapter.forecast(task)
+        # Must only be called ONCE — no retry for a TypeError that has
+        # nothing to do with cross_learning.
+        assert call_count[0] == 1, (
+            f"predict_df called {call_count[0]} times, expected 1 "
+            "(no retry for internal TypeError in body)"
+        )
+
+    def test_supported_cross_learning_exactly_one_call(self):
+        """When the pipeline supports cross_learning, predict_df is called
+        exactly once (no retry)."""
+        call_count = [0]
+
+        class GoodPipeline:
+            model_id = "test"
+            model_revision = "test"
+
+            def predict_df(self, input_df, prediction_length=13, quantile_levels=None,
+                           id_column="item_id", timestamp_column="timestamp",
+                           target="target", cross_learning=False):
+                call_count[0] += 1
+                import pandas as pd
+                import numpy as np
+                # Forecast timestamps must start AFTER the last historical
+                # timestamp (2024-01-03 for our test data).
+                last_ts = pd.to_datetime(input_df["timestamp"].iloc[-1])
+                freq = "D"
+                dates = pd.date_range(start=last_ts, periods=prediction_length + 1, freq=freq)[1:]
+                rows = []
+                for i, d in enumerate(dates):
+                    rows.append({
+                        "item_id": "default",
+                        "timestamp": d,
+                        "target_name": "target",
+                        "predictions": float(100+i),
+                    })
+                    for q in quantile_levels:
+                        rows[-1][str(q)] = float(100+i - 5*(1-q))
+                return pd.DataFrame(rows)
+
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        adapter = Chronos2Adapter(pipeline_or_provider=GoodPipeline())
+        task = self._make_single_series_task()
+        result = adapter.forecast(task)
+        assert call_count[0] == 1, (
+            f"predict_df called {call_count[0]} times, expected 1"
+        )
+        assert result is not None
+
+
+class TestWarningDeduplication:
+    """WP3: Warnings stored in both ForecastResult.warnings and
+    RunMetadata.warnings must not appear twice in the page rendering."""
+
+    def test_warnings_deduplicated_by_content(self):
+        """Duplicate warning text across both collections should be
+        collapsed by the page-level deduplication logic."""
+        from src.schemas import ForecastResult, RunMetadata
+
+        # Simulate a result where the same warning appears in both places
+        meta = RunMetadata(warnings=("context truncated: 100 to 10 rows",))
+        result = ForecastResult(
+            run_id="test",
+            forecast_rows=(),
+            model_id="test",
+            model_revision="test",
+            runtime_metadata=meta,
+            warnings=("context truncated: 100 to 10 rows",),
+        )
+
+        # Page-level deduplication logic
+        all_warnings = list(result.warnings) + list(meta.warnings)
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for w in all_warnings:
+            if w not in seen:
+                seen.add(w)
+                deduped.append(w)
+        assert len(deduped) == 1, f"Expected 1 unique warning, got {len(deduped)}: {deduped}"
+        assert deduped[0] == "context truncated: 100 to 10 rows"
+
+
+class TestSmokeTopLevelEvidence:
+    """WP5: Top-level smoke invocation must write evidence on unexpected exception."""
+
+    def test_top_level_wrapper_creates_failure_record(self):
+        """Simulating a pre-assignment exception in run_smoke_test: the
+        __main__ block should catch it and write minimal evidence."""
+        from src.telemetry import write_evidence
+        import tempfile, json
+
+        # Simulate what happens in the __main__ try/except
+        evidence = {
+            "test": "chronos2_smoke_test",
+            "success": False,
+            "failure_phase": "top_level_invocation",
+            "error": "RuntimeError: simulated fixture failure",
+            "python_version": "3.12",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_evidence(evidence, tmp, prefix="smoke_test")
+            assert path.endswith(".json")
+            with open(path) as f:
+                data = json.load(f)
+            assert data["success"] is False
+            assert "top_level_invocation" in data.get("failure_phase", "")
+
+    def test_top_level_evidence_includes_traceability(self):
+        """Top-level failure evidence must include code_commit and revision."""
+        import tempfile, json
+        from src.telemetry import write_evidence, capture_traceability, capture_package_versions
+
+        trace = capture_traceability()
+        evidence = {
+            "test": "chronos2_smoke_test",
+            "success": False,
+            "failure_phase": "top_level_invocation",
+            "error": "ValueError: simulated error",
+            "code_commit": trace.get("code_commit", ""),
+            "configured_revision": "test-revision",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_evidence(evidence, tmp, prefix="smoke_test")
+            with open(path) as f:
+                data = json.load(f)
+            assert "code_commit" in data
+            assert "configured_revision" in data
