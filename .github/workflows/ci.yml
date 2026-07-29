@@ -57,5 +57,39 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          pytest tests/ -v --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
+          pytest tests/ -v \
+            --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
+            --cov=src.data_ingestion --cov=src.evidence_schemas \
             --cov-report=term-missing --cov-fail-under=80
+
+      - name: Verify evidence manifest hashes
+        run: |
+          python -c "
+import json, hashlib, os
+manifest_path = 'docs/evidence/stage0/evidence_manifest.json'
+with open(manifest_path) as f:
+    manifest = json.load(f)
+errors = []
+for key, entry in manifest.get('files', {}).items():
+    fname = entry.get('filename')
+    expected_sha = entry.get('sha256')
+    if fname and expected_sha:
+        fpath = os.path.join('docs/evidence/stage0', fname)
+        if not os.path.exists(fpath):
+            errors.append(f'{key}: file not found: {fpath}')
+            continue
+        h = hashlib.sha256()
+        with open(fpath, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        actual_sha = h.hexdigest()
+        if actual_sha != expected_sha:
+            errors.append(f'{key}: SHA-256 mismatch for {fname}')
+            errors.append(f'  expected: {expected_sha}')
+            errors.append(f'  actual:   {actual_sha}')
+if errors:
+    for e in errors:
+        print(f'ERROR: {e}')
+    exit(1)
+print('All evidence manifest hashes verified.')
+"

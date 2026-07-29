@@ -1,7 +1,7 @@
 # ADR-001: Inference Backend Architecture
 
-**Status:** ✅ Accepted — Choice A  
-**Date:** 2026-07-29 (updated)
+**Status:** ⏳ Provisionally accepted, pending Cloud Gate C  
+**Date:** 2026-07-29 (corrected)
 
 ## Context
 
@@ -12,29 +12,39 @@ run inference via:
 
 ## Decision
 
-**Choice A — Cached local CPU inference on Streamlit Community Cloud.**
+**Provisionally: Choice A — Cached local CPU inference on Streamlit Community Cloud, pending Cloud evidence.**
 
-### Evidence base
+> Local evidence (Gate B2) supports feasibility and justifies a Cloud trial,
+> but the PRD's Stage 0 release gate requires measured Community Cloud
+> evidence. This ADR will be finally accepted or rejected only after the
+> Cloud Gate C evidence is collected and evaluated.
+
+### Local evidence (not Cloud proof)
 
 | Measurement | Local result (Gate B2) | Cloud requirement | Feasible? |
 |---|---|---|---|
-| Cold-start total | 78.6 s (download-cold) / 37.7 s (process-cold) | < 5 min | ✅ Yes |
-| Warm inference | 0.2–1.7 s | < 30 s | ✅ Yes |
-| Peak process RSS | 825 MB (token-present) | Community Cloud ~1 GB limit | ✅ Yes |
-| Pipeline reuse | Verified (0.0 s model load on warm) | Required | ✅ Yes |
-| Repeated forecasts | 10/10 rolling folds stable | No degradation | ✅ Yes |
-| CPU-only Torch | Confirmed (2.13.0+cpu, CUDA: None) | Required | ✅ Yes |
-| Token-absent resolution | Works (public model) | Required | ✅ Yes |
-| Token-present resolution | Works (exact revision match) | Optional | ✅ Yes |
-| Failure recovery | Expected failure + same-adapter retry verified | Required | ✅ Yes |
-| Concurrency | Not measured on Cloud | To be verified | ⏳ TBD |
+| Cold-start total | 78.6 s (download-cold) / 37.7 s (process-cold) | < 5 min | Likely |
+| Warm inference | 0.2–1.7 s | < 30 s | Likely |
+| Peak process RSS | 825 MB (token-present) | Community Cloud ~1 GB typical | Uncertain |
+| Pipeline reuse | Verified (0.0 s model load on warm) | Required | Likely |
+| Repeated forecasts | 10/10 rolling folds stable | No degradation | Likely |
+| CPU-only Torch | Confirmed (2.13.0+cpu, CUDA: None) | Required | ✅ |
+| Token-absent resolution | Works (public model) | Required | ✅ |
+| Token-present resolution | Works (exact revision match) | Optional | ✅ |
+| Failure recovery | Expected failure + same-adapter retry verified | Required | Likely |
+| Concurrency | Not measured on Cloud | Required before public sharing | ⏳ TBD |
 
 ### Platform considerations
 
-Streamlit Community Cloud free tier provides approximately 1 GB RAM. The local
-peak RSS of 825 MB leaves ~175 MB headroom. A cold start may take up to 90
-seconds (model download + pipeline construction), which is within the 5-minute
-Cloud request timeout.
+Official Streamlit Community Cloud resources are dynamic — CPU ranges from
+approximately 0.078 to 2 cores, and memory from approximately 690 MB to
+2.7 GB, subject to change without notice.
+
+Local Windows RSS (825 MB peak) is **not** a guaranteed Cloud memory
+calculation. It does not include Streamlit process overhead, Python
+interpreter differences, Cloud model-cache behaviour, dataframe memory,
+multiple sessions, allocator differences, or container overhead. Do not
+subtract local RSS from an assumed Cloud allowance to claim headroom.
 
 The `--extra-index-url` directive in `requirements.txt` was deployed to
 Community Cloud at URL:
@@ -43,18 +53,43 @@ Community Cloud at URL:
 ### Risk: concurrency
 
 `st.cache_resource` shares one adapter across sessions. No process-wide lock
-was tested. If concurrent sessions cause pipeline contention, a bounded queue
-or per-session adapter may be needed. This should be verified before public
-sharing but does not block the ADR decision.
+was tested. Concurrent-user behaviour is a blocking measurement for final
+ADR acceptance and must be completed before public sharing.
 
-## Consequences
+## Consequences (provisional)
 
-- The `Chronos2Adapter` with its `st.cache_resource`-cached pipeline is
-  sufficient for Stage 0 and Phase 1. No API gateway or GPU endpoint is needed.
-- No `RemoteChronos2Adapter` is required unless Cloud evidence later shows
-  concurrency issues or the platform memory limit is insufficient (the local
-  825 MB peak is close to the 1 GB boundary).
-- The Streamlit app requires no architectural changes.
+- If Cloud evidence confirms Choice A after Gate C, the `Chronos2Adapter`
+  with its `st.cache_resource`-cached pipeline is sufficient. No API gateway
+  or GPU endpoint is needed.
+- If Cloud evidence requires Choice B, a `RemoteChronos2Adapter` implementing
+  the same `ForecastBackend` protocol will be added. Streamlit pages will not
+  require changes.
+- A concurrency lock or bounded queue may be required regardless of which
+  choice is confirmed.
+
+## Required Cloud evidence (Gate C)
+
+1. Clean dependency build
+2. CPU-only Torch confirmed
+3. No NVIDIA/CUDA packages
+4. Model load without HF_TOKEN
+5. Model load with HF_TOKEN
+6. Download-cold app start
+7. First forecast
+8. Same-process warm forecast
+9. Three repeated forecasts (stable timing)
+10. Pipeline construction count (= 1)
+11. Peak memory recorded
+12. Valid CSV upload and forecast
+13. Oversized CSV rejection
+14. Blank timestamp rejection
+15. Invalid timestamp rejection
+16. Same column mapping rejection
+17. Context truncation notice
+18. Recoverable inference failure
+19. Configuration preservation after error
+20. Two simultaneous sessions (concurrency)
+21. Queue or lock behaviour (if applicable)
 
 ## Linked evidence
 

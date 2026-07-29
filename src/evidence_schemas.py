@@ -120,6 +120,8 @@ class SmokeEvidence:
     cache_preflight: dict[str, Any] = dataclasses.field(default_factory=dict)
     error: str = ""
     evidence_path: str = ""
+    # Producer-emitted field (not used in validation, preserved for round-trip)
+    timestamp: str = ""
     # Flat machine fields (backward compat with smoke test output)
     cpu_model: str = ""
     cpu_logical_cores: int = 0
@@ -365,7 +367,8 @@ class ModelArtifactEvidence:
     configured_revision: str = ""
     resolved_revision: str = ""
     snapshot_commit: str = ""
-    shard_count: int = 0
+    shard_count: int = 0  # total files in snapshot (config + weights)
+    weight_shard_count: int = 0  # number of model weight files only
     total_bytes: int = 0
     files: list[ModelArtifactFile] = dataclasses.field(default_factory=list)
     manifest_sha256: str = ""
@@ -488,6 +491,10 @@ class CloudEvidence:
     concurrent_users: int = 0
     queue_time_seconds: float = 0.0
     error: str = ""
+    # Dependency verification
+    pip_check_passed: bool = False
+    torch_cuda_none: bool = False
+    nvidia_packages_absent: bool = False
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -495,8 +502,50 @@ class CloudEvidence:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "cloud_stage0":
             errors.append(f"evidence_type: expected 'cloud_stage0'")
+        if not self.success:
+            errors.append("success: false — cannot publish failed Cloud evidence")
         if not self.code_commit:
             errors.append("code_commit: empty")
+        if not self.git_worktree_clean:
+            errors.append("git_worktree_clean: false — worktree must be clean")
+        if not self.started_at_utc:
+            errors.append("started_at_utc: empty")
+        if not self.completed_at_utc:
+            errors.append("completed_at_utc: empty")
+        if not self.model_id:
+            errors.append("model_id: empty")
+        if not self.configured_revision:
+            errors.append("configured_revision: empty")
+        if not self.model_revision:
+            errors.append("model_revision: empty")
+        if self.configured_revision and self.model_revision and self.configured_revision != self.model_revision:
+            errors.append(
+                f"revision mismatch: configured '{self.configured_revision}', "
+                f"resolved '{self.model_revision}'"
+            )
+        if not self.package_versions:
+            errors.append("package_versions: empty")
+        if not self.pip_check_passed:
+            errors.append("pip_check_passed: false — dependency verification required")
+        if not self.torch_cuda_none:
+            errors.append("torch_cuda_none: false — CPU-only Torch required")
+        if not self.nvidia_packages_absent:
+            errors.append("nvidia_packages_absent: false — no NVIDIA packages allowed")
+        # Cold phase must have timing
+        if self.cold.total_seconds <= 0:
+            errors.append("cold.total_seconds: missing — cold forecast required")
+        if not self.cold.cache_state:
+            errors.append("cold.cache_state: empty")
+        # Warm phase must have timing and reuse
+        if self.warm.total_seconds <= 0:
+            errors.append("warm.total_seconds: missing — warm forecast required")
+        if not self.warm.cache_state:
+            errors.append("warm.cache_state: empty")
+        if not self.warm.pipeline_reused:
+            errors.append("warm.pipeline_reused: false — pipeline must be reused")
+        # Concurrency must be recorded
+        if self.concurrent_users <= 0:
+            errors.append("concurrent_users: must be at least 1")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -524,40 +573,47 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
     """Deserialise a dict into the appropriate evidence type based on
     ``evidence_type`` field.
 
+    Operates on a deep copy — does NOT mutate the caller's data (WP3).
+
     Raises ``ValueError`` for unknown types or missing evidence_type.
     """
-    etype = data.get("evidence_type", "")
+    import copy
+    d = copy.deepcopy(data)
+    etype = d.get("evidence_type", "")
     if not etype:
         raise ValueError("evidence_type field is missing from evidence data")
     cls = _EVIDENCE_TYPE_MAP.get(etype)
     if cls is None:
         raise ValueError(f"Unknown evidence_type: '{etype}'")
 
-    # Recursively convert nested dicts
+    # Recursively convert nested dicts into typed objects
     if etype == "smoke_test":
-        if "cold" in data and isinstance(data["cold"], dict):
-            data["cold"] = SmokePhase(**data["cold"])
-        if "warm" in data and isinstance(data["warm"], dict):
-            data["warm"] = SmokePhase(**data["warm"])
-        if "machine" in data and isinstance(data["machine"], dict):
-            data["machine"] = MachineSummary(**data["machine"])
+        if "cold" in d and isinstance(d["cold"], dict):
+            d["cold"] = SmokePhase(**d["cold"])
+        if "warm" in d and isinstance(d["warm"], dict):
+            d["warm"] = SmokePhase(**d["warm"])
+        if "machine" in d and isinstance(d["machine"], dict):
+            d["machine"] = MachineSummary(**d["machine"])
     elif etype == "benchmark_suite":
-        if "scenarios" in data:
+        if "scenarios" in d:
             scenarios = []
-            for sc in data["scenarios"]:
+            for sc in d["scenarios"]:
                 if "samples" in sc:
-                    sc["samples"] = [BenchmarkSampleRecord(**s) for s in sc["samples"]]
-                scenarios.append(BenchmarkScenarioRecord(**sc))
-            data["scenarios"] = scenarios
+                    scr = copy.deepcopy(sc)
+                    scr["samples"] = [BenchmarkSampleRecord(**s) for s in scr["samples"]]
+                else:
+                    scr = copy.deepcopy(sc)
+                scenarios.append(BenchmarkScenarioRecord(**scr))
+            d["scenarios"] = scenarios
     elif etype == "model_artifact":
-        if "files" in data:
-            data["files"] = [ModelArtifactFile(**f) for f in data["files"]]
+        if "files" in d:
+            d["files"] = [ModelArtifactFile(**f) for f in d["files"]]
     elif etype == "cloud_stage0":
-        if "cold" in data and isinstance(data["cold"], dict):
-            data["cold"] = SmokePhase(**data["cold"])
-        if "warm" in data and isinstance(data["warm"], dict):
-            data["warm"] = SmokePhase(**data["warm"])
-        if "machine" in data and isinstance(data["machine"], dict):
-            data["machine"] = MachineSummary(**data["machine"])
+        if "cold" in d and isinstance(d["cold"], dict):
+            d["cold"] = SmokePhase(**d["cold"])
+        if "warm" in d and isinstance(d["warm"], dict):
+            d["warm"] = SmokePhase(**d["warm"])
+        if "machine" in d and isinstance(d["machine"], dict):
+            d["machine"] = MachineSummary(**d["machine"])
 
-    return cls(**data)
+    return cls(**d)

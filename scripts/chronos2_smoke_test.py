@@ -84,6 +84,65 @@ def run_smoke_test(
     with ``success=False`` and error details on failure.
     """
     _started = datetime.now(timezone.utc)
+
+    # Cache preflight (WP5): inspect HF cache before the run
+    from src.telemetry import inspect_hf_cache
+    cache_preflight = inspect_hf_cache(MODEL_REVISION)
+    if initial_cache_state == "download_cold" and cache_preflight.get("snapshot_present", False):
+        print("  ERROR: --initial-cache-state=download_cold but snapshot is already cached.")
+        print(f"    Use a fresh cache directory or --initial-cache-state=process_cold_cached_weights")
+        evidence = {
+            "evidence_schema_version": "2",
+            "evidence_type": "smoke_test",
+            "test": "chronos2_smoke_test",
+            "timestamp": _started.isoformat(),
+            "started_at_utc": _started.isoformat(),
+            "completed_at_utc": _started.isoformat(),
+            "success": False,
+            "failure_phase": "cache_preflight",
+            "error": f"Cache state mismatch: labeled '{initial_cache_state}' but snapshot is already cached",
+            "python_version": sys.version.split()[0],
+            "model_id": MODEL_ID,
+            "configured_revision": MODEL_REVISION,
+            "model_revision": "",
+            "hf_token_present": bool(os.environ.get("HF_TOKEN")),
+            "cold": {},
+            "warm": {},
+            "package_versions": {},
+            "initial_cache_state": initial_cache_state,
+        }
+        evidence.update(capture_traceability())
+        evidence.update(machine_summary())
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
+        return evidence
+    if initial_cache_state == "process_cold_cached_weights" and not cache_preflight.get("snapshot_present", False):
+        print("  ERROR: --initial-cache-state=process_cold_cached_weights but snapshot is not cached.")
+        print(f"    Run with --initial-cache-state=download_cold first.")
+        evidence = {
+            "evidence_schema_version": "2",
+            "evidence_type": "smoke_test",
+            "test": "chronos2_smoke_test",
+            "timestamp": _started.isoformat(),
+            "started_at_utc": _started.isoformat(),
+            "completed_at_utc": _started.isoformat(),
+            "success": False,
+            "failure_phase": "cache_preflight",
+            "error": f"Cache state mismatch: labeled '{initial_cache_state}' but snapshot is not cached",
+            "python_version": sys.version.split()[0],
+            "model_id": MODEL_ID,
+            "configured_revision": MODEL_REVISION,
+            "model_revision": "",
+            "hf_token_present": bool(os.environ.get("HF_TOKEN")),
+            "cold": {},
+            "warm": {},
+            "package_versions": {},
+            "initial_cache_state": initial_cache_state,
+        }
+        evidence.update(capture_traceability())
+        evidence.update(machine_summary())
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
+        return evidence
+
     evidence: dict = {
         "evidence_schema_version": "2",
         "evidence_type": "smoke_test",
@@ -98,6 +157,7 @@ def run_smoke_test(
         "model_revision": "",
         "hf_token_present": bool(os.environ.get("HF_TOKEN")),
         "cold": {},
+        "cache_preflight": cache_preflight,
         "warm": {},
         "package_versions": {},
         "error": "",
