@@ -26,7 +26,6 @@ from src.forecasting.chronos2_adapter import (
     ModelLoadError,
     ResultSchemaError,
     _validate_quantile_monotonic,
-    InferenceError,
 )
 
 logger = logging.getLogger(__name__)

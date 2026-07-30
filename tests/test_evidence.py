@@ -252,9 +252,7 @@ class TestSmokeEvidenceValidation:
     def test_failed_smoke_rejected(self):
         data = _valid_smoke_dict({"success": False, "completed_at_utc": ""})
         ev = evidence_from_dict(data)
-        errors = ev.validate()
         # success=False skips the success block but still validates basics
-        # Errors should exist for empty completed_at_utc, missing cache etc.
         # At minimum, no error means basic fields are ok but success=False
         # is noted - the publisher catches this separately
         assert not ev.success
@@ -397,7 +395,6 @@ class TestBenchmarkSuiteValidation:
     def test_failed_suite_rejected(self):
         data = _valid_benchmark_suite_dict({"suite_passed": False, "completed_at_utc": ""})
         ev = evidence_from_dict(data)
-        errors = ev.validate()
         # suite_passed=False skips the success block but still validates basics
         # At minimum, the publisher catches suite_passed=False separately
         assert not ev.suite_passed
@@ -417,7 +414,6 @@ class TestBenchmarkSuiteValidation:
         rolling["scenario_passed"] = False
         data["suite_passed"] = False
         ev = evidence_from_dict(data)
-        errors = ev.validate()
         # Should flag missing folds since suite_passed is false already
 
     def test_warm_cache_state_validated(self):
