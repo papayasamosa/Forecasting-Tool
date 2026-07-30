@@ -11,8 +11,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | `Chronos2Adapter` class | ✅ Implemented, tested with fake pipeline |
 | Schema invariant validation | ✅ Implemented, tested |
 | Unit tests (no model download) | ✅ Implemented |
-| Local setup (D: drive) | ✅ Documented |
-| CI (GitHub Actions) | ✅ Implemented |
+| Local setup (D: drive) | ✅ Documented, enforced |
+| CI (GitHub Actions) | ✅ Implemented, coverage threshold 80% |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Context capping before record materialisation | ✅ Implemented |
@@ -25,22 +25,23 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Reusable telemetry module (`src/telemetry.py`) | ✅ Implemented |
 | Immutable model revision pinned | ✅ `29ec3766d36d6f73f0696f85560a422f50e8498c` |
 | Evidence schemas (v2) with typed models | ✅ Implemented |
-| Process-wide inference coordinator (`src/coordinator.py`) | ✅ Implemented with semaphore, tests |
+| Process-wide inference coordinator (`src/coordinator.py`) | ✅ Implemented with semaphore, tests, bounded history |
 | Production page routes forecasts through the coordinator | ✅ Implemented (`pages/1_Forecast.py`) |
-| Typed repeated-run records (WP9) | ✅ Implemented |
-| Typed concurrency evidence (WP11) | ✅ Implemented |
-| Token-absent and token-present path results (WP8) | ✅ Implemented |
-| Cloud acceptance-test evidence (WP12) | ✅ Schema complete |
-| Cloud evidence bound to deployed commit (WP6) | ✅ Validated |
-| Cloud resource/memory evidence (WP7) | ✅ Required |
+| Coordinator returns execution record (no full-history scan) | ✅ Implemented |
+| Typed repeated-run records | ✅ Implemented |
+| Typed concurrency evidence | ✅ Implemented |
+| Token-absent and token-present path results | ✅ Implemented, both required for Cloud |
+| Cloud acceptance-test evidence | ✅ Schema complete, all tests required |
+| Cloud evidence bound to deployed commit | ✅ Validated |
+| Cloud resource/memory evidence | ✅ Required |
 | Evidence publisher (sanitise, copy, manifest) | ✅ Implemented |
-| Bundle builder with recursive typed validation (WP3) | ✅ Implemented |
-| Manifest deep verifier (internal JSON validation) (WP2) | ✅ Implemented |
-| Cache preflight evidence required (WP4) | ✅ Schema + bundle enforce |
-| Suite-level resolved revision (WP5) | ✅ BenchmarkSuiteEvidence |
+| Bundle builder with recursive typed validation | ✅ Implemented, shared validator |
+| Manifest deep verifier (internal JSON validation) | ✅ Implemented, uses Path.is_relative_to() |
+| Cache preflight evidence required | ✅ Strict with inspection_succeeded and post-run state |
+| Suite-level resolved revision and peak RSS | ✅ Mandatory |
 | HF cache discovery (huggingface_hub constant) | ✅ Implemented |
-| Cloud evidence validation (strict states, concurrency gate) | ✅ Implemented |
-| Snapshot/weight file count metadata | ✅ Implemented |
+| Cloud evidence validation (strict states, concurrency gate) | ✅ Pairwise interval intersection |
+| Snapshot/weight file count metadata | ✅ Implemented, validated |
 | Producer/schema alignment (allowlist + warning) | ✅ Implemented |
 | Git traceability (trustworthy repo-root detection) | ✅ Implemented |
 | Blank/missing timestamp rejection | ✅ Implemented |
@@ -49,9 +50,16 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Windows machine CPU model detection | ✅ Implemented |
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
+| Execution receipts (WP3) | ✅ Schema implemented |
+| Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
+| Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
+| Bounded coordinator telemetry (WP1) | ✅ `deque(maxlen=256)`, `CoordinatorExecution` |
 | Historical Chronos-2 local evidence (commit ee8f89...) | ✅ Collected prior |
-| Current release-candidate local evidence | ❌ Invalidated (Gate B3 bundle) — see "Current status" below |
-| Community Cloud deployment (Gate C) | ⏳ Pending — checklist blank |
+| PR #18 evidence bundle | ✅ Invalidated, preserved for audit |
+| PR #19 evidence invalidation | ✅ Complete |
+| PR #20 coordinator integration | ✅ Complete |
+| Gate B3 valid superseding evidence | ❌ Invalid — pending genuine rerun |
+| Community Cloud deployment (Gate C) | ⏳ Pending — checklist remains blank |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |

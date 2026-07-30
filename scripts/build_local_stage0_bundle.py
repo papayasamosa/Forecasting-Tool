@@ -352,45 +352,19 @@ def main() -> int:
     expected_cr = dc_smoke.get("configured_revision", "") if isinstance(dc_smoke, dict) else ""
     expected_mr = dc_smoke.get("model_revision", "") if isinstance(dc_smoke, dict) else ""
 
-    # Recursive typed validation (WP3) — every component goes through evidence_from_dict + validate()
+    # Recursive typed validation (WP9) — every component goes through
+    # the shared recursive validator from src.evidence_validation.
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_validation import validate_recursive
+
     all_errors: list[str] = []
 
-    all_errors.extend(_validate_component_typed(
-        dc_smoke, "download_cold_smoke",
-        expected_evidence_type="smoke_test",
-        expected_token_present=False,
-        expected_initial_cache_state="download_cold",
-        expected_commit=expected_commit,
-    ))
-    all_errors.extend(_validate_component_typed(
-        pc_smoke, "process_cold_smoke",
-        expected_evidence_type="smoke_test",
-        expected_token_present=False,
-        expected_initial_cache_state="process_cold_cached_weights",
-        expected_commit=expected_commit,
-    ))
-    all_errors.extend(_validate_component_typed(
-        benchmark, "benchmark",
-        expected_evidence_type="benchmark_suite",
-        expected_token_present=None,
-        expected_initial_cache_state="process_cold_cached_weights",
-        expected_commit=expected_commit,
-    ))
-    all_errors.extend(_validate_component_typed(
-        tp_smoke, "token_present_smoke",
-        expected_evidence_type="smoke_test",
-        expected_token_present=True,
-        expected_initial_cache_state="process_cold_cached_weights",
-        expected_commit=expected_commit,
-    ))
-
-    # Model artifact typed validation
-    all_errors.extend(_validate_model_artifact_typed(
-        model_art,
-        expected_commit=expected_commit,
-        expected_cr=expected_cr,
-        expected_mr=expected_mr,
-    ))
+    # Validate individual components
+    all_errors.extend(validate_recursive(dc_smoke, label="download_cold_smoke"))
+    all_errors.extend(validate_recursive(pc_smoke, label="process_cold_smoke"))
+    all_errors.extend(validate_recursive(benchmark, label="benchmark"))
+    all_errors.extend(validate_recursive(tp_smoke, label="token_present_smoke"))
+    all_errors.extend(validate_recursive(model_art, label="model_artifact"))
 
     # Cross-component revision consistency
     all_errors.extend(_check_revision_consistency({

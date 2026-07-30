@@ -77,6 +77,19 @@ PINNED_VERSIONS = _load_pinned_versions()
 def main() -> int:
     errors = []
 
+    # --- WP12: D-drive storage policy enforcement ---
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    try:
+        from src.storage_policy import assert_d_drive_preflight
+        d_errors = assert_d_drive_preflight()
+        errors.extend(d_errors)
+        if not d_errors:
+            print("✅ D-drive storage policy: OK")
+    except ImportError as exc:
+        errors.append(f"Could not import storage_policy module: {exc}")
+    except Exception as exc:
+        errors.append(f"D-drive preflight error: {exc}")
+
     # --- Python version ---
     py_ver = sys.version_info
     print(f"Python: {sys.version.split()[0]} on {sys.platform}")

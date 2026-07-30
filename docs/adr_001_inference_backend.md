@@ -1,7 +1,7 @@
 # ADR-001: Inference Backend Architecture
 
 **Status:** ⏳ Provisionally accepted, pending Cloud Gate C  
-**Date:** 2026-07-29 (corrected)
+**Date:** 2026-07-30 (updated)
 
 ## Context
 
@@ -18,6 +18,11 @@ run inference via:
 > but the PRD's Stage 0 release gate requires measured Community Cloud
 > evidence. This ADR will be finally accepted or rejected only after the
 > Cloud Gate C evidence is collected and evaluated.
+>
+> **Note:** The PR #18 evidence bundle has been explicitly invalidated and
+> preserved for audit. Do not cite invalidated evidence as proof. A
+> superseding evidence link will be added only after a valid local bundle
+> is published.
 
 ### Local evidence (not Cloud proof)
 
@@ -30,7 +35,7 @@ run inference via:
 | Repeated forecasts | 10/10 rolling folds stable | No degradation | Likely |
 | CPU-only Torch | Confirmed (2.13.0+cpu, CUDA: None) | Required | ✅ |
 | Token-absent resolution | Works (public model) | Required | ✅ |
-| Token-present resolution | Works (exact revision match) | Optional | ✅ |
+| Token-present resolution | Works (exact revision match) | Required | ✅ |
 | Failure recovery | Expected failure + same-adapter retry verified | Required | Likely |
 | Concurrency | Not measured on Cloud | Required before public sharing | ⏳ TBD |
 
@@ -52,9 +57,10 @@ Community Cloud at URL:
 
 ### Risk: concurrency
 
-`st.cache_resource` shares one adapter across sessions. No process-wide lock
-was tested. Concurrent-user behaviour is a blocking measurement for final
-ADR acceptance and must be completed before public sharing.
+`st.cache_resource` shares one adapter across sessions. A process-wide
+`InferenceCoordinator` with a bounded semaphore serialises inference access.
+Concurrent-user behaviour remains a blocking measurement for final ADR
+acceptance and must be completed before public sharing.
 
 ## Consequences (provisional)
 
@@ -64,8 +70,8 @@ ADR acceptance and must be completed before public sharing.
 - If Cloud evidence requires Choice B, a `RemoteChronos2Adapter` implementing
   the same `ForecastBackend` protocol will be added. Streamlit pages will not
   require changes.
-- A concurrency lock or bounded queue may be required regardless of which
-  choice is confirmed.
+- The inference coordinator with bounded semaphore is in place regardless of
+  which choice is confirmed.
 
 ## Required Cloud evidence (Gate C)
 
@@ -77,7 +83,7 @@ ADR acceptance and must be completed before public sharing.
 6. Download-cold app start
 7. First forecast
 8. Same-process warm forecast
-9. Three repeated forecasts (stable timing)
+9. Three repeated forecasts (stable timing, pipeline reuse)
 10. Pipeline construction count (= 1)
 11. Peak memory recorded
 12. Valid CSV upload and forecast
@@ -88,12 +94,14 @@ ADR acceptance and must be completed before public sharing.
 17. Context truncation notice
 18. Recoverable inference failure
 19. Configuration preservation after error
-20. Two simultaneous sessions (concurrency)
+20. Two simultaneous sessions (concurrency with overlapping windows)
 21. Queue or lock behaviour (if applicable)
+22. Coordinator timeout recovery
 
 ## Linked evidence
 
-- [Local Stage 0 evidence bundle](../docs/evidence/stage0/evidence_local_stage0_bundle_20260729_130534_342298_71036f6f.json)
+- ~~[Local Stage 0 evidence bundle](../docs/evidence/stage0/evidence_local_stage0_bundle_20260729_130534_342298_71036f6f.json)~~ (invalidated — PR #18)
+- Superseding evidence link: ⏳ Pending valid local bundle publication
 - [Stage 0 benchmark report](stage_0_benchmark_report.md)
 - Community Cloud deployment URL: `https://forecasting-tool-bjhchtg9t6xhyxshidineu.streamlit.app/`
 - Community Cloud test checklist: [community_cloud_test_checklist.md](community_cloud_test_checklist.md)

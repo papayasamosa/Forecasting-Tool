@@ -85,17 +85,15 @@ def _validate_referenced_json(fpath: Path, expected_type: str, expected_commit: 
             f"!= manifest code_commit '{expected_commit}'"
         )
 
-    # Run typed schema validator
+    # Run shared recursive validation (WP9)
     try:
         sys.path.insert(0, str(REPO_ROOT))
-        from src.evidence_schemas import evidence_from_dict
-        evidence_obj = evidence_from_dict(data)
-        if hasattr(evidence_obj, "validate"):
-            schema_errors = evidence_obj.validate()
-            for se in schema_errors:
-                errors.append(f"{fpath.name}: schema validation: {se}")
+        from src.evidence_validation import validate_recursive
+        recursive_errors = validate_recursive(data, label=fpath.name)
+        for re in recursive_errors:
+            errors.append(f"{fpath.name}: {re}")
     except Exception as exc:
-        errors.append(f"{fpath.name}: schema validation error: {exc}")
+        errors.append(f"{fpath.name}: recursive validation error: {exc}")
 
     return errors
 
@@ -146,10 +144,30 @@ def verify_manifest() -> int:
         if fname is None and expected_sha is None:
             continue
 
-        # Resolve path and verify it stays inside evidence directory
+        # WP11: Reject absolute filenames (must be relative to evidence dir)
+        if os.path.isabs(fname):
+            errors.append(f"{key}: filename must be relative, got absolute path '{fname}'")
+            continue
+
+        # WP11: Reject traversal paths (parent dir references)
+        # Normalize to POSIX-style separators for pattern matching
+        norm_fname = fname.replace("\\", "/")
+        if ".." in norm_fname.split("/"):
+            errors.append(f"{key}: path traversal detected in filename '{fname}'")
+            continue
+
+        # WP11: Reject sibling-prefix paths (e.g. "foo" matches "foobar")
+        # Path.is_relative_to() handles containment — but also check that
+        # the resolved path is not a sibling with a shared prefix outside
+        # the evidence directory.
         resolved = (EVIDENCE_DIR / fname).resolve()
-        if not str(resolved).startswith(str(EVIDENCE_DIR.resolve())):
-            errors.append(f"{key}: resolved path {resolved} is outside {EVIDENCE_DIR}")
+        try:
+            resolved.relative_to(EVIDENCE_DIR.resolve())
+        except ValueError:
+            errors.append(
+                f"{key}: resolved '{resolved}' is not under "
+                f"'{EVIDENCE_DIR.resolve()}'"
+            )
             continue
 
         # File must exist
