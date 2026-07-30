@@ -204,8 +204,7 @@ def _check_invalidated_evidence() -> list[str]:
     files = manifest.get("files", {})
     for key, entry in files.items():
         if isinstance(entry, dict) and entry.get("status") == "invalidated":
-            # Verify the bundle file cannot be loaded as passing through
-            # the typed schema
+            # Verify the invalidated bundle cannot pass schema validation
             bundle_filename = entry.get("filename")
             if bundle_filename:
                 bundle_path = manifest_path.parent / bundle_filename
@@ -213,12 +212,15 @@ def _check_invalidated_evidence() -> list[str]:
                     try:
                         with open(bundle_path, encoding="utf-8") as f:
                             bundle_data = json.load(f)
-                        from src.evidence_schemas import evidence_from_dict
-                        bundle_obj = evidence_from_dict(bundle_data)
-                        if hasattr(bundle_obj, "bundle_passed") and bundle_obj.bundle_passed:
+                        from src.evidence_validation import validate_recursive
+                        v_errors = validate_recursive(bundle_data, label=f"invalidated:{bundle_filename}")
+                        # Even if the raw data says bundle_passed=True, the
+                        # schema validation should catch missing/invalid fields
+                        # (e.g., receipts, which postdate this bundle).
+                        if not v_errors:
                             errors.append(
-                                f"invalidated bundle '{bundle_filename}' reports "
-                                f"bundle_passed=True"
+                                f"invalidated bundle '{bundle_filename}' passes "
+                                f"schema validation — should be non-passing"
                             )
                     except Exception:
                         pass  # May fail to deserialize with new schema — acceptable
@@ -309,12 +311,12 @@ def main() -> int:
 
     print()
     if all_errors:
-        print(f"❌ {len(all_errors)} readiness check(s) failed")
+        print(f"[FAIL] {len(all_errors)} readiness check(s) failed")
         for e in all_errors:
             print(f"  - {e}")
         return 1
     else:
-        print("✅ All readiness checks passed")
+        print("[OK] All readiness checks passed")
         return 0
 
 
