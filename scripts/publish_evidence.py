@@ -289,7 +289,18 @@ def main() -> int:
     elif args.expected_token_state == "absent":
         expected_token = False
 
-    # Validate
+    # Validate via shared recursive validator (WP9)
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_validation import validate_recursive
+
+    recursive_errors = validate_recursive(raw_data, label=args.type)
+    if recursive_errors:
+        print("Validation errors:")
+        for err in recursive_errors:
+            print(f"  ❌ {err}")
+        return 1
+
+    # Also run publisher-specific validation for token state / cache state
     evidence_obj, errors = _validate_and_load(
         raw_data,
         expected_type=args.type,

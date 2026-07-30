@@ -87,22 +87,59 @@ class MachineSummary:
 
 
 # ---------------------------------------------------------------------------
-# Cache preflight record (WP4)
+# Cache preflight record (WP4, WP7)
 # ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
 class CachePreflight:
+    """Cache preflight inspection record.
+
+    WP7: Release evidence must require all fields below. For download_cold:
+    snapshot_present=False, post_run_snapshot_present=True,
+    post_run_file_count>0, post_run_total_bytes>0.
+    For process_cold_cached_weights: snapshot_present=True,
+    file_count>0, total_bytes>0.
+    """
+    inspection_succeeded: bool = False
+    cache_source: str = ""
+    initial_cache_state: str = ""
     snapshot_present: bool = False
     file_count: int = 0
     total_bytes: int = 0
-    cache_source: str = ""
+    post_run_snapshot_present: bool = False
+    post_run_file_count: int = 0
+    post_run_total_bytes: int = 0
     error: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if self.cache_source and self.cache_source not in VALID_CACHE_SOURCES:
+        if not self.inspection_succeeded:
+            errors.append("cache_preflight: inspection_succeeded is false")
+        if not self.cache_source:
+            errors.append("cache_preflight: cache_source empty")
+        elif self.cache_source not in VALID_CACHE_SOURCES:
             errors.append(f"cache_source: invalid '{self.cache_source}'")
+        if not self.initial_cache_state:
+            errors.append("cache_preflight: initial_cache_state empty")
+        elif self.initial_cache_state not in VALID_INITIAL_CACHE_STATES:
+            errors.append(f"cache_preflight: initial_cache_state invalid '{self.initial_cache_state}'")
+        if self.initial_cache_state == CACHE_STATE_DOWNLOAD_COLD:
+            if self.snapshot_present:
+                errors.append("cache_preflight: download_cold but snapshot_present is True")
+            if not self.post_run_snapshot_present:
+                errors.append("cache_preflight: download_cold but post_run_snapshot_present is False")
+            if self.post_run_file_count <= 0:
+                errors.append("cache_preflight: download_cold but post_run_file_count is 0")
+            if self.post_run_total_bytes <= 0:
+                errors.append("cache_preflight: download_cold but post_run_total_bytes is 0")
+        elif self.initial_cache_state == CACHE_STATE_PROCESS_COLD:
+            if not self.snapshot_present:
+                errors.append("cache_preflight: process_cold_cached_weights but snapshot_present is False")
+            if self.file_count <= 0:
+                errors.append("cache_preflight: process_cold_cached_weights but file_count is 0")
+            if self.total_bytes <= 0:
+                errors.append("cache_preflight: process_cold_cached_weights but total_bytes is 0")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,6 +192,71 @@ class TokenPathResult:
                     f"token path: configured_revision '{self.configured_revision}' != "
                     f"resolved_revision '{self.resolved_revision}'"
                 )
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Execution receipt (WP3) — tamper-evident proof that a command ran
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class ExecutionReceipt:
+    """Evidence that a specific command was executed.
+
+    When independent attestation (e.g. GitHub-generated) is unavailable,
+    the evidence should be labelled "operator-attested and tamper-evident".
+    """
+
+    execution_id: str = ""
+    attestation_type: str = ""  # "github_attestation", "operator_attested"
+    code_commit: str = ""
+    producer_version: str = ""
+    sanitised_command: str = ""
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
+    component_sha256: str = ""
+    model_id: str = ""
+    configured_revision: str = ""
+    resolved_revision: str = ""
+    environment_summary: str = ""
+    immutable_artifact_reference: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if not self.execution_id:
+            errors.append("execution_receipt: execution_id empty")
+        if not self.attestation_type:
+            errors.append("execution_receipt: attestation_type empty")
+        if self.attestation_type not in ("github_attestation", "operator_attested"):
+            errors.append(
+                f"execution_receipt: attestation_type '{self.attestation_type}' "
+                f"not recognized"
+            )
+        if not self.code_commit:
+            errors.append("execution_receipt: code_commit empty")
+        if not self.sanitised_command:
+            errors.append("execution_receipt: sanitised_command empty")
+        if not self.started_at_utc:
+            errors.append("execution_receipt: started_at_utc empty")
+        if not self.completed_at_utc:
+            errors.append("execution_receipt: completed_at_utc empty")
+        if not self.component_sha256:
+            errors.append("execution_receipt: component_sha256 empty")
+        if not self.model_id:
+            errors.append("execution_receipt: model_id empty")
+        if not self.configured_revision:
+            errors.append("execution_receipt: configured_revision empty")
+        if not self.resolved_revision:
+            errors.append("execution_receipt: resolved_revision empty")
+        if self.configured_revision and self.resolved_revision and self.configured_revision != self.resolved_revision:
+            errors.append(
+                f"execution_receipt: configured_revision '{self.configured_revision}' != "
+                f"resolved_revision '{self.resolved_revision}'"
+            )
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -543,7 +645,7 @@ class BenchmarkSuiteEvidence:
         elif self.initial_cache_state not in VALID_INITIAL_CACHE_STATES:
             errors.append(f"initial_cache_state: invalid '{self.initial_cache_state}'")
 
-        # Cache preflight validation (WP5)
+        # Cache preflight validation (WP8)
         cp_errors = self.cache_preflight.validate()
         errors.extend(f"cache_preflight: {e}" for e in cp_errors)
 
@@ -553,14 +655,23 @@ class BenchmarkSuiteEvidence:
             if not self.completed_at_utc:
                 errors.append("completed_at_utc: empty")
 
-            # Suite-level resolved revision (WP5)
+            # WP8: Mandatory benchmark identity and resources
+            if not self.configured_revision:
+                errors.append("configured_revision: empty")
+            if not self.resolved_revision:
+                errors.append("resolved_revision: empty")
             if self.configured_revision and self.resolved_revision:
                 if self.configured_revision != self.resolved_revision:
                     errors.append(
                         f"revision mismatch: configured '{self.configured_revision}', "
                         f"resolved '{self.resolved_revision}'"
                     )
-            if self.resolved_revision and self.peak_rss_mb <= 0:
+            if self.pipeline_construction_count != 1:
+                errors.append(
+                    f"pipeline_construction_count: expected 1, "
+                    f"got {self.pipeline_construction_count}"
+                )
+            if self.peak_rss_mb <= 0:
                 errors.append("peak_rss_mb: must be > 0 for successful suite")
 
             # Validate required scenarios
@@ -646,14 +757,18 @@ class ModelArtifactEvidence:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
+        import re
         if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "model_artifact":
             errors.append(f"evidence_type: expected 'model_artifact'")
         if not self.code_commit:
             errors.append("code_commit: empty")
-        if not self.model_id:
-            errors.append("model_id: empty")
+        if not self.git_worktree_clean:
+            errors.append("git_worktree_clean: false")
+        # WP10: model ID must be exactly amazon/chronos-2
+        if self.model_id != "amazon/chronos-2":
+            errors.append(f"model_id: expected 'amazon/chronos-2', got '{self.model_id}'")
         if not self.configured_revision:
             errors.append("configured_revision: empty")
         if not self.resolved_revision:
@@ -663,20 +778,32 @@ class ModelArtifactEvidence:
                 f"revision mismatch: configured '{self.configured_revision}', "
                 f"resolved '{self.resolved_revision}'"
             )
+        # WP10: snapshot_commit must equal resolved_revision
+        if not self.snapshot_commit:
+            errors.append("snapshot_commit: empty")
+        elif self.resolved_revision and self.snapshot_commit != self.resolved_revision:
+            errors.append(
+                f"snapshot_commit '{self.snapshot_commit}' != "
+                f"resolved_revision '{self.resolved_revision}'"
+            )
         if not self.files:
             errors.append("files: empty — no weight files recorded")
         if not self.manifest_sha256:
             errors.append("manifest_sha256: empty")
-        # Sanity checks on file counts — use snapshot_file_count as canonical
-        sc = self.snapshot_file_count if self.snapshot_file_count > 0 else self.shard_count
-        if sc <= 0:
-            errors.append("snapshot_file_count: must be >= 1")
-        # Require at least one weight file and shard for Chronos-2 evidence (P1-3)
+        # WP10: at least one weight file and one weight shard
         if self.weight_file_count < 1:
             errors.append("weight_file_count: must be >= 1 for real model evidence")
         if self.weight_shard_count < 1:
             errors.append("weight_shard_count: must be >= 1 for real model evidence")
-        # Verify declared counts match actual files (P1-3)
+        # WP10: valid lowercase 64-character SHA-256 for every file
+        sha256_re = re.compile(r'^[0-9a-f]{64}$')
+        for f in self.files:
+            if not f.sha256:
+                errors.append(f"file '{f.filename}': sha256 is empty")
+            elif not sha256_re.match(f.sha256):
+                errors.append(f"file '{f.filename}': sha256 '{f.sha256}' is not a valid 64-char hex hash")
+        # Verify declared counts match actual files
+        sc = self.snapshot_file_count if self.snapshot_file_count > 0 else self.shard_count
         if self.files:
             actual_count = len(self.files)
             if sc > 0 and actual_count != sc:
@@ -690,6 +817,13 @@ class ModelArtifactEvidence:
                 errors.append(
                     f"weight_file_count mismatch: declared {self.weight_file_count}, "
                     f"actual weight files {actual_weight_count}"
+                )
+            # WP10: declared total_bytes must equal inventory
+            actual_total = sum(f.size_bytes for f in self.files)
+            if self.total_bytes > 0 and actual_total != self.total_bytes:
+                errors.append(
+                    f"total_bytes mismatch: declared {self.total_bytes}, "
+                    f"actual inventory {actual_total}"
                 )
         return errors
 
@@ -899,6 +1033,51 @@ class CloudEvidence:
                 f"deployed_commit '{self.deployed_commit}'"
             )
 
+        # WP2: Strict Cloud token-path validation — both paths must be
+        # attempted and successful for a successful Cloud evidence record.
+        # The legacy hf_token_present Boolean is NOT used as the release gate.
+        errors.extend(f"token_absent_result: {e}" for e in self.token_absent_result.validate())
+        errors.extend(f"token_present_result: {e}" for e in self.token_present_result.validate())
+        if self.success:
+            if not self.token_absent_result.attempted:
+                errors.append("token_absent_result: must be attempted for successful Cloud evidence")
+            if not self.token_absent_result.success:
+                errors.append("token_absent_result: must be successful for successful Cloud evidence")
+            if not self.token_present_result.attempted:
+                errors.append("token_present_result: must be attempted for successful Cloud evidence")
+            if not self.token_present_result.success:
+                errors.append("token_present_result: must be successful for successful Cloud evidence")
+            # Both token path revisions must equal the Cloud model revision
+            tar_cr = self.token_absent_result.configured_revision
+            tar_rr = self.token_absent_result.resolved_revision
+            tpr_cr = self.token_present_result.configured_revision
+            tpr_rr = self.token_present_result.resolved_revision
+            if tar_cr and tar_cr != self.model_revision:
+                errors.append(
+                    f"token_absent_result configured_revision '{tar_cr}' != "
+                    f"Cloud model_revision '{self.model_revision}'"
+                )
+            if tar_rr and tar_rr != self.model_revision:
+                errors.append(
+                    f"token_absent_result resolved_revision '{tar_rr}' != "
+                    f"Cloud model_revision '{self.model_revision}'"
+                )
+            if tpr_cr and tpr_cr != self.model_revision:
+                errors.append(
+                    f"token_present_result configured_revision '{tpr_cr}' != "
+                    f"Cloud model_revision '{self.model_revision}'"
+                )
+            if tpr_rr and tpr_rr != self.model_revision:
+                errors.append(
+                    f"token_present_result resolved_revision '{tpr_rr}' != "
+                    f"Cloud model_revision '{self.model_revision}'"
+                )
+            # Unique run IDs across both paths
+            if (self.token_absent_result.run_id
+                    and self.token_present_result.run_id
+                    and self.token_absent_result.run_id == self.token_present_result.run_id):
+                errors.append("token paths: run_ids must be distinct across token-absent and token-present runs")
+
         # Cold phase
         if self.cold.total_seconds <= 0:
             errors.append("cold.total_seconds: missing — cold forecast required")
@@ -938,7 +1117,8 @@ class CloudEvidence:
         if self.process_peak_rss_mb <= 0:
             errors.append("process_peak_rss_mb: must be > 0 — process peak memory required")
 
-        # Concurrency (WP11)
+        # WP5: Successful concurrency gate — at least 2 successful overlapping
+        # requests with pairwise interval intersection.
         if self.concurrent_users < 2:
             errors.append(
                 f"concurrent_users: expected >= 2, got {self.concurrent_users} "
@@ -952,35 +1132,107 @@ class CloudEvidence:
                 )
             for req in self.concurrency_requests:
                 errors.extend(f"concurrency_request: {e}" for e in req.validate())
-            # Verify overlapping request windows
-            if len(self.concurrency_requests) >= 2:
-                starts = [r.start_time_utc for r in self.concurrency_requests if r.start_time_utc]
-                if len(starts) >= 2:
-                    sorted_starts = sorted(starts)
-                    # At least one request should have started while another was active
-                    # Simple check: the second request started before the first completed
-                    r0 = self.concurrency_requests[0]
-                    r1 = self.concurrency_requests[1]
-                    if r0.start_time_utc and r1.start_time_utc and r0.completion_time_utc:
-                        if r1.start_time_utc >= r0.completion_time_utc:
-                            errors.append(
-                                "concurrency: request windows do not overlap — "
-                                "no concurrency was exercised"
-                            )
 
-        # Repeated runs (WP9)
-        if self.success:
-            if len(self.repeated_runs) < 3:
+            # Prove concurrency using pairwise interval intersection across
+            # successful request windows (WP5). Independent of input order.
+            successful_reqs = [r for r in self.concurrency_requests if r.success]
+            if len(successful_reqs) >= 2:
+                # Check every pair for overlap
+                any_overlap = False
+                for i in range(len(successful_reqs)):
+                    for j in range(i + 1, len(successful_reqs)):
+                        a, b = successful_reqs[i], successful_reqs[j]
+                        if a.start_time_utc and a.completion_time_utc and b.start_time_utc and b.completion_time_utc:
+                            a_start = datetime.fromisoformat(a.start_time_utc)
+                            a_end = datetime.fromisoformat(a.completion_time_utc)
+                            b_start = datetime.fromisoformat(b.start_time_utc)
+                            b_end = datetime.fromisoformat(b.completion_time_utc)
+                            if min(a_end, b_end) > max(a_start, b_start):
+                                any_overlap = True
+                                break
+                    if any_overlap:
+                        break
+                if not any_overlap:
+                    errors.append(
+                        "concurrency: no overlapping pair found among successful "
+                        "requests — genuine concurrency not proven"
+                    )
+            elif len(successful_reqs) < 2:
                 errors.append(
-                    f"repeated_runs: expected at least 3, got {len(self.repeated_runs)}"
+                    f"concurrency: need at least 2 successful requests for "
+                    f"overlap check, got {len(successful_reqs)}"
                 )
+
+            # Also require: one process pipeline construction, no crash,
+            # timeout outcome recorded, semaphore release after failure
+            if not self.cold.pipeline_call_count == 1:
+                errors.append("concurrency: cold pipeline must be constructed exactly once")
+            if self.app_restart_occurred:
+                errors.append("concurrency: app restart occurred — process crash detected")
+            if not self.timeout_result:
+                errors.append("concurrency: timeout_result must be recorded")
+
+        # WP4: Successful repeated-run gate — at least 3 successful warm runs
+        if self.success:
+            counted = 0
+            seen_run_numbers: set[int] = set()
             for run in self.repeated_runs:
                 errors.extend(f"repeated_run: {e}" for e in run.validate())
+                if run.run_number <= 0:
+                    errors.append(f"repeated_run: run_number must be >= 1, got {run.run_number}")
+                if run.run_number in seen_run_numbers:
+                    errors.append(f"repeated_run: duplicate run_number {run.run_number}")
+                seen_run_numbers.add(run.run_number)
+                # A counted warm run must satisfy ALL of the following conditions
+                is_countable = (
+                    run.success
+                    and run.started_at_utc
+                    and run.completed_at_utc
+                    and run.total_seconds > 0
+                    and run.inference_seconds > 0
+                    and run.cache_state == CACHE_STATE_WARM
+                    and run.pipeline_reused
+                    and run.pipeline_construction_count == 1
+                    and run.resolved_revision == self.model_revision
+                    and run.rss_mb > 0
+                    and run.error_code == ""
+                )
+                if is_countable:
+                    counted += 1
+            if counted < 3:
+                errors.append(
+                    f"repeated_runs: need at least 3 counted successful warm runs, "
+                    f"got {counted} out of {len(self.repeated_runs)}"
+                )
 
-        # Acceptance tests (WP12)
+        # WP6: Complete acceptance-test gate — every required test must pass
         if self.success:
-            if not self.acceptance_tests:
-                errors.append("acceptance_tests: empty — UI acceptance paths must be recorded")
+            required_tests = [
+                "dependency_install", "pip_check", "cpu_only_torch",
+                "no_nvidia_packages", "token_absent_load", "token_present_load",
+                "cold_forecast", "warm_forecast", "repeated_forecasts",
+                "valid_csv_forecast", "oversized_csv_rejected",
+                "blank_timestamp_rejected", "invalid_timestamp_rejected",
+                "same_column_rejected", "context_truncation_visible",
+                "recoverable_failure", "configuration_preserved",
+                "two_session_concurrency", "coordinator_timeout_recovery",
+            ]
+            seen_tests: set[str] = set()
+            for t in self.acceptance_tests:
+                t_errors = t.validate()
+                errors.extend(f"acceptance_test '{t.test_name}': {e}" for e in t_errors)
+                if not t.test_name:
+                    continue
+                if t.test_name in seen_tests:
+                    errors.append(f"acceptance_test: duplicate test_name '{t.test_name}'")
+                seen_tests.add(t.test_name)
+                if t.test_name in required_tests and not t.passed:
+                    errors.append(f"acceptance_test '{t.test_name}': must pass")
+                if t.test_name not in required_tests:
+                    errors.append(f"acceptance_test: unexpected test_name '{t.test_name}'")
+            missing = sorted(set(required_tests) - seen_tests)
+            if missing:
+                errors.append(f"acceptance_tests: missing required tests: {missing}")
 
         return errors
 

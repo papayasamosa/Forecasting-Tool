@@ -15,6 +15,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ---- WP12: Validate D-drive policy before changing environment -----------
+$resolvedRoot = [System.IO.Path]::GetFullPath($LocalRoot)
+$driveLetter = [System.IO.Path]::GetPathRoot($resolvedRoot).TrimEnd('\')
+if ($driveLetter -ne 'D:') {
+    Write-Error "LocalRoot must be on drive D:. Got '$driveLetter' from '$LocalRoot'. See docs/development/storage_policy.md"
+    exit 1
+}
+if ($resolvedRoot -ne 'D:\Forecasting-Tool-Local' -and $resolvedRoot -notlike 'D:\Forecasting-Tool-Local\*') {
+    Write-Error "LocalRoot must be under D:\Forecasting-Tool-Local. Got '$resolvedRoot'. See docs/development/storage_policy.md"
+    exit 1
+}
+
 # ---- Set D: drive environment variables ------------------------------------
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
@@ -26,6 +38,16 @@ $env:TRANSFORMERS_CACHE = "$LocalRoot\cache\transformers"
 $env:TORCH_HOME = "$LocalRoot\cache\torch"
 $env:TMP = "$LocalRoot\temp"
 $env:TEMP = "$LocalRoot\temp"
+$env:PYTHONPYCACHEPREFIX = "$LocalRoot\cache\pycache"
+$env:XDG_CACHE_HOME = "$LocalRoot\cache"
+$env:NPM_CONFIG_CACHE = "$LocalRoot\cache\npm"
+$env:NPM_CONFIG_PREFIX = "$LocalRoot\cache\npm-prefix"
+$env:UV_CACHE_DIR = "$LocalRoot\cache\uv"
+$env:UV_TOOL_DIR = "$LocalRoot\cache\uv-tools"
+$env:UV_PYTHON_INSTALL_DIR = "$LocalRoot\python312"
+$env:PLAYWRIGHT_BROWSERS_PATH = "$LocalRoot\cache\playwright"
+$env:MPLCONFIGDIR = "$LocalRoot\cache\matplotlib"
+$env:RUFF_CACHE_DIR = "$LocalRoot\cache\ruff"
 
 Write-Host "✅ Environment variables set to D: drive:"
 Write-Host "   FORECASTING_LOCAL_ROOT = $LocalRoot"

@@ -66,17 +66,40 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
         "cold": {"cache_state": "download_cold", "pipeline_call_count": 1, "rss_mb": 500.0},
         "warm": {"cache_state": "same_process_warm", "pipeline_reused": True, "rss_mb": 500.0},
         "package_versions": {"torch": "2.13.0"},
-        "cache_preflight": {"snapshot_present": False, "cache_source": "explicit"},
+        "cache_preflight": {
+            "inspection_succeeded": True,
+            "cache_source": "explicit",
+            "initial_cache_state": "download_cold",
+            "snapshot_present": False,
+            "post_run_snapshot_present": True,
+            "post_run_file_count": 5,
+            "post_run_total_bytes": 1000000,
+        },
     }
     if overrides:
         data.update(overrides)
         # Derive cache_preflight from initial_cache_state if not explicitly set
         if "initial_cache_state" in overrides and "cache_preflight" not in overrides:
             ics = overrides["initial_cache_state"]
-            data["cache_preflight"] = {
-                "snapshot_present": ics == "process_cold_cached_weights",
-                "cache_source": "explicit",
-            }
+            if ics == "process_cold_cached_weights":
+                data["cache_preflight"] = {
+                    "inspection_succeeded": True,
+                    "cache_source": "explicit",
+                    "initial_cache_state": ics,
+                    "snapshot_present": True,
+                    "file_count": 5,
+                    "total_bytes": 1000000,
+                }
+            else:
+                data["cache_preflight"] = {
+                    "inspection_succeeded": True,
+                    "cache_source": "explicit",
+                    "initial_cache_state": ics,
+                    "snapshot_present": False,
+                    "post_run_snapshot_present": True,
+                    "post_run_file_count": 5,
+                    "post_run_total_bytes": 1000000,
+                }
         # Derive token result from hf_token_present if not explicitly set
         if "hf_token_present" in overrides and "token_absent_result" not in overrides and "token_present_result" not in overrides:
             common = {
@@ -106,7 +129,14 @@ def _valid_benchmark_suite_dict(overrides: dict | None = None) -> dict:
         "resolved_revision": "rev1",
         "pipeline_construction_count": 1,
         "peak_rss_mb": 800.0,
-        "cache_preflight": {"snapshot_present": True, "cache_source": "explicit"},
+        "cache_preflight": {
+            "inspection_succeeded": True,
+            "cache_source": "explicit",
+            "initial_cache_state": "process_cold_cached_weights",
+            "snapshot_present": True,
+            "file_count": 5,
+            "total_bytes": 1000000,
+        },
         "scenarios": [
             {
                 "scenario": "weekly_260_13",
@@ -162,8 +192,8 @@ def _valid_model_artifact_dict(overrides: dict | None = None) -> dict:
         "weight_file_count": 1,
         "weight_shard_count": 1,
         "total_bytes": 500000000,
-        "files": [{"filename": "model.safetensors", "size_bytes": 500000000, "sha256": "abc"}],
-        "manifest_sha256": "def",
+        "files": [{"filename": "model.safetensors", "size_bytes": 500000000, "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"}],
+        "manifest_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     }
     if overrides:
         data.update(overrides)
@@ -230,7 +260,12 @@ class TestSmokeEvidenceValidation:
         assert any("warm.cache_state" in e for e in errors)
 
     def test_cache_preflight_download_cold_requires_absent(self):
-        data = _valid_smoke_dict({"cache_preflight": {"snapshot_present": True, "cache_source": "explicit"}})
+        data = _valid_smoke_dict({"cache_preflight": {
+            "inspection_succeeded": True,
+            "cache_source": "explicit",
+            "initial_cache_state": "download_cold",
+            "snapshot_present": True,
+        }})
         ev = evidence_from_dict(data)
         errors = ev.validate()
         assert any("cache_preflight" in e for e in errors)
@@ -587,6 +622,22 @@ class TestCloudEvidenceValidation:
             "configured_revision": "rev1",
             "model_revision": "rev1",
             "hf_token_present": False,
+            "token_absent_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-absent-1",
+                "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:00:30",
+                "timing_seconds": 10.0,
+            },
+            "token_present_result": {
+                "attempted": True, "success": True,
+                "configured_revision": "rev1", "resolved_revision": "rev1",
+                "run_id": "run-present-1",
+                "started_at_utc": "2026-07-29T00:00:00",
+                "completed_at_utc": "2026-07-29T00:00:30",
+                "timing_seconds": 10.0,
+            },
             "package_versions": {"torch": "2.13.0"},
             "pip_check_passed": True,
             "torch_cuda_none": True,
@@ -612,29 +663,59 @@ class TestCloudEvidenceValidation:
             "warm_rss_mb": 600.0,
             "process_peak_rss_mb": 850.0,
             "concurrent_users": 2,
+            "timeout_result": "CoordinatorTimeoutError",
             "concurrency_requests": [
                 {"request_id": "req1", "start_time_utc": "2026-07-29T00:00:00",
+                 "inference_start_utc": "2026-07-29T00:00:00",
                  "completion_time_utc": "2026-07-29T00:02:00",
-                 "queue_seconds": 0.0, "inference_seconds": 120.0, "success": True},
+                 "queue_seconds": 0.0, "inference_seconds": 120.0, "success": True, "sync_mode": "semaphore"},
                 {"request_id": "req2", "start_time_utc": "2026-07-29T00:00:30",
+                 "inference_start_utc": "2026-07-29T00:00:30",
                  "completion_time_utc": "2026-07-29T00:02:30",
-                 "queue_seconds": 30.0, "inference_seconds": 90.0, "success": True},
+                 "queue_seconds": 30.0, "inference_seconds": 90.0, "success": True, "sync_mode": "semaphore"},
             ],
             "repeated_runs": [
                 {"run_number": 1, "success": True, "total_seconds": 120.0,
+                 "inference_seconds": 100.0,
                  "started_at_utc": "2026-07-29T00:00:00", "completed_at_utc": "2026-07-29T00:02:00",
-                 "resolved_revision": "rev1", "cache_state": "download_cold", "pipeline_reused": False},
+                 "resolved_revision": "rev1", "cache_state": "download_cold",
+                 "pipeline_reused": False, "pipeline_construction_count": 1, "rss_mb": 600.0, "error_code": ""},
                 {"run_number": 2, "success": True, "total_seconds": 2.0,
+                 "inference_seconds": 1.5,
                  "started_at_utc": "2026-07-29T00:02:00", "completed_at_utc": "2026-07-29T00:02:02",
-                 "resolved_revision": "rev1", "cache_state": "same_process_warm", "pipeline_reused": True},
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm",
+                 "pipeline_reused": True, "pipeline_construction_count": 1, "rss_mb": 600.0, "error_code": ""},
                 {"run_number": 3, "success": True, "total_seconds": 2.1,
+                 "inference_seconds": 1.6,
                  "started_at_utc": "2026-07-29T00:02:02", "completed_at_utc": "2026-07-29T00:02:04",
-                 "resolved_revision": "rev1", "cache_state": "same_process_warm", "pipeline_reused": True},
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm",
+                 "pipeline_reused": True, "pipeline_construction_count": 1, "rss_mb": 600.0, "error_code": ""},
+                {"run_number": 4, "success": True, "total_seconds": 2.2,
+                 "inference_seconds": 1.7,
+                 "started_at_utc": "2026-07-29T00:02:04", "completed_at_utc": "2026-07-29T00:02:06",
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm",
+                 "pipeline_reused": True, "pipeline_construction_count": 1, "rss_mb": 600.0, "error_code": ""},
             ],
             "acceptance_tests": [
-                {"test_name": "valid_csv", "passed": True},
-                {"test_name": "oversized_rejection", "passed": True},
-                {"test_name": "bad_timestamps", "passed": True},
+                {"test_name": "dependency_install", "passed": True},
+                {"test_name": "pip_check", "passed": True},
+                {"test_name": "cpu_only_torch", "passed": True},
+                {"test_name": "no_nvidia_packages", "passed": True},
+                {"test_name": "token_absent_load", "passed": True},
+                {"test_name": "token_present_load", "passed": True},
+                {"test_name": "cold_forecast", "passed": True},
+                {"test_name": "warm_forecast", "passed": True},
+                {"test_name": "repeated_forecasts", "passed": True},
+                {"test_name": "valid_csv_forecast", "passed": True},
+                {"test_name": "oversized_csv_rejected", "passed": True},
+                {"test_name": "blank_timestamp_rejected", "passed": True},
+                {"test_name": "invalid_timestamp_rejected", "passed": True},
+                {"test_name": "same_column_rejected", "passed": True},
+                {"test_name": "context_truncation_visible", "passed": True},
+                {"test_name": "recoverable_failure", "passed": True},
+                {"test_name": "configuration_preserved", "passed": True},
+                {"test_name": "two_session_concurrency", "passed": True},
+                {"test_name": "coordinator_timeout_recovery", "passed": True},
             ],
         }
         if overrides:
@@ -727,15 +808,20 @@ class TestModelArtifactFields:
         """ModelArtifactEvidence must have snapshot_file_count, weight_file_count, weight_shard_count."""
         ev = ModelArtifactEvidence(
             code_commit="abc123",
+            git_worktree_clean=True,
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
+            snapshot_commit="rev1",
             snapshot_file_count=1,
             weight_file_count=1,
             weight_shard_count=1,
             total_bytes=500000000,
-            files=[ModelArtifactFile(filename="model.safetensors", size_bytes=500000000, sha256="abc")],
-            manifest_sha256="def",
+            files=[ModelArtifactFile(
+                filename="model.safetensors", size_bytes=500000000,
+                sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            )],
+            manifest_sha256="1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
         )
         assert ev.snapshot_file_count == 1
         assert ev.weight_file_count == 1
@@ -759,8 +845,8 @@ class TestModelArtifactFields:
             "weight_file_count": 1,
             "weight_shard_count": 1,
             "total_bytes": 500000000,
-            "files": [{"filename": "model.safetensors", "size_bytes": 500000000, "sha256": "abc"}],
-            "manifest_sha256": "def",
+            "files": [{"filename": "model.safetensors", "size_bytes": 500000000, "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"}],
+            "manifest_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
         })
         # Both snapshot_file_count and shard_count can be set
         assert ev.snapshot_file_count == 1
@@ -976,7 +1062,14 @@ class TestProducerSchemaAlignment:
             "resolved_revision": "rev1",
             "pipeline_construction_count": 1,
             "peak_rss_mb": 800.0,
-            "cache_preflight": {"snapshot_present": True, "cache_source": "explicit"},
+            "cache_preflight": {
+                "inspection_succeeded": True,
+                "cache_source": "explicit",
+                "initial_cache_state": "process_cold_cached_weights",
+                "snapshot_present": True,
+                "file_count": 5,
+                "total_bytes": 1000000,
+            },
             "scenarios": [
                 {
                     "scenario": "weekly_260_13",
@@ -1372,17 +1465,34 @@ class TestCachePreflight:
         from src.evidence_schemas import CachePreflight
         cp = CachePreflight()
         errors = cp.validate()
-        assert errors == []
+        # Defaults now require inspection_succeeded, cache_source, initial_cache_state
+        assert any("inspection_succeeded" in e for e in errors)
+        assert any("cache_source" in e for e in errors)
+        assert any("initial_cache_state" in e for e in errors)
 
     def test_invalid_source_rejected(self):
         from src.evidence_schemas import CachePreflight
-        cp = CachePreflight(cache_source="invalid_path")
+        cp = CachePreflight(
+            inspection_succeeded=True,
+            cache_source="invalid_path",
+            initial_cache_state="process_cold_cached_weights",
+            snapshot_present=True,
+            file_count=5,
+            total_bytes=1000,
+        )
         errors = cp.validate()
         assert any("cache_source" in e for e in errors)
 
     def test_valid_source_accepted(self):
-        from src.evidence_schemas import CachePreflight, CACHE_SOURCE_EXPLICIT
-        cp = CachePreflight(cache_source=CACHE_SOURCE_EXPLICIT)
+        from src.evidence_schemas import CachePreflight, CACHE_SOURCE_EXPLICIT, CACHE_STATE_PROCESS_COLD
+        cp = CachePreflight(
+            inspection_succeeded=True,
+            cache_source=CACHE_SOURCE_EXPLICIT,
+            initial_cache_state=CACHE_STATE_PROCESS_COLD,
+            snapshot_present=True,
+            file_count=5,
+            total_bytes=1000,
+        )
         errors = cp.validate()
         assert errors == []
 
@@ -1539,8 +1649,9 @@ class TestInferenceCoordinator:
         def dummy_fn(x: int) -> int:
             return x * 2
 
-        result = c.run(dummy_fn, 21, request_id="test1")
-        assert result == 42
+        exec_record = c.run(dummy_fn, 21, request_id="test1")
+        assert exec_record.result == 42
+        assert exec_record.request_record["request_id"] == "test1"
         log = c.request_log
         assert len(log) == 1
         assert log[0]["success"] is True
@@ -1557,8 +1668,8 @@ class TestInferenceCoordinator:
 
         def worker(n: int):
             try:
-                r = c.run(lambda x: x, n, request_id=f"req_{n}")
-                results.append(r)
+                exec_record = c.run(lambda x: x, n, request_id=f"req_{n}")
+                results.append(exec_record.result)
             except Exception as e:
                 errors.append(e)
 
@@ -1587,8 +1698,8 @@ class TestInferenceCoordinator:
             c.run(failing_fn, request_id="fail")
 
         # After failure, the semaphore must be released so a new request works
-        result = c.run(lambda: 42, request_id="recovery")
-        assert result == 42
+        exec_record = c.run(lambda: 42, request_id="recovery")
+        assert exec_record.result == 42
         log = c.request_log
         assert len(log) == 2
         assert log[0]["success"] is False
