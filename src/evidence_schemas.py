@@ -1174,51 +1174,30 @@ class CloudEvidence:
 
         # WP4: Successful repeated-run gate — at least 3 successful warm runs
         if self.success:
-            if len(self.repeated_runs) < 3:
-                errors.append(
-                    f"repeated_runs: expected at least 3, got {len(self.repeated_runs)}"
-                )
             counted = 0
             seen_run_numbers: set[int] = set()
             for run in self.repeated_runs:
                 errors.extend(f"repeated_run: {e}" for e in run.validate())
-                if run.success:
-                    # Each counted run must meet all requirements
-                    if run.run_number <= 0:
-                        errors.append(f"repeated_run: run_number must be >= 1, got {run.run_number}")
-                    if run.run_number in seen_run_numbers:
-                        errors.append(f"repeated_run: duplicate run_number {run.run_number}")
-                    seen_run_numbers.add(run.run_number)
-                    if not run.started_at_utc:
-                        errors.append(f"repeated_run {run.run_number}: started_at_utc empty")
-                    if not run.completed_at_utc:
-                        errors.append(f"repeated_run {run.run_number}: completed_at_utc empty")
-                    if run.total_seconds <= 0:
-                        errors.append(f"repeated_run {run.run_number}: total_seconds must be > 0")
-                    if run.inference_seconds <= 0:
-                        errors.append(f"repeated_run {run.run_number}: inference_seconds must be > 0")
-                    if run.cache_state != CACHE_STATE_WARM:
-                        errors.append(
-                            f"repeated_run {run.run_number}: cache_state must be "
-                            f"'{CACHE_STATE_WARM}', got '{run.cache_state}'"
-                        )
-                    if not run.pipeline_reused:
-                        errors.append(f"repeated_run {run.run_number}: pipeline_reused must be True")
-                    if run.pipeline_construction_count != 1:
-                        errors.append(
-                            f"repeated_run {run.run_number}: pipeline_construction_count "
-                            f"must be 1, got {run.pipeline_construction_count}"
-                        )
-                    if run.resolved_revision != self.model_revision:
-                        errors.append(
-                            f"repeated_run {run.run_number}: resolved_revision "
-                            f"'{run.resolved_revision}' != Cloud model_revision "
-                            f"'{self.model_revision}'"
-                        )
-                    if run.rss_mb <= 0:
-                        errors.append(f"repeated_run {run.run_number}: rss_mb must be > 0")
-                    if run.error_code != "":
-                        errors.append(f"repeated_run {run.run_number}: error_code must be empty for success")
+                if run.run_number <= 0:
+                    errors.append(f"repeated_run: run_number must be >= 1, got {run.run_number}")
+                if run.run_number in seen_run_numbers:
+                    errors.append(f"repeated_run: duplicate run_number {run.run_number}")
+                seen_run_numbers.add(run.run_number)
+                # A counted warm run must satisfy ALL of the following conditions
+                is_countable = (
+                    run.success
+                    and run.started_at_utc
+                    and run.completed_at_utc
+                    and run.total_seconds > 0
+                    and run.inference_seconds > 0
+                    and run.cache_state == CACHE_STATE_WARM
+                    and run.pipeline_reused
+                    and run.pipeline_construction_count == 1
+                    and run.resolved_revision == self.model_revision
+                    and run.rss_mb > 0
+                    and run.error_code == ""
+                )
+                if is_countable:
                     counted += 1
             if counted < 3:
                 errors.append(

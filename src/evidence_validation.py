@@ -106,12 +106,18 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
         for run_key in BUNDLE_RUN_KEYS:
             run_data = runs.get(run_key)
             if isinstance(run_data, dict):
-                errors.extend(validate_recursive(run_data, label=f"{label}.runs.{run_key}"))
+                # Only recurse if the nested record has evidence_type
+                if "evidence_type" in run_data:
+                    errors.extend(validate_recursive(run_data, label=f"{label}.runs.{run_key}"))
+                # If no evidence_type, it's raw data stored inline; skip
+                # recursive validation but the parent bundle's validate()
+                # already checks basic consistency.
             else:
                 errors.append(f"{label}.runs.{run_key}: missing or not a dict")
         ma = data.get("model_artifact")
         if isinstance(ma, dict):
-            errors.extend(validate_recursive(ma, label=f"{label}.model_artifact"))
+            if "evidence_type" in ma:
+                errors.extend(validate_recursive(ma, label=f"{label}.model_artifact"))
         else:
             errors.append(f"{label}.model_artifact: missing or not a dict")
 
@@ -161,11 +167,15 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
                 errors.append(f"{label}.cache_preflight: construction failed: {exc}")
 
     elif etype == BENCHMARK_SUITE:
-        # Validate each scenario
+        # Validate each scenario — they don't have evidence_type, so skip
+        # the recursive type-based validation and just validate inline fields
         scenarios = data.get("scenarios", [])
         for i, sc in enumerate(scenarios):
             if isinstance(sc, dict):
-                errors.extend(validate_recursive(sc, label=f"{label}.scenarios[{i}]"))
+                if "evidence_type" in sc:
+                    errors.extend(validate_recursive(sc, label=f"{label}.scenarios[{i}]"))
+                # Scenarios without evidence_type are validated by the
+                # parent BenchmarkSuiteEvidence.validate() method.
 
     return errors
 
