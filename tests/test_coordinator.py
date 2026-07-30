@@ -46,7 +46,8 @@ class TestCapacityOneSerialisesCalls:
         def _worker(tag: str):
             barrier.wait(timeout=2)
             try:
-                results[tag] = coordinator.run(_slow_call, tag, request_id=tag)
+                exec_record = coordinator.run(_slow_call, tag, request_id=tag)
+                results[tag] = exec_record.result
             except Exception as exc:  # pragma: no cover - only on failure
                 results[tag] = exc
 
@@ -169,8 +170,8 @@ class TestReleaseAfterFailure:
 
         # Next call must acquire immediately — no permit leaked by the raise.
         started = time.monotonic()
-        result = coordinator.run(lambda: "recovered", request_id="next")
-        assert result == "recovered"
+        exec_record = coordinator.run(lambda: "recovered", request_id="next")
+        assert exec_record.result == "recovered"
         assert time.monotonic() - started < 1.0
 
 

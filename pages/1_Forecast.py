@@ -349,7 +349,8 @@ if run_button and df is not None and not st.session_state.is_running:
         # Run forecast under the coordinator so overlapping sessions queue
         # rather than racing the shared cached backend directly.
         with st.spinner("Running Chronos-2 forecast (may load model on first call, or queue behind another request)..."):
-            result = coordinator.run(backend.forecast, task, request_id=request_id)
+            exec_record = coordinator.run(backend.forecast, task, request_id=request_id)
+            result = exec_record.result
             # Attach preprocessing metadata captured before materialisation
             import dataclasses
             old_meta = result.runtime_metadata
@@ -364,12 +365,9 @@ if run_button and df is not None and not st.session_state.is_running:
             result = dataclasses.replace(result, runtime_metadata=new_meta)
             st.session_state.forecast_result = result
             st.session_state.run_id = result.run_id
-            # Sanitised queue-time telemetry only (no coordinator internals).
-            queue_seconds = 0.0
-            for entry in coordinator.request_log:
-                if entry.get("request_id") == request_id:
-                    queue_seconds = entry.get("queue_seconds", 0.0)
-            st.session_state.last_queue_seconds = queue_seconds
+            # Sanitised queue-time telemetry from the execution record (no
+            # full-history scan).
+            st.session_state.last_queue_seconds = exec_record.request_record.get("queue_seconds", 0.0)
     except CoordinatorTimeoutError:
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "

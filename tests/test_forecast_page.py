@@ -66,6 +66,7 @@ class _SpyCoordinator:
 
     Used to prove the production page routes forecasts through the
     coordinator rather than calling backend.forecast() directly.
+    Returns a CoordinatorExecution for compatibility with WP1.
     """
 
     def __init__(self):
@@ -73,13 +74,15 @@ class _SpyCoordinator:
         self.request_log: list[dict] = []
 
     def run(self, fn, *args, request_id: str = "", **kwargs):
+        from src.coordinator import CoordinatorExecution
         self.run_calls.append((fn, args, kwargs, request_id))
         result = fn(*args, **kwargs)
-        self.request_log.append({
+        record = {
             "request_id": request_id,
             "queue_seconds": 0.0,
-        })
-        return result
+        }
+        self.request_log.append(record)
+        return CoordinatorExecution(result=result, request_record=record)
 
 
 class _TimeoutCoordinator:
