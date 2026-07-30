@@ -12,7 +12,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Schema invariant validation | ✅ Implemented, tested |
 | Unit tests (no model download) | ✅ Implemented |
 | Local setup (D: drive) | ✅ Documented, enforced |
-| CI (GitHub Actions) | ✅ Implemented, coverage threshold 82%, `src.storage_policy` included |
+| CI (GitHub Actions) | ✅ Fail-closed: `--cov-precision=2` + independent `coverage report` gate + workflow-contract regression test, threshold 82% (actual ~86%), `src.storage_policy`/`src.redaction` included |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Context capping before record materialisation | ✅ Implemented |
@@ -57,7 +57,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence finalisation order | ✅ Sanitisation before receipt binding; publication cannot mutate semantic content after receipt finalisation |
 | Evidence origin isolation | ✅ `evidence_origin` field (`real_measurement` / `synthetic_fixture`); publisher rejects `synthetic_fixture` |
 | Cloud execution receipts | ✅ Production mode requires typed receipts with canonical content binding; `--allow-synthetic-fixture` for testing only |
-| Safe secret redaction | ✅ Structured pattern detection: allows `HF_TOKEN=[REDACTED]`, `--token-state present`; rejects exposed values |
+| Safe secret redaction | ✅ Centralised in `src/redaction.py` (`sanitise_command()`/`contains_exposed_secret()`), used by every wrapper/builder/publisher; detects `--name=value`, `--name value`, `NAME=value`, and `Authorization: Bearer` forms |
 | Python installer verification | ✅ SHA-256 + Authenticode verification before execution |
 | Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
 | Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
@@ -71,7 +71,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
-| Steps completed (current PR) | canonical digest, content binding, receipt hardening, synthetic isolation, secret redaction, publisher tracking, installer verification |
+| Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement — see "Stage 0 publication and CI integrity closure" below |
 | MCP developer tooling | ✅ Optional, not functionally verified |
 
 ## Repository Structure
@@ -270,6 +270,40 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 > entry remains null until Gate C. Direct dependency pins are not a complete
 > lock — capture a lock file after Cloud success. Community Cloud may process
 > `requirements.txt` with `uv` before falling back to `pip`.
+
+## Stage 0 publication and CI integrity closure
+
+This PR closes the receipt/evidence-integrity and CI gaps found in PR #25's
+review (see PR #25 threads on `build_cloud_stage0_evidence.py`,
+`evidence_schemas.py`, `publish_evidence.py`, and `telemetry.py`) and the
+false-green coverage gate found in PR #25's own CI run. It does **not**
+collect any real Stage 0 evidence — Gate B3 stays invalid, Cloud Gate C
+stays pending, ADR-001 stays provisional, and Phase 1 stays paused; only
+the mechanisms that will validate a future real evidence collection are
+built and offline-contract-tested here.
+
+Status tiers used below: **implemented** (code exists) → **offline
+contract-tested** (pytest/readiness-script coverage against synthetic
+fixtures, no model, no network) → **ready for real evidence collection**
+(the mechanism has been proven against realistic fixtures and is wired
+into the collection pipeline) → **real evidence collected** (a genuine
+Stage 0/Cloud run has produced and published data through it) →
+**Cloud Gate C passed** (Community Cloud measurements accepted).
+
+| Mechanism | Status |
+|---|---|
+| CI coverage gate (fail-closed) | Offline contract-tested — `tests/test_ci_contract.py` reproduces the exact rounding bug and proves `--cov-precision=2` + the independent `coverage report` step close it; wired into `ci.yml` as two steps plus a third workflow-contract regression step |
+| Publication order (sanitise → bind → publish) | Offline contract-tested — `scripts/publish_evidence.py::main()` proves sanitiser idempotence and re-validates the sanitised object before writing; `tests/test_publish_evidence_e2e.py` exercises the full CLI path end to end |
+| Cloud receipt binding (schema-level) | Offline contract-tested — `CloudEvidence.validate()` itself (not just the builder script) requires and verifies each receipt's canonical digest against its bound result, plus the new `CloudCollectionSession` record `collection_receipt` binds to; `tests/test_cloud_builder.py` |
+| Synthetic-evidence isolation | Offline contract-tested — every nested receipt's `evidence_origin` must agree with its parent record; production mode rejects a synthetic receipt even without `--allow-synthetic-fixture`; publisher/verifier reject any `synthetic_fixture` release entry |
+| Receipt manifest tracking | Offline contract-tested — `publish_evidence.py` writes each receipt as its own real JSON file with a byte-accurate SHA-256, never a synthetic `embedded_in_<bundle>` filename |
+| Command redaction | Offline contract-tested — `src/redaction.py` used by every wrapper/builder/publisher; `tests/test_redaction.py` covers `--name=value`, `--name value`, env assignments, and Authorization headers |
+| D-drive runtime enforcement (incl. MCP/Graphify) | Offline contract-tested — `tests/test_ddrive_setup.py` diffs `setup_local_windows.ps1`'s directory/env-var declarations against `src/storage_policy.py` in both directions; `-PythonPath` outside `D:\Forecasting-Tool-Local` is rejected; the one C-drive touchpoint (bootstrap interpreter for the initial `venv` creation) is documented and never used again after that step |
+
+None of the above have real evidence collected against them yet, and Cloud
+Gate C has not been attempted. The gated follow-on work (local Stage 0
+evidence rerun, then Community Cloud Gate C) is unblocked by this PR but
+out of scope for it.
 
 ## Developer MCP integrations (optional)
 
