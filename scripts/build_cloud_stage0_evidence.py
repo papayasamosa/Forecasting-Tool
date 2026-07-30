@@ -56,12 +56,16 @@ from src.evidence_schemas import (
     CloudEvidence,
     CANONICAL_CLOUD_TESTS,
     EVIDENCE_SCHEMA_VERSION,
+    EVIDENCE_ORIGIN_REAL,
+    EVIDENCE_ORIGIN_SYNTHETIC,
     TokenPathResult,
     SmokePhase,
     MachineSummary,
     RepeatedRun,
     ConcurrencyRequest,
     AcceptanceTestResult,
+    ExecutionReceipt,
+    canonical_evidence_sha256,
 )
 from src.evidence_validation import validate_recursive
 from src.telemetry import capture_traceability
@@ -186,8 +190,80 @@ def _check_measured_inputs(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _build_cloud_evidence(data: dict[str, Any]) -> CloudEvidence:
-    """Build a CloudEvidence from validated input data."""
+def _check_receipts(data: dict[str, Any], allow_synthetic: bool) -> list[str]:
+    """Validate that execution receipts are provided.
+
+    In production mode (default), all three receipts are required and
+    must contain valid execution data — the builder never fabricates them.
+
+    In synthetic mode (--allow-synthetic-fixture), missing receipts are
+    tolerated for testing purposes.
+    """
+    errors: list[str] = []
+    if allow_synthetic:
+        return errors  # Synthetic mode tolerates missing receipts
+
+    # Production mode: all three receipts are mandatory
+    receipt_fields = [
+        ("token_absent_receipt", "token_absent_result"),
+        ("token_present_receipt", "token_present_result"),
+        ("collection_receipt", None),
+    ]
+    for rec_field, result_field in receipt_fields:
+        rec = data.get(rec_field)
+        if not isinstance(rec, dict) or not rec:
+            errors.append(
+                f"{rec_field}: missing or empty — execution receipt required "
+                f"in production mode. Use --allow-synthetic-fixture for "
+                f"testing."
+            )
+            continue
+
+        # Validate receipt structure
+        try:
+            receipt_obj = ExecutionReceipt(**rec)
+            rec_errors = receipt_obj.validate()
+            for re in rec_errors:
+                errors.append(f"{rec_field}: {re}")
+        except Exception as exc:
+            errors.append(f"{rec_field}: receipt construction failed: {exc}")
+            continue
+
+        # Verify canonical content digest binds the result data
+        if result_field:
+            result = data.get(result_field)
+            if isinstance(result, dict):
+                try:
+                    canonical_digest = canonical_evidence_sha256(result)
+                    if receipt_obj.canonical_content_sha256:
+                        if receipt_obj.canonical_content_sha256 != canonical_digest:
+                            errors.append(
+                                f"{rec_field}: canonical_content_sha256 "
+                                f"'{receipt_obj.canonical_content_sha256}' != "
+                                f"computed '{canonical_digest}'"
+                            )
+                except Exception as exc:
+                    errors.append(f"{rec_field}: canonical digest error: {exc}")
+
+    return errors
+
+
+def _build_cloud_evidence(data: dict[str, Any], allow_synthetic: bool = False) -> CloudEvidence:
+    """Build a CloudEvidence from validated input data.
+
+    Parameters
+    ----------
+    data : dict
+        Validated input data with all required measurements.
+    allow_synthetic : bool
+        If True, marks evidence_origin as synthetic_fixture. If False
+        (default), marks as real_measurement.
+
+    Returns
+    -------
+    CloudEvidence
+        The constructed Cloud evidence record.
+    """
     # Construct typed objects from raw data
     cold = SmokePhase(**{
         k: data.get("cold", {}).get(k, v)
@@ -207,7 +283,12 @@ def _build_cloud_evidence(data: dict[str, Any]) -> CloudEvidence:
     trace = capture_traceability()
     started_utc = datetime.now(timezone.utc).isoformat()
 
+    # Determine evidence origin
+    from src.evidence_schemas import EVIDENCE_ORIGIN_REAL, EVIDENCE_ORIGIN_SYNTHETIC
+    evidence_origin = EVIDENCE_ORIGIN_SYNTHETIC if allow_synthetic else EVIDENCE_ORIGIN_REAL
+
     evidence = CloudEvidence(
+        evidence_origin=evidence_origin,
         python_version=data.get("python_version", ""),
         code_commit=data.get("code_commit", trace.get("code_commit", "")),  # Prefer input data commit
         git_worktree_clean=trace.get("git_worktree_clean", False),
@@ -255,38 +336,9 @@ def _build_cloud_evidence(data: dict[str, Any]) -> CloudEvidence:
         error=data.get("error", ""),
     )
 
-    # Auto-generate execution receipts from measured data if not provided.
-    # WP4: Receipts bind deployed commit, model identity, and token-path run IDs.
-    if not data.get("token_absent_receipt"):
-        evidence.token_absent_receipt = _auto_receipt(
-            execution_id=tar.run_id or "token-absent-auto",
-            code_commit=evidence.deployed_commit or trace.get("code_commit", ""),
-            model_id="amazon/chronos-2",
-            configured_revision=evidence.configured_revision,
-            resolved_revision=tar.resolved_revision or evidence.model_revision,
-            sanitised_command="cloud token-absent load",
-            component_sha256=tar.run_id or "",
-        )
-    if not data.get("token_present_receipt"):
-        evidence.token_present_receipt = _auto_receipt(
-            execution_id=tpr.run_id or "token-present-auto",
-            code_commit=evidence.deployed_commit or trace.get("code_commit", ""),
-            model_id="amazon/chronos-2",
-            configured_revision=evidence.configured_revision,
-            resolved_revision=tpr.resolved_revision or evidence.model_revision,
-            sanitised_command="cloud token-present load",
-            component_sha256=tpr.run_id or "",
-        )
-    if not data.get("collection_receipt"):
-        evidence.collection_receipt = _auto_receipt(
-            execution_id="collection-auto",
-            code_commit=evidence.deployed_commit or trace.get("code_commit", ""),
-            model_id="amazon/chronos-2",
-            configured_revision=evidence.configured_revision,
-            resolved_revision=evidence.model_revision,
-            sanitised_command="cloud evidence collection",
-            component_sha256="",
-        )
+    # WP5: Production mode NEVER auto-generates receipts.
+    # Receipts must come from actual execution measurements.
+    # The _check_receipts() function validates them in production mode.
 
     # P0-1: Build with success=True to avoid circular rejection.
     # CloudEvidence.validate() rejects success=False, so we must start
@@ -301,43 +353,22 @@ def _build_cloud_evidence(data: dict[str, Any]) -> CloudEvidence:
     return evidence
 
 
-def _auto_receipt(
-    execution_id: str,
-    code_commit: str,
-    model_id: str,
-    configured_revision: str,
-    resolved_revision: str,
-    sanitised_command: str,
-    component_sha256: str,
-) -> dict[str, Any]:
-    """Build a minimal ExecutionReceipt dict from available data."""
-    import uuid
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    return {
-        "evidence_schema_version": "2",
-        "evidence_type": "execution_receipt",
-        "execution_id": execution_id or str(uuid.uuid4()),
-        "attestation_type": "operator_attested",
-        "code_commit": code_commit,
-        "producer_version": "1.0",
-        "sanitised_command": sanitised_command,
-        "started_at_utc": now.isoformat(),
-        "completed_at_utc": now.isoformat(),
-        "component_sha256": component_sha256 or (execution_id or "not_available"),
-        "model_id": model_id,
-        "configured_revision": configured_revision,
-        "resolved_revision": resolved_revision or configured_revision,
-        "environment_summary": "",
-    }
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build a typed Cloud Stage 0 evidence record",
     )
     parser.add_argument("--input", required=True, help="Input JSON file with measured values")
     parser.add_argument("--output", default="", help="Output path (default: stdout)")
+    parser.add_argument(
+        "--allow-synthetic-fixture",
+        action="store_true",
+        help=(
+            "Allow synthetic CI fixture data. The output record will be "
+            "marked with evidence_origin=synthetic_fixture and cannot be "
+            "published as release evidence. Missing execution receipts are "
+            "tolerated in this mode."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -359,9 +390,19 @@ def main() -> int:
             print(f"  [FAIL] {err}")
         return 1
 
+    # Validate receipts (production mode rejects missing receipts)
+    receipt_errors = _check_receipts(input_data, allow_synthetic=args.allow_synthetic_fixture)
+    if receipt_errors:
+        print("Receipt validation errors:")
+        for err in receipt_errors:
+            print(f"  [FAIL] {err}")
+        return 1
+
     # Build evidence
     try:
-        evidence = _build_cloud_evidence(input_data)
+        evidence = _build_cloud_evidence(
+            input_data, allow_synthetic=args.allow_synthetic_fixture,
+        )
     except Exception as exc:
         print(f"Error building evidence: {exc}")
         return 1

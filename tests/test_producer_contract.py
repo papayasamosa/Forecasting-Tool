@@ -377,7 +377,12 @@ class TestProducerBundleAcceptance:
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)
             sha = h.hexdigest()
-            from src.evidence_schemas import EVIDENCE_SCHEMA_VERSION
+            # Compute canonical content digest
+            from src.evidence_schemas import EVIDENCE_SCHEMA_VERSION, canonical_evidence_sha256
+            with open(comp_path, encoding="utf-8") as cf:
+                import json as _json
+                comp_data = _json.load(cf)
+            canonical_digest = canonical_evidence_sha256(comp_data) if isinstance(comp_data, dict) else sha
             rec = {
                 "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
                 "evidence_type": "execution_receipt",
@@ -388,10 +393,13 @@ class TestProducerBundleAcceptance:
                 "sanitised_command": "python test.py",
                 "started_at_utc": "2026-07-30T00:00:00",
                 "completed_at_utc": "2026-07-30T00:01:00",
+                "exit_code": 0,
                 "component_sha256": sha,
+                "canonical_content_sha256": canonical_digest,
                 "model_id": "amazon/chronos-2",
                 "configured_revision": "rev1",
                 "resolved_revision": "rev1",
+                "environment_summary": "python=3.12",
             }
             rpath = tmp_path / f"{comp_path.stem}_receipt.json"
             with open(rpath, "w") as f:

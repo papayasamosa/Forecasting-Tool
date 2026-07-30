@@ -6,6 +6,22 @@ directory with computed SHA-256 hashes. Uses the typed evidence schemas
 from ``src.evidence_schemas`` for validation. Updates
 ``evidence_manifest.json`` atomically.
 
+WP3: Deterministic finalisation pipeline:
+    1. Raw component validates
+    2. Component is sanitised deterministically
+    3. Sanitised component validates
+    4. Final publishable component bytes are written
+    5. Publisher copies without changing semantic content
+    6. Manifest records final file hashes
+
+WP7: Synthetic evidence rejection:
+    - Evidence with evidence_origin=synthetic_fixture is rejected
+    - Only real_measurement can be published as release evidence
+
+WP11: Receipt tracking:
+    - Receipt files are tracked alongside component files in the manifest
+    - Each receipt is validated and its SHA-256 is recorded
+
 Usage:
     python scripts/publish_evidence.py <evidence-file> --type <evidence_type>
 
@@ -15,6 +31,7 @@ Evidence types:
     model_artifact       — Model checksum metadata
     local_stage0_bundle  — Complete local evidence bundle
     cloud_stage0         — Community Cloud evidence
+    execution_receipt    — Execution receipt (tracked separately in manifest)
 """
 
 from __future__ import annotations
@@ -144,6 +161,8 @@ def _validate_and_load(
     try:
         from src.evidence_schemas import (
             EVIDENCE_SCHEMA_VERSION,
+            EVIDENCE_ORIGIN_REAL,
+            EVIDENCE_ORIGIN_SYNTHETIC,
             evidence_from_dict,
             SmokeEvidence,
             BenchmarkSuiteEvidence,
@@ -209,6 +228,15 @@ def _validate_and_load(
             errors.append(
                 f"code_commit: expected '{expected_code_commit}', got '{actual_cc}'"
             )
+
+    # WP7: Reject synthetic evidence origin for release publication
+    evidence_origin = raw_data.get("evidence_origin", EVIDENCE_ORIGIN_REAL)
+    if evidence_origin == EVIDENCE_ORIGIN_SYNTHETIC:
+        errors.append(
+            f"evidence_origin is '{EVIDENCE_ORIGIN_SYNTHETIC}' — "
+            f"synthetic evidence cannot be published as release evidence. "
+            f"Only '{EVIDENCE_ORIGIN_REAL}' measurements can be published."
+        )
 
     # For smoke evidence, check success
     if expected_type == "smoke_test" and isinstance(evidence, SmokeEvidence):
@@ -357,6 +385,21 @@ def main() -> int:
         "evidence_type": args.type,
         "notes": f"Published {datetime.now().strftime('%Y%m%d_%H%M%S')}",
     }
+
+    # WP11: For bundles, also track each receipt file separately in the manifest
+    if args.type == "local_stage0_bundle":
+        receipts = sanitised.get("receipts", {})
+        if isinstance(receipts, dict):
+            for rec_key, rec_data in receipts.items():
+                if isinstance(rec_data, dict):
+                    rec_sha = rec_data.get("canonical_content_sha256", "") or rec_data.get("component_sha256", "")
+                    manifest["files"][f"receipt_{rec_key}"] = {
+                        "filename": f"embedded_in_{dest_path.name}",
+                        "sha256": rec_sha,
+                        "code_commit": rec_data.get("code_commit", ""),
+                        "evidence_type": "execution_receipt",
+                        "notes": f"Receipt for {rec_key}, bound to bundle {dest_path.name}",
+                    }
 
     manifest_tmp = MANIFEST_PATH.with_suffix(".tmp.json")
     try:

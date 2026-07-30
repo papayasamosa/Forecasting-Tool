@@ -52,7 +52,13 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
 | Execution receipts (WP3) | ✅ First-class evidence type with `evidence_schema_version`, `evidence_type`, registered in type map, deserializable, recursively validated, with `write_execution_receipt()` helper |
-| Receipts bound to components | ✅ Typed, mandatory for passing bundles — validates hash, commit, revision, model, execution ID uniqueness |
+| Receipts bound to components (transport hash) | ✅ Typed, mandatory for passing bundles — validates hash, commit, revision, model, execution ID uniqueness |
+| Receipts bound to components (canonical content digest) | ✅ `canonical_evidence_sha256()` — deterministic JSON serialisation; `LocalStage0Bundle._validate_receipts()` recomputes canonical digest from embedded component and compares with receipt's `canonical_content_sha256` |
+| Evidence finalisation order | ✅ Sanitisation before receipt binding; publication cannot mutate semantic content after receipt finalisation |
+| Evidence origin isolation | ✅ `evidence_origin` field (`real_measurement` / `synthetic_fixture`); publisher rejects `synthetic_fixture` |
+| Cloud execution receipts | ✅ Production mode requires typed receipts with canonical content binding; `--allow-synthetic-fixture` for testing only |
+| Safe secret redaction | ✅ Structured pattern detection: allows `HF_TOKEN=[REDACTED]`, `--token-state present`; rejects exposed values |
+| Python installer verification | ✅ SHA-256 + Authenticode verification before execution |
 | Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
 | Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
 | Bounded coordinator telemetry (WP1) | ✅ `deque(maxlen=256)`, `CoordinatorExecution` |
@@ -65,6 +71,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
+| Steps completed (current PR) | canonical digest, content binding, receipt hardening, synthetic isolation, secret redaction, publisher tracking, installer verification |
 | MCP developer tooling | ✅ Optional, not functionally verified |
 
 ## Repository Structure

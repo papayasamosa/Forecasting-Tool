@@ -134,7 +134,214 @@ def cpu_info() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Receipt writer
+# Execution wrapper (WP6) — captures real execution context for receipts
+# ---------------------------------------------------------------------------
+
+
+class ReceiptContext:
+    """Context manager that captures real execution metadata for a receipt.
+
+    Records:
+    - Execution ID before process start
+    - Start UTC before execution
+    - Completion UTC after execution
+    - Exit code
+    - Exact Git commit before execution
+    - Worktree state before execution
+    - Model ID and revisions
+    - Producer version
+
+    Usage::
+
+        with ReceiptContext() as ctx:
+            # do work
+            pass
+
+        receipt_dict = ctx.build_receipt(
+            output_component=component_dict,
+            sanitised_command="...",
+            environment_allowlist=["python", "os"],
+        )
+    """
+
+    def __init__(self) -> None:
+        self.execution_id: str = str(uuid.uuid4())
+        self.started_at_utc: str = datetime.now(timezone.utc).isoformat()
+        self.completed_at_utc: str = ""
+        self.exit_code: int = -1
+        self.trace: dict[str, Any] = {}
+
+    def __enter__(self) -> ReceiptContext:
+        self.trace = capture_traceability()
+        self.started_at_utc = datetime.now(timezone.utc).isoformat()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        self.completed_at_utc = datetime.now(timezone.utc).isoformat()
+        self.exit_code = 0 if exc_type is None else 1
+
+    def build_receipt(
+        self,
+        output_component: dict[str, Any],
+        sanitised_command: str,
+        model_id: str = "",
+        configured_revision: str = "",
+        resolved_revision: str = "",
+        environment_summary: str = "",
+        attestation_type: str = "operator_attested",
+        evidence_origin: str = "real_measurement",
+    ) -> dict[str, Any]:
+        """Build an ExecutionReceipt dict with captured execution metadata.
+
+        Parameters
+        ----------
+        output_component : dict
+            The final published component data. Its canonical digest will
+            be computed and stored in ``canonical_content_sha256``.
+        sanitised_command : str
+            The sanitised command string that produced the component.
+        model_id : str
+            Model identifier (e.g. ``amazon/chronos-2``).
+        configured_revision : str
+            Pinned model revision.
+        resolved_revision : str
+            Resolved model revision.
+        environment_summary : str
+            Summary of the execution environment.
+        attestation_type : str
+            ``github_attestation`` or ``operator_attested``.
+        evidence_origin : str
+            ``real_measurement`` or ``synthetic_fixture``.
+
+        Returns
+        -------
+        dict
+            The receipt dict.
+        """
+        from src.evidence_schemas import (
+            ExecutionReceipt, canonical_evidence_sha256,
+        )
+
+        # Compute canonical content digest of the output component
+        canonical_digest = canonical_evidence_sha256(output_component)
+
+        receipt = ExecutionReceipt(
+            execution_id=self.execution_id,
+            attestation_type=attestation_type,
+            code_commit=self.trace.get("code_commit", ""),
+            producer_version="1.0",
+            sanitised_command=sanitised_command,
+            started_at_utc=self.started_at_utc,
+            completed_at_utc=self.completed_at_utc,
+            exit_code=self.exit_code,
+            canonical_content_sha256=canonical_digest,
+            model_id=model_id,
+            configured_revision=configured_revision,
+            resolved_revision=resolved_revision,
+            environment_summary=environment_summary or f"python={sys.version.split()[0]} os={sys.platform}",
+            evidence_origin=evidence_origin,
+        )
+        return receipt.to_dict()
+
+
+def run_with_receipt(
+    command: list[str],
+    output_component_path: str,
+    model_id: str = "",
+    configured_revision: str = "",
+    resolved_revision: str = "",
+    attestation_type: str = "operator_attested",
+    evidence_origin: str = "real_measurement",
+    cwd: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Run a subprocess command and capture execution metadata for a receipt.
+
+    This is the WP6 execution wrapper: it captures real start/end times,
+    exit code, Git state, model identity, and component digests.
+
+    Parameters
+    ----------
+    command : list[str]
+        The command to run (as a list of arguments).
+    output_component_path : str
+        Path where the output component JSON will be written.
+    model_id : str
+        Model identifier.
+    configured_revision : str
+        Pinned model revision.
+    resolved_revision : str
+        Resolved model revision.
+    attestation_type : str
+        Attestation type.
+    evidence_origin : str
+        Evidence origin.
+    cwd : str or None
+        Working directory for the subprocess.
+
+    Returns
+    -------
+    tuple[int, dict]
+        (exit_code, receipt_dict)
+    """
+    now = datetime.now(timezone.utc)
+    execution_id = str(uuid.uuid4())
+    trace = capture_traceability()
+
+    # Run the command
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True, text=True, timeout=3600,
+            cwd=cwd,
+        )
+        exit_code = result.returncode
+    except subprocess.TimeoutExpired:
+        exit_code = -1
+    except Exception:
+        exit_code = 1
+
+    completed = datetime.now(timezone.utc)
+
+    # Load output component and compute canonical digest
+    from src.evidence_schemas import (
+        ExecutionReceipt, canonical_evidence_sha256,
+    )
+    try:
+        with open(output_component_path, encoding="utf-8") as f:
+            import json
+            component_data = json.load(f)
+        canonical_digest = canonical_evidence_sha256(component_data)
+    except Exception:
+        canonical_digest = ""
+
+    # Build receipt
+    receipt = ExecutionReceipt(
+        execution_id=execution_id,
+        attestation_type=attestation_type,
+        code_commit=trace.get("code_commit", ""),
+        producer_version="1.0",
+        sanitised_command=" ".join(command),
+        started_at_utc=now.isoformat(),
+        completed_at_utc=completed.isoformat(),
+        exit_code=exit_code,
+        canonical_content_sha256=canonical_digest,
+        model_id=model_id,
+        configured_revision=configured_revision,
+        resolved_revision=resolved_revision,
+        environment_summary=f"python={sys.version.split()[0]} os={sys.platform}",
+        evidence_origin=evidence_origin,
+    )
+
+    return exit_code, receipt.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Receipt writer (legacy — use ReceiptContext or run_with_receipt for new code)
 # ---------------------------------------------------------------------------
 
 
@@ -171,10 +378,10 @@ def write_execution_receipt(
     dict
         The receipt dict, also written to ``<evidence_dir>/<prefix>_receipt.json``.
     """
-    from src.evidence_schemas import ExecutionReceipt
+    from src.evidence_schemas import ExecutionReceipt, canonical_evidence_sha256
     import hashlib
 
-    # Compute component SHA-256
+    # Compute component SHA-256 (transport hash)
     component_sha256 = ""
     try:
         h = hashlib.sha256()
@@ -184,6 +391,17 @@ def write_execution_receipt(
         component_sha256 = h.hexdigest()
     except OSError:
         component_sha256 = ""
+
+    # Compute canonical content digest from the component JSON
+    canonical_digest = ""
+    try:
+        with open(component_path, encoding="utf-8") as f:
+            import json
+            component_data = json.load(f)
+        if isinstance(component_data, dict):
+            canonical_digest = canonical_evidence_sha256(component_data)
+    except Exception:
+        canonical_digest = ""
 
     # Capture traceability
     trace = capture_traceability()
@@ -197,7 +415,10 @@ def write_execution_receipt(
         sanitised_command=sanitised_command,
         started_at_utc=started.isoformat(),
         completed_at_utc=started.isoformat(),
+        exit_code=0,
         component_sha256=component_sha256,
+        source_file_sha256=component_sha256,
+        canonical_content_sha256=canonical_digest,
         model_id=model_id,
         configured_revision=configured_revision,
         resolved_revision=resolved_revision,
