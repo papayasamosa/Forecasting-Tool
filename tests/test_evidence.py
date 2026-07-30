@@ -1399,6 +1399,77 @@ class TestExecutionReceiptValidation:
         assert errors == []
 
 
+class TestReceiptIsReleaseReady:
+    """WP-C: receipt_is_release_ready() is a stricter gate than validate()
+    — a receipt can be structurally valid but still ineligible to back
+    passing release evidence."""
+
+    def _valid_receipt_kwargs(self, **overrides):
+        from src.evidence_schemas import EVIDENCE_ORIGIN_REAL
+        kwargs = dict(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_name="chronos2_smoke_test",
+            producer_version="1.0",
+            sanitised_command="python scripts/chronos2_smoke_test.py --initial-cache-state download_cold",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            exit_code=0,
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+            environment_summary="python=3.12 os=win32",
+            evidence_origin=EVIDENCE_ORIGIN_REAL,
+            git_worktree_clean=True,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_release_ready_receipt_passes(self):
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs())
+        assert receipt_is_release_ready(receipt) == []
+
+    def test_nonzero_exit_code_rejected(self):
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs(exit_code=1))
+        errors = receipt_is_release_ready(receipt)
+        assert any("exit_code" in e for e in errors)
+
+    def test_synthetic_origin_rejected(self):
+        from src.evidence_schemas import (
+            ExecutionReceipt, EVIDENCE_ORIGIN_SYNTHETIC, receipt_is_release_ready,
+        )
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs(evidence_origin=EVIDENCE_ORIGIN_SYNTHETIC))
+        errors = receipt_is_release_ready(receipt)
+        assert any("evidence_origin" in e for e in errors)
+
+    def test_dirty_worktree_rejected(self):
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs(git_worktree_clean=False))
+        errors = receipt_is_release_ready(receipt)
+        assert any("git_worktree_clean" in e for e in errors)
+
+    def test_structurally_invalid_receipt_also_rejected(self):
+        # receipt_is_release_ready() must not skip validate()'s own checks.
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs(execution_id=""))
+        errors = receipt_is_release_ready(receipt)
+        assert any("execution_id" in e for e in errors)
+
+    def test_producer_name_and_worktree_fields_round_trip(self):
+        from src.evidence_schemas import ExecutionReceipt, evidence_from_dict
+        receipt = ExecutionReceipt(**self._valid_receipt_kwargs())
+        d = receipt.to_dict()
+        assert d["producer_name"] == "chronos2_smoke_test"
+        assert d["git_worktree_clean"] is True
+        restored = evidence_from_dict(d)
+        assert restored.producer_name == "chronos2_smoke_test"
+        assert restored.git_worktree_clean is True
+
+
 # ---------------------------------------------------------------------------
 # Artifact metadata tests (WP8)
 # ---------------------------------------------------------------------------

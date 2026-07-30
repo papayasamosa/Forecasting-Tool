@@ -361,6 +361,13 @@ class ExecutionReceipt:
     resolved_revision: str = ""
     environment_summary: str = ""
     immutable_artifact_reference: str = ""
+    # WP3: Producer identity and worktree cleanliness. Not structurally
+    # required here — a receipt can legitimately describe a failed or
+    # dirty-worktree run that is still worth recording as non-passing —
+    # but both are required for a receipt to be release-ready; see
+    # receipt_is_release_ready() below.
+    producer_name: str = ""
+    git_worktree_clean: bool = False
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -459,6 +466,34 @@ class ExecutionReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def receipt_is_release_ready(receipt: ExecutionReceipt) -> list[str]:
+    """Check the stricter gate a receipt must pass to back *passing* release
+    evidence (WP3), on top of ``receipt.validate()``'s structural checks.
+
+    A structurally valid receipt can still describe a failed command, a
+    synthetic fixture run, or a dirty worktree — none of those are release
+    evidence. Returns an empty list only if the receipt is eligible to back
+    passing release evidence.
+    """
+    errors = list(receipt.validate())
+    if receipt.exit_code != 0:
+        errors.append(
+            f"execution_receipt: exit_code {receipt.exit_code} != 0 — "
+            f"not eligible for release evidence"
+        )
+    if receipt.evidence_origin != EVIDENCE_ORIGIN_REAL:
+        errors.append(
+            f"execution_receipt: evidence_origin '{receipt.evidence_origin}' "
+            f"!= '{EVIDENCE_ORIGIN_REAL}' — not eligible for release evidence"
+        )
+    if not receipt.git_worktree_clean:
+        errors.append(
+            "execution_receipt: git_worktree_clean is false — "
+            "not eligible for release evidence"
+        )
+    return errors
 
 
 # ---------------------------------------------------------------------------
