@@ -328,11 +328,17 @@ def _validate_receipt_binding(
     component_path: str,
     component_label: str,
 ) -> list[str]:
-    """Validate that a receipt matches a component file.
+    """Strictly validate that a receipt matches a component file.
 
-    Checks:
-    - component_sha256 in receipt matches file SHA-256
-    - code_commit in receipt matches file code_commit
+    P0-3: For a passing bundle, receipts must be fully verified:
+    - valid ExecutionReceipt schema
+    - non-empty valid component SHA-256 matching the actual file
+    - receipt commit equals component commit
+    - model ID matches
+    - configured and resolved revisions match
+    - ordered timestamps
+    - non-empty producer version
+    - sanitized command contains no token or secret
     """
     errors: list[str] = []
     try:
@@ -345,19 +351,79 @@ def _validate_receipt_binding(
         errors.append(f"{component_label}_receipt: root must be a JSON object")
         return errors
 
-    # Load the component file to compute its SHA-256
+    # Deserialize as ExecutionReceipt and run schema validation
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_schemas import ExecutionReceipt
     try:
-        actual_sha = _sha256_file(component_path)
-    except OSError as exc:
-        errors.append(f"{component_label}_receipt: could not hash component '{component_path}': {exc}")
+        receipt = ExecutionReceipt(**receipt_data)
+    except Exception as exc:
+        errors.append(f"{component_label}_receipt: deserialisation failed: {exc}")
         return errors
 
-    receipt_sha = receipt_data.get("component_sha256", "")
-    if receipt_sha and receipt_sha != actual_sha:
-        errors.append(
-            f"{component_label}_receipt: component_sha256 '{receipt_sha}' "
-            f"!= actual '{actual_sha}'"
-        )
+    receipt_errors = receipt.validate()
+    for re in receipt_errors:
+        errors.append(f"{component_label}_receipt: {re}")
+
+    # Component SHA-256 must be non-empty and match actual file
+    if not receipt.component_sha256:
+        errors.append(f"{component_label}_receipt: component_sha256 empty — required for binding")
+    else:
+        try:
+            actual_sha = _sha256_file(component_path)
+        except OSError as exc:
+            errors.append(f"{component_label}_receipt: could not hash component '{component_path}': {exc}")
+            return errors
+        if receipt.component_sha256 != actual_sha:
+            errors.append(
+                f"{component_label}_receipt: component_sha256 '{receipt.component_sha256}' "
+                f"!= actual '{actual_sha}'"
+            )
+
+    # Load component to cross-check
+    try:
+        comp_data = _load_json(component_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"{component_label}_receipt: could not load component '{component_path}': {exc}")
+        return errors
+
+    if isinstance(comp_data, dict):
+        # Commit match
+        comp_commit = comp_data.get("code_commit", "")
+        if comp_commit and receipt.code_commit and receipt.code_commit != comp_commit:
+            errors.append(
+                f"{component_label}_receipt: code_commit '{receipt.code_commit}' "
+                f"!= component code_commit '{comp_commit}'"
+            )
+        # Model ID match
+        comp_mid = comp_data.get("model_id", "")
+        if comp_mid and receipt.model_id and receipt.model_id != comp_mid:
+            errors.append(
+                f"{component_label}_receipt: model_id '{receipt.model_id}' "
+                f"!= component model_id '{comp_mid}'"
+            )
+        # Configured revision match
+        comp_cr = comp_data.get("configured_revision", "")
+        if comp_cr and receipt.configured_revision and receipt.configured_revision != comp_cr:
+            errors.append(
+                f"{component_label}_receipt: configured_revision '{receipt.configured_revision}' "
+                f"!= component configured_revision '{comp_cr}'"
+            )
+        # Resolved revision match
+        comp_mr = comp_data.get("model_revision", "") or comp_data.get("resolved_revision", "")
+        if comp_mr and receipt.resolved_revision and receipt.resolved_revision != comp_mr:
+            errors.append(
+                f"{component_label}_receipt: resolved_revision '{receipt.resolved_revision}' "
+                f"!= component model/resolved_revision '{comp_mr}'"
+            )
+
+    # Sanitized command must not contain tokens or secrets
+    cmd = receipt.sanitised_command.lower()
+    secret_keywords = ["token", "secret", "password", "key=", "authorization"]
+    for kw in secret_keywords:
+        if kw in cmd:
+            errors.append(
+                f"{component_label}_receipt: sanitised_command contains potential secret: '{kw}'"
+            )
 
     return errors
 
@@ -434,12 +500,22 @@ def main() -> int:
         ("model_artifact", args.model_artifact_receipt, args.model_artifact),
     ]
     receipts: dict[str, Any] = {}
+    seen_exec_ids: set[str] = set()
     for label, receipt_path, component_path in receipt_args:
         if receipt_path:
             r_errors = _validate_receipt_binding(receipt_path, component_path, label)
             all_errors.extend(r_errors)
             if not r_errors:
-                receipts[label] = _load_json(receipt_path)
+                receipt_data = _load_json(receipt_path)
+                # Check execution ID uniqueness across all receipts
+                exec_id = receipt_data.get("execution_id", "")
+                if exec_id:
+                    if exec_id in seen_exec_ids:
+                        all_errors.append(
+                            f"{label}_receipt: duplicate execution_id '{exec_id}'"
+                        )
+                    seen_exec_ids.add(exec_id)
+                receipts[label] = receipt_data
         else:
             receipts[label] = None
 
@@ -450,12 +526,20 @@ def main() -> int:
         if isinstance(c, dict)
     )
     benchmark_passed = isinstance(benchmark, dict) and benchmark.get("suite_passed", False)
-    bundle_passed = len(all_errors) == 0 and smoke_success and benchmark_passed
+    # WP3: Receipts are mandatory for a passing bundle — all 5 must be provided
+    all_receipts_provided = all(
+        getattr(args, f"{label.replace('-', '_')}_receipt", "")
+        for label in ["download_cold_smoke", "process_cold_smoke", "benchmark",
+                       "token_present_smoke", "model_artifact"]
+    )
+    bundle_passed = len(all_errors) == 0 and smoke_success and benchmark_passed and all_receipts_provided
 
     if not smoke_success:
         all_errors.append("bundle: not all smoke runs are successful")
     if not benchmark_passed:
         all_errors.append("bundle: benchmark.suite_passed is false")
+    if not all_receipts_provided:
+        all_errors.append("bundle: all 5 receipt files are required for a passing bundle")
 
     if all_errors:
         print("Bundle validation errors:")

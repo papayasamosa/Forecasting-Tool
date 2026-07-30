@@ -39,7 +39,7 @@ Use this checklist when deploying to Streamlit Community Cloud.
 | 7 | `cold_forecast` | First forecast completes, model loads within 5 min | |
 | 8 | `warm_forecast` | Inference faster than cold, pipeline reused | |
 | 9 | `repeated_forecasts` | 3+ repeated forecasts with stable timing | |
-| 10 | `valid_csv_upload` | Upload valid CSV, preview + forecast works | |
+| 10 | `valid_csv_forecast` | Upload valid CSV, preview + forecast works | |
 | 11 | `oversized_csv_rejected` | Upload file > 50 MB rejected before parsing | |
 | 12 | `blank_timestamp_rejected` | CSV with blank timestamps produces user-friendly error | |
 | 13 | `invalid_timestamp_rejected` | CSV with invalid timestamps produces user-friendly error | |

@@ -391,6 +391,17 @@ def run_benchmarks(
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # P0-2: Pre-run cache inspection BEFORE any scenario, adapter construction,
+    # or model access.
+    from src.telemetry import inspect_hf_cache, build_cache_preflight
+    pre_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
+    if initial_cache_state and not pre_run_inspection.get("inspection_succeeded", False):
+        print(f"  WARNING: pre-run cache inspection failed: {pre_run_inspection.get('error', 'unknown')}")
+    if initial_cache_state == "download_cold" and pre_run_inspection.get("snapshot_present", False):
+        print("  ERROR: --initial-cache-state=download_cold but snapshot is already cached.")
+    if initial_cache_state == "process_cold_cached_weights" and not pre_run_inspection.get("snapshot_present", False):
+        print("  WARNING: --initial-cache-state=process_cold_cached_weights but no snapshot found — may delay first cold load.")
+
     all_results: list[BenchmarkResult] = []
 
     def _base_result(scenario: str, context_rows: int = 0, horizon: int = 13,
@@ -785,11 +796,8 @@ def run_benchmarks(
                     pipeline_construction_count = max(pipeline_construction_count, s.pipeline_call_count)
                 peak_rss_mb = max(peak_rss_mb, s.peak_rss_mb)
 
-    # WP1 + WP3: Cache inspection before and after scenarios
+    # WP3: Post-run cache inspection (pre-run already captured at function start)
     from src.telemetry import inspect_hf_cache, build_cache_preflight
-    pre_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
-
-    # WP3: Post-run cache inspection and build complete CachePreflight
     post_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
     cache_preflight = build_cache_preflight(
         pre_run_inspection, post_run_inspection, initial_cache_state,

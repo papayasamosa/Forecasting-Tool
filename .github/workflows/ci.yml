@@ -78,3 +78,7 @@ jobs:
       - name: Verify evidence manifest hashes
         run: |
           python scripts/verify_evidence_manifest.py
+
+      - name: Verify Stage 0 evidence readiness (offline)
+        run: |
+          python scripts/verify_stage0_evidence_readiness.py

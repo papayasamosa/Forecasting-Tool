@@ -249,12 +249,20 @@ def _build_cloud_evidence(data: dict[str, Any]) -> CloudEvidence:
             AcceptanceTestResult(**t) for t in data.get("acceptance_tests", [])
             if isinstance(t, dict)
         ],
+        token_absent_receipt=data.get("token_absent_receipt", {}),
+        token_present_receipt=data.get("token_present_receipt", {}),
+        collection_receipt=data.get("collection_receipt", {}),
         error=data.get("error", ""),
     )
 
-    # Determine overall success
+    # P0-1: Build with success=True to avoid circular rejection.
+    # CloudEvidence.validate() rejects success=False, so we must start
+    # with success=True, then apply the real result after validation.
+    evidence.success = True
     v_errors = evidence.validate()
     evidence.success = len(v_errors) == 0
+    if not evidence.success:
+        evidence.error = "; ".join(v_errors)
     evidence.completed_at_utc = datetime.now(timezone.utc).isoformat()
 
     return evidence

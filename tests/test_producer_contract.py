@@ -369,6 +369,41 @@ class TestProducerBundleAcceptance:
             with open(p, "w") as f:
                 json.dump(d, f)
 
+        # Create receipt files for all 5 components
+        def _make_receipt(comp_path, exec_id):
+            import hashlib
+            h = hashlib.sha256()
+            with open(comp_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            sha = h.hexdigest()
+            from src.evidence_schemas import EVIDENCE_SCHEMA_VERSION
+            rec = {
+                "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+                "evidence_type": "execution_receipt",
+                "execution_id": exec_id,
+                "attestation_type": "operator_attested",
+                "code_commit": "abc123",
+                "producer_version": "1.0",
+                "sanitised_command": "python test.py",
+                "started_at_utc": "2026-07-30T00:00:00",
+                "completed_at_utc": "2026-07-30T00:01:00",
+                "component_sha256": sha,
+                "model_id": "amazon/chronos-2",
+                "configured_revision": "rev1",
+                "resolved_revision": "rev1",
+            }
+            rpath = tmp_path / f"{comp_path.stem}_receipt.json"
+            with open(rpath, "w") as f:
+                json.dump(rec, f)
+            return str(rpath)
+
+        dc_r = _make_receipt(dc_path, "exec-dc-1")
+        pc_r = _make_receipt(pc_path, "exec-pc-1")
+        bm_r = _make_receipt(bench_path, "exec-bm-1")
+        tp_r = _make_receipt(tp_path, "exec-tp-1")
+        art_r = _make_receipt(model_path, "exec-art-1")
+
         # Run bundle builder
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts" / "build_local_stage0_bundle.py"),
@@ -377,6 +412,11 @@ class TestProducerBundleAcceptance:
              "--benchmark", str(bench_path),
              "--token-present-smoke", str(tp_path),
              "--model-artifact", str(model_path),
+             "--download-cold-smoke-receipt", dc_r,
+             "--process-cold-smoke-receipt", pc_r,
+             "--benchmark-receipt", bm_r,
+             "--token-present-smoke-receipt", tp_r,
+             "--model-artifact-receipt", art_r,
              "--output", str(tmp_path / "bundle.json")],
             capture_output=True, text=True, timeout=30,
         )
