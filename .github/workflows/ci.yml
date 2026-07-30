@@ -67,13 +67,43 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          pytest tests/ -v \
+          set +e
+          python -m pytest tests/ -v \
             --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
             --cov=src.data_ingestion --cov=src.evidence_schemas --cov=src.telemetry \
             --cov=src.coordinator --cov=src.evidence_validation \
-            --cov=src.storage_policy \
+            --cov=src.storage_policy --cov=src.redaction \
             --cov=scripts.publish_evidence --cov=scripts.verify_evidence_manifest \
-            --cov-report=term-missing --cov-fail-under=82
+            --cov-report=term-missing --cov-report=xml --cov-precision=2 --cov-fail-under=82
+          pytest_exit=$?
+          set -e
+          echo "pytest exit code: $pytest_exit"
+          if [ "$pytest_exit" -ne 0 ]; then
+            echo "::error::pytest exited $pytest_exit (coverage below threshold, test failure, or no tests collected) — failing the job"
+            exit "$pytest_exit"
+          fi
+
+      - name: Verify coverage gate independently (fail-closed, precision-exact)
+        run: |
+          # WP-K: a SECOND, independent reader of the coverage data, using
+          # the coverage.py CLI directly rather than trusting pytest-cov's
+          # own exit-code handling for --cov-fail-under. This is the fix
+          # for a real bug found in this repo: pytest-cov's fail_under gate
+          # rounds the total to --cov-precision digits before comparing
+          # (coverage.results.should_fail_under), so with the default
+          # precision of 0 a true 81.91% coverage rounds to "82" and does
+          # NOT trip the gate, even though the terminal summary's separate,
+          # unrounded comparison prints a "FAIL Required test coverage of
+          # 82%..." message — the job was reported as CI-green regardless.
+          # --cov-precision=2 above closes that specific rounding gap;
+          # this step is a second, structurally different check in case
+          # any future coverage/precision default ever changes again.
+          test -f .coverage || { echo "::error::.coverage data file missing — coverage step did not run or produced no data"; exit 1; }
+          python -m coverage report --precision=2 --fail-under=82
+
+      - name: Workflow-contract regression check (coverage gate must be fail-closed)
+        run: |
+          python -m pytest tests/test_ci_contract.py -v
 
       - name: Verify evidence manifest hashes
         run: |
