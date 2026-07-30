@@ -4,6 +4,8 @@
   "deployed_url": "https://forecasting-tool-bjhchtg9t6xhyxshidineu.streamlit.app",
   "deployed_commit": "8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
   "deployment_time_utc": "2026-07-30T12:00:00",
+  "model_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+  "configured_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
   "hf_token_present": false,
   "token_absent_result": {
     "attempted": true,
