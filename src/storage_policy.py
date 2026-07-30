@@ -79,6 +79,22 @@ _DRIVE_D_RE = re.compile(r"^D:", re.IGNORECASE)
 _UNC_RE = re.compile(r"^\\\\")
 
 
+def _is_abs_windows_path(path: str) -> bool:
+    """Check if *path* is an absolute Windows path (e.g. ``D:\\...``).
+
+    Works cross-platform: on Linux ``os.path.isabs`` returns ``False`` for
+    ``D:\\...``, so we also check for a drive-letter prefix manually.
+    """
+    if not path:
+        return False
+    if os.path.isabs(path):
+        return True
+    # On non-Windows, check for drive-letter prefix
+    if len(path) >= 3 and path[1] == ':' and path[2] in ('\\', '/'):
+        return True
+    return False
+
+
 def is_valid_storage_root(path: str) -> bool:
     """Return True if *path* is an acceptable D: storage root.
 
@@ -91,7 +107,7 @@ def is_valid_storage_root(path: str) -> bool:
     if not path:
         return False
     # Reject relative paths
-    if not os.path.isabs(path):
+    if not _is_abs_windows_path(path):
         return False
     # Reject UNC paths
     if _UNC_RE.match(path):
@@ -114,6 +130,11 @@ def is_under_local_root(path: str) -> bool:
     return norm_path.startswith(norm_root + os.sep) or norm_path == norm_root
 
 
+def is_windows_platform() -> bool:
+    """Return True if running on Windows."""
+    return sys.platform == "win32"
+
+
 def assert_d_drive_preflight() -> list[str]:
     """Run D-drive preflight checks. Return list of error messages.
 
@@ -124,11 +145,14 @@ def assert_d_drive_preflight() -> list[str]:
     - Repository is under D:\\Forecasting-Tool-Local\\repo.
     - All required env vars point to D:.
     - Pytest base temp would be on D:.
+
+    On non-Windows platforms, returns an informational message but does
+    not fail (the D-drive policy does not apply).
     """
     errors: list[str] = []
 
     if sys.platform != "win32":
-        errors.append("D-drive policy applies only to Windows")
+        # D-drive policy does not apply to non-Windows
         return errors
 
     # Check D: drive exists
