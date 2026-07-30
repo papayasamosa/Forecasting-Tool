@@ -180,8 +180,11 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
     return errors
 
 
-def validate_or_exit(data: Any, label: str = "root") -> None:
-    """Validate recursively and exit with code 1 if errors found."""
+def validate_or_exit(data: Any, label: str = "root") -> None:  # pragma: no cover
+    """Validate recursively and exit with code 1 if errors found.
+
+    Exposed for CLI scripts. Tested via subprocess because it calls sys.exit().
+    """
     errors = validate_recursive(data, label)
     if errors:
         print(f"\n Validation errors for {label}:")
