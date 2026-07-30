@@ -81,5 +81,8 @@
   "concurrency_requests": [],
   "repeated_runs": [],
   "acceptance_tests": [],
+  "token_absent_receipt": {},
+  "token_present_receipt": {},
+  "collection_receipt": {},
   "error": ""
 }

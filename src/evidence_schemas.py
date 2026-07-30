@@ -890,6 +890,8 @@ class LocalStage0Bundle:
     python_version: str = ""
     runs: dict[str, Any] = dataclasses.field(default_factory=dict)
     model_artifact: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # WP3: Typed receipt container — required for passing bundles
+    receipts: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -916,6 +918,15 @@ class LocalStage0Bundle:
         if not self.model_artifact:
             errors.append("model_artifact: missing or empty")
 
+        # WP3: For a passing bundle, all 5 receipts are required
+        expected_receipts = [
+            "download_cold_smoke",
+            "process_cold_smoke",
+            "benchmark",
+            "token_present_smoke",
+            "model_artifact",
+        ]
+
         if self.bundle_passed:
             if not self.started_at_utc:
                 errors.append("started_at_utc: empty")
@@ -927,6 +938,10 @@ class LocalStage0Bundle:
                 rc = run_data.get("code_commit", "") if isinstance(run_data, dict) else ""
                 if rc and rc != self.code_commit:
                     errors.append(f"commit mismatch in '{run_name}': expected '{self.code_commit}', got '{rc}'")
+
+            # WP3: All 5 receipts required for passing bundle
+            receipt_errors = self._validate_receipts()
+            errors.extend(receipt_errors)
 
             # Verify consistent model_id, configured_revision, model_revision (P1-2)
             model_ids: set[str] = set()
@@ -966,6 +981,89 @@ class LocalStage0Bundle:
                         f"model_artifact resolved_revision '{ma_mr}' not in "
                         f"run model_revisions {model_revisions}"
                     )
+
+        return errors
+
+    def _validate_receipts(self) -> list[str]:
+        """Validate receipt bindings for a passing bundle.
+
+        Checks that every required component has a typed ExecutionReceipt
+        with matching hash, commit, model ID, revision, and distinct
+        execution IDs.
+        """
+        errors: list[str] = []
+        from src.evidence_schemas import ExecutionReceipt
+
+        expected_receipts = [
+            "download_cold_smoke",
+            "process_cold_smoke",
+            "benchmark",
+            "token_present_smoke",
+            "model_artifact",
+        ]
+
+        seen_execution_ids: set[str] = set()
+
+        for key in expected_receipts:
+            receipt_data = self.receipts.get(key)
+            if receipt_data is None:
+                errors.append(f"receipts.{key}: missing — required for passing bundle")
+                continue
+
+            # Handle both raw dict (from direct construction) and
+            # typed ExecutionReceipt (from evidence_from_dict deserialization)
+            if isinstance(receipt_data, dict):
+                try:
+                    receipt = ExecutionReceipt(**receipt_data)
+                except Exception as exc:
+                    errors.append(f"receipts.{key}: deserialisation failed: {exc}")
+                    continue
+            elif isinstance(receipt_data, ExecutionReceipt):
+                receipt = receipt_data
+            else:
+                errors.append(
+                    f"receipts.{key}: unexpected type {type(receipt_data).__name__}"
+                )
+                continue
+
+            # Run receipt validate()
+            r_errors = receipt.validate()
+            for re in r_errors:
+                errors.append(f"receipts.{key}: {re}")
+
+            # Component file SHA-256 must be present and non-empty
+            if not receipt.component_sha256:
+                errors.append(f"receipts.{key}: component_sha256 empty")
+
+            # receipt commit must equal bundle commit
+            if receipt.code_commit and receipt.code_commit != self.code_commit:
+                errors.append(
+                    f"receipts.{key}: code_commit '{receipt.code_commit}' "
+                    f"!= bundle commit '{self.code_commit}'"
+                )
+
+            # Model ID must match
+            if receipt.model_id and receipt.model_id != "amazon/chronos-2":
+                errors.append(f"receipts.{key}: model_id '{receipt.model_id}' != amazon/chronos-2")
+
+            # Resolved revision must match corresponding component's revision
+            if key in self.runs:
+                comp = self.runs[key]
+                if isinstance(comp, dict):
+                    comp_rev = comp.get("model_revision", "") or comp.get("resolved_revision", "")
+                    if comp_rev and receipt.resolved_revision and receipt.resolved_revision != comp_rev:
+                        errors.append(
+                            f"receipts.{key}: resolved_revision '{receipt.resolved_revision}' "
+                            f"!= component revision '{comp_rev}'"
+                        )
+
+            # Execution ID uniqueness
+            if receipt.execution_id:
+                if receipt.execution_id in seen_execution_ids:
+                    errors.append(
+                        f"receipts.{key}: duplicate execution_id '{receipt.execution_id}'"
+                    )
+                seen_execution_ids.add(receipt.execution_id)
 
         return errors
 
@@ -1023,6 +1121,10 @@ class CloudEvidence:
     repeated_runs: list[RepeatedRun] = dataclasses.field(default_factory=list)
     # Acceptance test results (WP12)
     acceptance_tests: list[AcceptanceTestResult] = dataclasses.field(default_factory=list)
+    # WP4: Execution bindings — typed receipts for token paths and collection session
+    token_absent_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
+    token_present_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
+    collection_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
     error: str = ""
 
     def validate(self) -> list[str]:
@@ -1071,6 +1173,58 @@ class CloudEvidence:
                 f"deployment identity mismatch: code_commit '{self.code_commit}' != "
                 f"deployed_commit '{self.deployed_commit}'"
             )
+
+        # WP4: Receipt bindings — validate typed execution receipts (only when successful)
+        if self.success:
+            receipt_fields = [
+                ("token_absent_receipt", "token_absent_result"),
+                ("token_present_receipt", "token_present_result"),
+                ("collection_receipt", None),
+            ]
+            seen_rec_exec_ids: set[str] = set()
+            for rec_field, result_field in receipt_fields:
+                rec = getattr(self, rec_field, {})
+                if not isinstance(rec, dict) or not rec:
+                    errors.append(f"{rec_field}: missing or empty — execution binding required")
+                    continue
+                try:
+                    receipt_obj = ExecutionReceipt(**rec)
+                    rec_errors = receipt_obj.validate()
+                    for re in rec_errors:
+                        errors.append(f"{rec_field}: {re}")
+                    # Check commit matches deployed_commit
+                    if receipt_obj.code_commit and self.deployed_commit and receipt_obj.code_commit != self.deployed_commit:
+                        errors.append(
+                            f"{rec_field}: code_commit '{receipt_obj.code_commit}' "
+                            f"!= deployed_commit '{self.deployed_commit}'"
+                        )
+                    # Check model ID
+                    if receipt_obj.model_id and receipt_obj.model_id != "amazon/chronos-2":
+                        errors.append(f"{rec_field}: model_id '{receipt_obj.model_id}' != amazon/chronos-2")
+                    # Check revision matches
+                    if receipt_obj.resolved_revision and self.model_revision and receipt_obj.resolved_revision != self.model_revision:
+                        errors.append(
+                            f"{rec_field}: resolved_revision '{receipt_obj.resolved_revision}' "
+                            f"!= Cloud model_revision '{self.model_revision}'"
+                        )
+                    # Check execution ID against token path result for token receipts
+                    if result_field:
+                        result = getattr(self, result_field, None)
+                        if result and hasattr(result, "run_id") and result.run_id:
+                            if receipt_obj.execution_id and receipt_obj.execution_id != result.run_id:
+                                errors.append(
+                                    f"{rec_field}: execution_id '{receipt_obj.execution_id}' "
+                                    f"!= {result_field}.run_id '{result.run_id}'"
+                                )
+                    # Execution ID uniqueness
+                    if receipt_obj.execution_id:
+                        if receipt_obj.execution_id in seen_rec_exec_ids:
+                            errors.append(
+                                f"{rec_field}: duplicate execution_id '{receipt_obj.execution_id}'"
+                            )
+                        seen_rec_exec_ids.add(receipt_obj.execution_id)
+                except Exception as exc:
+                    errors.append(f"{rec_field}: receipt construction failed: {exc}")
 
         # WP8: Resource-limit and restart checks — must not have exceeded limits
         if self.resource_limit_exceeded:
@@ -1407,6 +1561,10 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
             d["token_absent_result"] = TokenPathResult(**_filter_known_fields(d["token_absent_result"], TokenPathResult))
         if "token_present_result" in d and isinstance(d["token_present_result"], dict):
             d["token_present_result"] = TokenPathResult(**_filter_known_fields(d["token_present_result"], TokenPathResult))
+        # WP4: Receipt fields — preserve as dicts for construction
+        # These are stored as dict[str, Any] in CloudEvidence and validated
+        # inline rather than deserialized to typed objects here (the validate
+        # method constructs ExecutionReceipt from the raw dict).
         if "repeated_runs" in d and isinstance(d["repeated_runs"], list):
             d["repeated_runs"] = [
                 RepeatedRun(**_filter_known_fields(r, RepeatedRun))
@@ -1422,5 +1580,17 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
                 AcceptanceTestResult(**_filter_known_fields(t, AcceptanceTestResult))
                 for t in d["acceptance_tests"]
             ]
+
+    elif etype == "local_stage0_bundle":
+        if "receipts" in d and isinstance(d["receipts"], dict):
+            receipts = {}
+            for rec_key, rec_data in d["receipts"].items():
+                if isinstance(rec_data, dict):
+                    receipts[rec_key] = ExecutionReceipt(
+                        **_filter_known_fields(rec_data, ExecutionReceipt)
+                    )
+                else:
+                    receipts[rec_key] = rec_data
+            d["receipts"] = receipts
 
     return cls(**_filter_known_fields(d, cls))

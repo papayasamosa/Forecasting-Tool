@@ -52,7 +52,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
 | Execution receipts (WP3) | ✅ First-class evidence type with `evidence_schema_version`, `evidence_type`, registered in type map, deserializable, recursively validated, with `write_execution_receipt()` helper |
-| Receipts bound to components | ✅ Local bundle receipts bind `download_cold_smoke`, `process_cold_smoke`, `benchmark`, `token_present_smoke`, `model_artifact` |
+| Receipts bound to components | ✅ Typed, mandatory for passing bundles — validates hash, commit, revision, model, execution ID uniqueness |
 | Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
 | Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
 | Bounded coordinator telemetry (WP1) | ✅ `deque(maxlen=256)`, `CoordinatorExecution` |
