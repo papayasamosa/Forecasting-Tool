@@ -92,6 +92,29 @@ def main() -> int:
     print(f"  Suite overall: {'PASS' if suite_ok else 'FAIL'}")
     print("=" * 64)
 
+    # WP3: Validate final envelope recursively
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from src.evidence_validation import validate_recursive
+
+    # Load the written JSON envelope for validation
+    json_files = [
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.startswith("benchmark_") and f.endswith(".json")
+    ]
+    if json_files:
+        import json
+        latest = max(json_files, key=os.path.getmtime)
+        with open(latest, encoding="utf-8") as f:
+            envelope = json.load(f)
+        v_errors = validate_recursive(envelope, label="benchmark_suite")
+        if v_errors:
+            print("\nRelease validation errors:")
+            for err in v_errors:
+                print(f"  [FAIL] {err}")
+            return 1
+        print(f"  Release validation: OK")
+
     return 0 if suite_ok else 1
 
 

@@ -18,30 +18,9 @@ LOCAL_ROOT = os.environ.get(
     r"D:\Forecasting-Tool-Local",
 )
 
-REQUIRED_DIRS = [
-    os.path.join(LOCAL_ROOT, "venv"),
-    os.path.join(LOCAL_ROOT, "cache", "pip"),
-    os.path.join(LOCAL_ROOT, "cache", "huggingface"),
-    os.path.join(LOCAL_ROOT, "cache", "huggingface", "hub"),
-    os.path.join(LOCAL_ROOT, "cache", "huggingface", "xet"),
-    os.path.join(LOCAL_ROOT, "cache", "transformers"),
-    os.path.join(LOCAL_ROOT, "cache", "torch"),
-    os.path.join(LOCAL_ROOT, "temp"),
-    os.path.join(LOCAL_ROOT, "test-output"),
-    os.path.join(LOCAL_ROOT, "benchmarks"),
-]
-
-REQUIRED_ENV_VARS = {
-    "PIP_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "pip"),
-    "HF_HOME": os.path.join(LOCAL_ROOT, "cache", "huggingface"),
-    "HUGGINGFACE_HUB_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface"),
-    "HF_HUB_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface", "hub"),
-    "HF_XET_CACHE": os.path.join(LOCAL_ROOT, "cache", "huggingface", "xet"),
-    "TRANSFORMERS_CACHE": os.path.join(LOCAL_ROOT, "cache", "transformers"),
-    "TORCH_HOME": os.path.join(LOCAL_ROOT, "cache", "torch"),
-    "TMP": os.path.join(LOCAL_ROOT, "temp"),
-    "TEMP": os.path.join(LOCAL_ROOT, "temp"),
-}
+# Use the canonical storage_policy module as single source of truth
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from src.storage_policy import REQUIRED_DIRS, REQUIRED_ENV_VARS
 
 REQUIRED_PACKAGES = [
     ("torch", "torch"),

@@ -1,7 +1,8 @@
 # ADR-001: Inference Backend Architecture
 
 **Status:** ⏳ Provisionally accepted, pending Cloud Gate C  
-**Date:** 2026-07-30 (updated)
+**Date:** 2026-07-30 (updated)  
+**Note:** This ADR reflects historical feasibility evidence. Do not treat invalidated PR #18 token record as proof. Valid current-head evidence requires a genuine token-present rerun and updated bundle.
 
 ## Context
 

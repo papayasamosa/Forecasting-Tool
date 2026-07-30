@@ -12,7 +12,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Schema invariant validation | ✅ Implemented, tested |
 | Unit tests (no model download) | ✅ Implemented |
 | Local setup (D: drive) | ✅ Documented, enforced |
-| CI (GitHub Actions) | ✅ Implemented, coverage threshold 80% |
+| CI (GitHub Actions) | ✅ Implemented, coverage threshold 82%, `src.storage_policy` included |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Context capping before record materialisation | ✅ Implemented |
@@ -37,8 +37,9 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence publisher (sanitise, copy, manifest) | ✅ Implemented |
 | Bundle builder with recursive typed validation | ✅ Implemented, shared validator |
 | Manifest deep verifier (internal JSON validation) | ✅ Implemented, uses Path.is_relative_to() |
-| Cache preflight evidence required | ✅ Strict with inspection_succeeded and post-run state |
-| Suite-level resolved revision and peak RSS | ✅ Mandatory |
+| Cache preflight evidence required | ✅ Built from pre/post cache inspections via `build_cache_preflight()` |
+| Cache inspection returns `inspection_succeeded` and `error_code` | ✅ Added — expected absence not a failure |
+| Suite-level resolved revision and peak RSS | ✅ Mandatory, measured (not defaulted) |
 | HF cache discovery (huggingface_hub constant) | ✅ Implemented |
 | Cloud evidence validation (strict states, concurrency gate) | ✅ Pairwise interval intersection |
 | Snapshot/weight file count metadata | ✅ Implemented, validated |
@@ -50,7 +51,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Windows machine CPU model detection | ✅ Implemented |
 | Evidence manifest hash verification (CI) | ✅ Implemented |
 | Functional evidence CLI tests (subprocess) | ✅ Implemented |
-| Execution receipts (WP3) | ✅ Schema implemented |
+| Execution receipts (WP3) | ✅ First-class evidence type with `evidence_schema_version`, `evidence_type`, registered in type map, deserializable, recursively validated, with `write_execution_receipt()` helper |
+| Receipts bound to components | ✅ Local bundle receipts bind `download_cold_smoke`, `process_cold_smoke`, `benchmark`, `token_present_smoke`, `model_artifact` |
 | Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
 | Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
 | Bounded coordinator telemetry (WP1) | ✅ `deque(maxlen=256)`, `CoordinatorExecution` |

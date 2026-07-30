@@ -52,6 +52,31 @@ CACHE_STATE_AGGREGATE = "aggregate"
 CACHE_STATE_SYNTHETIC = "synthetic_fake"
 
 VALID_INITIAL_CACHE_STATES = {CACHE_STATE_DOWNLOAD_COLD, CACHE_STATE_PROCESS_COLD}
+# ---------------------------------------------------------------------------
+# Canonical Cloud acceptance test names (WP9)
+# ---------------------------------------------------------------------------
+CANONICAL_CLOUD_TESTS: list[str] = [
+    "dependency_install",
+    "pip_check",
+    "cpu_only_torch",
+    "no_nvidia_packages",
+    "token_absent_load",
+    "token_present_load",
+    "cold_forecast",
+    "warm_forecast",
+    "repeated_forecasts",
+    "valid_csv_forecast",
+    "oversized_csv_rejected",
+    "blank_timestamp_rejected",
+    "invalid_timestamp_rejected",
+    "same_column_rejected",
+    "context_truncation_visible",
+    "recoverable_failure",
+    "configuration_preserved",
+    "two_session_concurrency",
+    "coordinator_timeout_recovery",
+]
+
 VALID_PHASE_CACHE_STATES = {
     CACHE_STATE_DOWNLOAD_COLD, CACHE_STATE_PROCESS_COLD,
     CACHE_STATE_WARM, CACHE_STATE_AGGREGATE, CACHE_STATE_SYNTHETIC,
@@ -211,6 +236,8 @@ class ExecutionReceipt:
     the evidence should be labelled "operator-attested and tamper-evident".
     """
 
+    evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
+    evidence_type: str = "execution_receipt"
     execution_id: str = ""
     attestation_type: str = ""  # "github_attestation", "operator_attested"
     code_commit: str = ""
@@ -227,6 +254,10 @@ class ExecutionReceipt:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
+        if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
+            errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}', got '{self.evidence_schema_version}'")
+        if self.evidence_type != "execution_receipt":
+            errors.append(f"evidence_type: expected 'execution_receipt', got '{self.evidence_type}'")
         if not self.execution_id:
             errors.append("execution_receipt: execution_id empty")
         if not self.attestation_type:
@@ -238,6 +269,8 @@ class ExecutionReceipt:
             )
         if not self.code_commit:
             errors.append("execution_receipt: code_commit empty")
+        if not self.producer_version:
+            errors.append("execution_receipt: producer_version empty")
         if not self.sanitised_command:
             errors.append("execution_receipt: sanitised_command empty")
         if not self.started_at_utc:
@@ -257,6 +290,13 @@ class ExecutionReceipt:
                 f"execution_receipt: configured_revision '{self.configured_revision}' != "
                 f"resolved_revision '{self.resolved_revision}'"
             )
+        # Ordered timestamps
+        if self.started_at_utc and self.completed_at_utc:
+            try:
+                if datetime.fromisoformat(self.started_at_utc) > datetime.fromisoformat(self.completed_at_utc):
+                    errors.append("execution_receipt: started_at_utc after completed_at_utc")
+            except (ValueError, TypeError):
+                errors.append("execution_receipt: cannot parse timestamps")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -969,9 +1009,8 @@ class CloudEvidence:
     # Cold and warm phases (WP7)
     cold: SmokePhase = dataclasses.field(default_factory=SmokePhase)
     warm: SmokePhase = dataclasses.field(default_factory=SmokePhase)
-    # Resource evidence (WP7)
+    # Resource evidence (WP7) — warm.rss_mb is the canonical warm RSS field
     cold_peak_rss_mb: float = 0.0
-    warm_rss_mb: float = 0.0
     process_peak_rss_mb: float = 0.0
     resource_limit_exceeded: bool = False
     app_restart_occurred: bool = False
@@ -1032,6 +1071,16 @@ class CloudEvidence:
                 f"deployment identity mismatch: code_commit '{self.code_commit}' != "
                 f"deployed_commit '{self.deployed_commit}'"
             )
+
+        # WP8: Resource-limit and restart checks — must not have exceeded limits
+        if self.resource_limit_exceeded:
+            errors.append("resource_limit_exceeded: true — resource limits were exceeded")
+        if self.app_restart_occurred:
+            errors.append("app_restart_occurred: true — application restarted unexpectedly")
+
+        # WP8: Dependency resolver must be non-empty
+        if not self.dependency_resolver:
+            errors.append("dependency_resolver: empty — must identify the resolver used")
 
         # WP2: Strict Cloud token-path validation — both paths must be
         # attempted and successful for a successful Cloud evidence record.
@@ -1169,8 +1218,27 @@ class CloudEvidence:
                 errors.append("concurrency: cold pipeline must be constructed exactly once")
             if self.app_restart_occurred:
                 errors.append("concurrency: app restart occurred — process crash detected")
+            # WP8: Timeout semantics — must be a known outcome
+            valid_timeout_results = {"no_timeout", "timeout_occurred", "timeout_recovered"}
             if not self.timeout_result:
                 errors.append("concurrency: timeout_result must be recorded")
+            elif self.timeout_result not in valid_timeout_results:
+                errors.append(
+                    f"concurrency: timeout_result '{self.timeout_result}' not in "
+                    f"{valid_timeout_results}"
+                )
+            if self.timeout_result == "timeout_occurred":
+                # Timeout without recovery is a failure
+                if not self.error:
+                    errors.append("concurrency: timeout_occurred but no recovery error recorded")
+            if self.timeout_result == "timeout_recovered":
+                # Must have recovery evidence: configuration_preserved must pass
+                conf_test = next(
+                    (t for t in self.acceptance_tests if t.test_name == "configuration_preserved"),
+                    None,
+                )
+                if conf_test and not conf_test.passed:
+                    errors.append("concurrency: timeout_recovered but configuration_preserved test failed")
 
         # WP4: Successful repeated-run gate — at least 3 successful warm runs
         if self.success:
@@ -1205,18 +1273,9 @@ class CloudEvidence:
                     f"got {counted} out of {len(self.repeated_runs)}"
                 )
 
-        # WP6: Complete acceptance-test gate — every required test must pass
+        # WP6 + WP9: Complete acceptance-test gate — every required test must pass
         if self.success:
-            required_tests = [
-                "dependency_install", "pip_check", "cpu_only_torch",
-                "no_nvidia_packages", "token_absent_load", "token_present_load",
-                "cold_forecast", "warm_forecast", "repeated_forecasts",
-                "valid_csv_forecast", "oversized_csv_rejected",
-                "blank_timestamp_rejected", "invalid_timestamp_rejected",
-                "same_column_rejected", "context_truncation_visible",
-                "recoverable_failure", "configuration_preserved",
-                "two_session_concurrency", "coordinator_timeout_recovery",
-            ]
+            required_tests = list(CANONICAL_CLOUD_TESTS)
             seen_tests: set[str] = set()
             for t in self.acceptance_tests:
                 t_errors = t.validate()
@@ -1259,6 +1318,7 @@ _EVIDENCE_TYPE_MAP: dict[str, type] = {
     "model_artifact": ModelArtifactEvidence,
     "local_stage0_bundle": LocalStage0Bundle,
     "cloud_stage0": CloudEvidence,
+    "execution_receipt": ExecutionReceipt,
 }
 
 

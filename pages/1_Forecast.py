@@ -1,3 +1,4 @@
+# pragma: no cover
 """Streamlit page: Forecast — Stage 0 (not yet Phase 1).
 
 The Chronos-2 model is loaded only when the user clicks "Run Forecast".

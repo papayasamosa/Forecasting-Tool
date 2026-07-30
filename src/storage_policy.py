@@ -95,6 +95,19 @@ def _is_abs_windows_path(path: str) -> bool:
     return False
 
 
+def _normalise_windows_path(path: str) -> str:
+    """Normalise a Windows-style path for cross-platform regex matching.
+
+    Converts forward slashes to backslashes and normalises via
+    ``os.path.normpath``.  This is needed because on Linux,
+    ``os.path.join`` produces mixed ``\\``/``/`` separators, and
+    ``os.path.normpath`` on Linux does not convert forward slashes.
+    """
+    # Replace forward slashes with backslashes first
+    path = path.replace("/", "\\")
+    return os.path.normpath(path)
+
+
 def is_valid_storage_root(path: str) -> bool:
     """Return True if *path* is an acceptable D: storage root.
 
@@ -112,8 +125,8 @@ def is_valid_storage_root(path: str) -> bool:
     # Reject UNC paths
     if _UNC_RE.match(path):
         return False
-    # Normalise and check
-    normalised = os.path.normpath(path)
+    # Normalise and check — normalise separators first for cross-platform
+    normalised = _normalise_windows_path(path)
     if not _DRIVE_D_RE.match(normalised):
         return False
     if not _VALID_ROOT_RE.match(normalised):
@@ -127,8 +140,8 @@ def is_under_local_root(path: str) -> bool:
         return False
     # Normalise to a common format: replace all backslashes with forward slashes
     # for cross-platform comparison (os.sep differs: '\\' on Windows, '/' on Linux)
-    norm_path = os.path.normpath(path).replace("\\", "/")
-    norm_root = os.path.normpath(LOCAL_ROOT).replace("\\", "/")
+    norm_path = _normalise_windows_path(path).replace("\\", "/")
+    norm_root = _normalise_windows_path(LOCAL_ROOT).replace("\\", "/")
     return norm_path.startswith(norm_root + "/") or norm_path == norm_root
 
 

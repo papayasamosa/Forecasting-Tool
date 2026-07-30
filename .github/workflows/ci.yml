@@ -68,11 +68,12 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
         run: |
           pytest tests/ -v \
-            --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking --cov=pages \
+            --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
             --cov=src.data_ingestion --cov=src.evidence_schemas --cov=src.telemetry \
             --cov=src.coordinator --cov=src.evidence_validation \
+            --cov=src.storage_policy \
             --cov=scripts.publish_evidence --cov=scripts.verify_evidence_manifest \
-            --cov-report=term-missing --cov-fail-under=80
+            --cov-report=term-missing --cov-fail-under=82
 
       - name: Verify evidence manifest hashes
         run: |
