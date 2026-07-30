@@ -401,6 +401,7 @@ class TestProducerBundleAcceptance:
                 "resolved_revision": "rev1",
                 "environment_summary": "python=3.12",
                 "evidence_origin": "real_measurement",
+                "git_worktree_clean": True,
             }
             rpath = tmp_path / f"{comp_path.stem}_receipt.json"
             with open(rpath, "w") as f:

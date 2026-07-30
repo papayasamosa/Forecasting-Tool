@@ -787,6 +787,7 @@ class TestCloudEvidenceValidation:
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
             "evidence_origin": origin,
+            "git_worktree_clean": True,
         })
         tpr_digest = canonical_evidence_sha256(TokenPathResult(**data["token_present_result"]).to_dict())
         data.setdefault("token_present_receipt", {
@@ -804,6 +805,7 @@ class TestCloudEvidenceValidation:
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
             "evidence_origin": origin,
+            "git_worktree_clean": True,
         })
         data.setdefault("collection_session", {
             "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
@@ -834,6 +836,7 @@ class TestCloudEvidenceValidation:
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
             "evidence_origin": origin,
+            "git_worktree_clean": True,
         })
         return data
 
@@ -1916,6 +1919,7 @@ class TestBundleBuilderSubprocess:
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12 os=linux",
             "evidence_origin": "real_measurement",
+            "git_worktree_clean": True,
         }
         path = os.path.join(tmpdir, fname)
         with open(path, "w") as f:

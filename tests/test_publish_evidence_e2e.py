@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 import scripts.publish_evidence as publish_evidence
-from tests.test_evidence import _valid_smoke_dict
+from tests.test_evidence import _valid_smoke_dict, _valid_benchmark_suite_dict, _valid_model_artifact_dict
 
 
 @pytest.fixture
@@ -192,3 +192,170 @@ class TestPublishMainReceiptFiles:
         assert receipt_file.exists()
         import hashlib
         assert hashlib.sha256(receipt_file.read_bytes()).hexdigest() == rec_entry["sha256"]
+
+
+class TestPublishMainMutations:
+    """WP-J: for each evidence type/field category the spec calls out —
+    smoke, benchmark, artifact, receipt origin, receipt command, exit
+    code, digest — start from a value main() accepts, mutate exactly one
+    field, and prove main() rejects the mutated version. Each test's
+    first assertion (rc == 0 on the unmutated baseline) is what makes
+    this a mutation test rather than an isolated negative-path test: it
+    proves the rejection is caused by the mutation, not by some other
+    defect in the fixture."""
+
+    def _publish(self, tmp_path, isolated_evidence_dir, monkeypatch, data, evidence_type, extra_args=()):
+        input_path = _write_input(tmp_path, data)
+        monkeypatch.setattr(sys, "argv", [
+            "publish_evidence.py", str(input_path), "--type", evidence_type, *extra_args,
+        ])
+        return publish_evidence.main()
+
+    def test_benchmark_suite_baseline_passes_then_missing_origin_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        baseline = _valid_benchmark_suite_dict()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "benchmark_suite") == 0
+
+        mutated = _valid_benchmark_suite_dict()
+        del mutated["evidence_origin"]
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "benchmark_suite") == 1
+
+    def test_benchmark_suite_baseline_passes_then_synthetic_origin_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        baseline = _valid_benchmark_suite_dict()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "benchmark_suite") == 0
+
+        mutated = _valid_benchmark_suite_dict({"evidence_origin": "synthetic_fixture"})
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "benchmark_suite") == 1
+
+    def test_model_artifact_baseline_passes_then_missing_origin_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        baseline = _valid_model_artifact_dict()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "model_artifact") == 0
+
+        mutated = _valid_model_artifact_dict()
+        del mutated["evidence_origin"]
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "model_artifact") == 1
+
+    def test_model_artifact_baseline_passes_then_malformed_digest_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        """Digest-field mutation: each file's sha256 must be a well-formed
+        64-hex-char SHA-256 — a truncated/malformed value must fail
+        publication even though every other field is unchanged."""
+        baseline = _valid_model_artifact_dict()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "model_artifact") == 0
+
+        mutated = _valid_model_artifact_dict()
+        mutated["files"][0]["sha256"] = "not-a-valid-sha256"
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "model_artifact") == 1
+
+    def test_smoke_baseline_passes_then_missing_origin_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        baseline = _valid_smoke_dict()
+        assert self._publish(
+            tmp_path, isolated_evidence_dir, monkeypatch, baseline, "smoke_test",
+            extra_args=["--expected-token-state", "absent"],
+        ) == 0
+
+        mutated = _valid_smoke_dict()
+        del mutated["evidence_origin"]
+        assert self._publish(
+            tmp_path, isolated_evidence_dir, monkeypatch, mutated, "smoke_test",
+            extra_args=["--expected-token-state", "absent"],
+        ) == 1
+
+    @staticmethod
+    def _passing_bundle(receipt_overrides: dict | None = None) -> dict:
+        """Build a fully valid, bundle_passed=True local_stage0_bundle with
+        all 5 required receipts correctly keyed (LocalStage0Bundle._validate_
+        receipts()'s expected_receipts list — no "_receipt" suffix) and
+        digest-bound. ``receipt_overrides`` is applied to every receipt, so
+        a single-field mutation stays isolated to that one field."""
+        from src.evidence_schemas import canonical_evidence_sha256
+
+        run = {"code_commit": "abc123", "success": True}
+        receipt_common = {
+            "evidence_schema_version": "2",
+            "evidence_type": "execution_receipt",
+            "attestation_type": "operator_attested",
+            "code_commit": "abc123",
+            "producer_version": "1.0",
+            "sanitised_command": "python smoke_test.py --initial-cache-state download_cold",
+            "started_at_utc": "2026-07-29T00:00:00",
+            "completed_at_utc": "2026-07-29T00:00:30",
+            "exit_code": 0,
+            "model_id": "amazon/chronos-2",
+            "configured_revision": "rev1",
+            "resolved_revision": "rev1",
+            "environment_summary": "python=3.12",
+            "evidence_origin": "real_measurement",
+            "git_worktree_clean": True,
+            **(receipt_overrides or {}),
+        }
+        receipts: dict = {}
+        runs: dict = {}
+        for key in ("download_cold_smoke", "process_cold_smoke", "benchmark", "token_present_smoke"):
+            runs[key] = dict(run)
+            receipts[key] = {
+                **receipt_common,
+                "execution_id": f"exec-{key}",
+                "canonical_content_sha256": canonical_evidence_sha256(runs[key]),
+                **(receipt_overrides or {}),
+            }
+        model_artifact = {"code_commit": "abc123"}
+        receipts["model_artifact"] = {
+            **receipt_common,
+            "execution_id": "exec-model_artifact",
+            "canonical_content_sha256": canonical_evidence_sha256(model_artifact),
+            **(receipt_overrides or {}),
+        }
+        return {
+            "evidence_schema_version": "2",
+            "evidence_type": "local_stage0_bundle",
+            "evidence_origin": "real_measurement",
+            "bundle_passed": True,
+            "code_commit": "abc123",
+            "git_worktree_clean": True,
+            "started_at_utc": "2026-07-29T00:00:00",
+            "completed_at_utc": "2026-07-29T00:01:00",
+            "runs": runs,
+            "model_artifact": model_artifact,
+            "receipts": receipts,
+        }
+
+    def test_bundle_receipt_command_exposure_mutation_fails(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        """Receipt-command mutation: a receipt whose sanitised_command
+        carries an unredacted secret must fail publication, even though
+        every other field is otherwise valid."""
+        baseline = self._passing_bundle()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "local_stage0_bundle") == 0
+
+        mutated = self._passing_bundle({
+            "sanitised_command": "python smoke_test.py --hf-token hf_realsecretvalue1234567890",
+        })
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "local_stage0_bundle") == 1
+
+    def test_bundle_receipt_exit_code_mutation_fails_when_passing(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        """Receipt exit-code mutation: once a bundle claims bundle_passed
+        and evidence_origin=real_measurement, a receipt with a non-zero
+        exit_code must fail publication (receipt_is_release_ready)."""
+        baseline = self._passing_bundle()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "local_stage0_bundle") == 0
+
+        mutated = self._passing_bundle({"exit_code": 1})
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "local_stage0_bundle") == 1
+
+    def test_bundle_receipt_origin_mutation_fails_when_passing(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        """Receipt evidence_origin mutation: a synthetic receipt embedded
+        in a bundle claiming real_measurement/bundle_passed must fail
+        publication."""
+        baseline = self._passing_bundle()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "local_stage0_bundle") == 0
+
+        mutated = self._passing_bundle({"evidence_origin": "synthetic_fixture"})
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "local_stage0_bundle") == 1
+
+    def test_bundle_receipt_digest_mutation_fails_when_passing(self, tmp_path, isolated_evidence_dir, monkeypatch):
+        """Digest-field mutation: a receipt's canonical_content_sha256 that
+        no longer matches its bound component must fail publication —
+        this is the tamper-evidence property WP-F/WP-I exist to provide."""
+        baseline = self._passing_bundle()
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, baseline, "local_stage0_bundle") == 0
+
+        mutated = self._passing_bundle({"canonical_content_sha256": "f" * 64})
+        assert self._publish(tmp_path, isolated_evidence_dir, monkeypatch, mutated, "local_stage0_bundle") == 1

@@ -97,3 +97,28 @@ class TestContainsExposedSecret:
 
     def test_accepts_empty_string(self):
         assert contains_exposed_secret("") is None
+
+    def test_detects_exposed_space_separated_token_flag(self):
+        # Regression: contains_exposed_secret() previously only matched
+        # "name=value" assignment forms — a space-separated "--flag value"
+        # (the form sanitise_command() already redacts) slipped through
+        # undetected, found via a WP-J mutation test that mutated a
+        # receipt's sanitised_command and expected publish_evidence.py to
+        # reject it, but it didn't.
+        assert contains_exposed_secret("python smoke_test.py --hf-token hf_realsecretvalue1234567890") is not None
+
+    def test_detects_exposed_space_separated_secret_flag(self):
+        assert contains_exposed_secret("python x.py --secret topsecretvalue") is not None
+
+    def test_detects_raw_hf_token_literal_without_any_flag(self):
+        assert contains_exposed_secret("some log line mentioning hf_realsecretvalue1234567890 in passing") is not None
+
+    def test_accepts_space_separated_compound_token_flag(self):
+        assert contains_exposed_secret("--token-state present") is None
+        assert contains_exposed_secret("--token-present-run run-001") is None
+
+    def test_accepts_space_separated_non_sensitive_flag(self):
+        assert contains_exposed_secret("--initial-cache-state download_cold") is None
+
+    def test_accepts_space_separated_redacted_marker(self):
+        assert contains_exposed_secret(f"--hf-token {REDACTED_MARKER}") is None

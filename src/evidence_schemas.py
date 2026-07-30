@@ -1249,8 +1249,15 @@ class LocalStage0Bundle:
                 )
                 continue
 
-            # Run receipt validate()
-            r_errors = receipt.validate()
+            # WP-J: a passing, real-measurement bundle must bind receipts
+            # that are actually release-ready (exit_code == 0,
+            # evidence_origin == real_measurement, git_worktree_clean ==
+            # true) — not just structurally valid. receipt.validate() alone
+            # would accept a receipt describing a failed or synthetic run.
+            if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+                r_errors = receipt_is_release_ready(receipt)
+            else:
+                r_errors = receipt.validate()
             for re in r_errors:
                 errors.append(f"receipts.{key}: {re}")
 
@@ -1536,7 +1543,16 @@ class CloudEvidence:
                     continue
                 try:
                     receipt_obj = ExecutionReceipt(**rec)
-                    rec_errors = receipt_obj.validate()
+                    # WP-J: a passing, real-measurement Cloud record must
+                    # bind release-ready receipts (exit_code == 0,
+                    # evidence_origin == real_measurement,
+                    # git_worktree_clean == true), not merely structurally
+                    # valid ones — plain validate() would accept a receipt
+                    # describing a failed command.
+                    if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+                        rec_errors = receipt_is_release_ready(receipt_obj)
+                    else:
+                        rec_errors = receipt_obj.validate()
                     for re in rec_errors:
                         errors.append(f"{rec_field}: {re}")
                     # WP-H: a synthetic receipt can never bind real Cloud

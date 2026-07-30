@@ -117,7 +117,17 @@ _EXPOSURE_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"secret=\S+", re.IGNORECASE), "exposed secret value"),
     (re.compile(r"api[_-]?key[=:]\s*\S+", re.IGNORECASE), "exposed API key"),
     (re.compile(r"(?<![\w-])token=\S+", re.IGNORECASE), "exposed token value"),
+    # A raw Hugging Face token literal is self-evidently a secret regardless
+    # of what flag (if any) precedes it in the command string.
+    (re.compile(r"\bhf_[A-Za-z0-9]{16,}\b"), "raw Hugging Face token literal"),
 )
+
+# "--name value" (space-separated, not "--name=value") is the one form the
+# assignment-style patterns above can't express as a fixed regex, since
+# "name" varies. Reuses _name_is_sensitive so compound flags like
+# "--token-state" or "--token-present-run" are correctly left unflagged —
+# the same rule sanitise_command() uses to decide what to redact.
+_SPACE_SEPARATED_RE = re.compile(r"(--?[A-Za-z0-9][A-Za-z0-9_-]*)\s+(\S+)")
 
 
 def contains_exposed_secret(text: str) -> str | None:
@@ -137,4 +147,11 @@ def contains_exposed_secret(text: str) -> str | None:
             if any(allowed in window for allowed in _ALLOWED_EXPOSURE_SUBSTRINGS):
                 continue
             return description
+    for match in _SPACE_SEPARATED_RE.finditer(text):
+        name, value = match.group(1), match.group(2)
+        if not _name_is_sensitive(name):
+            continue
+        if value == REDACTED_MARKER:
+            continue
+        return f"exposed {name.lstrip('-')} value"
     return None
