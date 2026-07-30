@@ -16,6 +16,8 @@ from src.storage_policy import (
     assert_d_drive_preflight,
 )
 
+skip_unless_win32 = pytest.mark.skipif(sys.platform != "win32", reason="D-drive policy is Windows-specific")
+
 
 class TestStoragePolicy:
     def test_local_root_is_d_drive(self):
@@ -29,36 +31,49 @@ class TestStoragePolicy:
         for var, val in REQUIRED_ENV_VARS.items():
             assert val.startswith(LOCAL_ROOT), f"{var}={val} not under {LOCAL_ROOT}"
 
+    # ── D-drive validation tests (Windows-only logic) ─────────────────
+
+    @skip_unless_win32
     def test_is_valid_storage_root_accepts_d_local_root(self):
         assert is_valid_storage_root(LOCAL_ROOT) is True
 
+    @skip_unless_win32
     def test_is_valid_storage_root_accepts_d_local_root_descendant(self):
         assert is_valid_storage_root(r"D:\Forecasting-Tool-Local\venv") is True
 
+    @skip_unless_win32
     def test_is_valid_storage_root_rejects_c_drive(self):
         assert is_valid_storage_root(r"C:\Forecasting-Tool-Local") is False
 
+    @skip_unless_win32
     def test_is_valid_storage_root_rejects_other_drive(self):
         assert is_valid_storage_root(r"E:\Forecasting-Tool-Local") is False
 
+    @skip_unless_win32
     def test_is_valid_storage_root_rejects_unc_path(self):
         assert is_valid_storage_root(r"\\server\share\Forecasting-Tool-Local") is False
 
+    @skip_unless_win32
     def test_is_valid_storage_root_rejects_relative_path(self):
         assert is_valid_storage_root("relative\\path") is False
 
+    @skip_unless_win32
     def test_is_valid_storage_root_rejects_empty(self):
         assert is_valid_storage_root("") is False
 
+    @skip_unless_win32
     def test_is_under_local_root_accepts_root(self):
         assert is_under_local_root(LOCAL_ROOT) is True
 
+    @skip_unless_win32
     def test_is_under_local_root_accepts_descendant(self):
         assert is_under_local_root(r"D:\Forecasting-Tool-Local\cache") is True
 
+    @skip_unless_win32
     def test_is_under_local_root_rejects_c_drive(self):
         assert is_under_local_root(r"C:\Windows") is False
 
+    @skip_unless_win32
     def test_is_under_local_root_rejects_d_other_path(self):
         assert is_under_local_root(r"D:\Other") is False
 
