@@ -125,9 +125,11 @@ def is_under_local_root(path: str) -> bool:
     """Return True if *path* is under the approved local root."""
     if not is_valid_storage_root(path):
         return False
-    norm_path = os.path.normpath(path)
-    norm_root = os.path.normpath(LOCAL_ROOT)
-    return norm_path.startswith(norm_root + os.sep) or norm_path == norm_root
+    # Normalise to a common format: replace all backslashes with forward slashes
+    # for cross-platform comparison (os.sep differs: '\\' on Windows, '/' on Linux)
+    norm_path = os.path.normpath(path).replace("\\", "/")
+    norm_root = os.path.normpath(LOCAL_ROOT).replace("\\", "/")
+    return norm_path.startswith(norm_root + "/") or norm_path == norm_root
 
 
 def is_windows_platform() -> bool:
