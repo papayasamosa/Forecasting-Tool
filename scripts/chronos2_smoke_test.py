@@ -104,10 +104,11 @@ def run_smoke_test(
     _started = datetime.now(timezone.utc)
     _run_id = str(uuid.uuid4())
 
-    # Cache preflight (WP5): inspect HF cache before the run
-    from src.telemetry import inspect_hf_cache
-    cache_preflight = inspect_hf_cache(MODEL_REVISION)
-    if initial_cache_state == "download_cold" and cache_preflight.get("snapshot_present", False):
+    # WP1: Cache inspection before the run
+    from src.telemetry import inspect_hf_cache, build_cache_preflight
+    pre_run_inspection = inspect_hf_cache(MODEL_REVISION)
+
+    if initial_cache_state == "download_cold" and pre_run_inspection.get("snapshot_present", False):
         print("  ERROR: --initial-cache-state=download_cold but snapshot is already cached.")
         print(f"    Use a fresh cache directory or --initial-cache-state=process_cold_cached_weights")
         evidence = {
@@ -134,7 +135,7 @@ def run_smoke_test(
         evidence.update(machine_summary())
         evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
         return evidence
-    if initial_cache_state == "process_cold_cached_weights" and not cache_preflight.get("snapshot_present", False):
+    if initial_cache_state == "process_cold_cached_weights" and not pre_run_inspection.get("snapshot_present", False):
         print("  ERROR: --initial-cache-state=process_cold_cached_weights but snapshot is not cached.")
         print(f"    Run with --initial-cache-state=download_cold first.")
         evidence = {
@@ -176,7 +177,7 @@ def run_smoke_test(
         "model_revision": "",
         "hf_token_present": bool(os.environ.get("HF_TOKEN")),
         "cold": {},
-        "cache_preflight": cache_preflight,
+        "cache_preflight": pre_run_inspection,
         "warm": {},
         "package_versions": {},
         "error": "",
@@ -342,11 +343,29 @@ def run_smoke_test(
     for k, v in pkg.items():
         print(f"    {k}: {v}")
 
+    # WP1: Post-run cache inspection and build complete CachePreflight
+    from src.telemetry import build_cache_preflight
+    post_run_inspection = inspect_hf_cache(MODEL_REVISION)
+    evidence["cache_preflight"] = build_cache_preflight(
+        pre_run_inspection, post_run_inspection, initial_cache_state,
+    )
+
     evidence["success"] = True
     evidence["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
     print(f"\n{'=' * 64}")
     print("  Smoke test completed successfully!")
     print("=" * 64)
+
+    # WP2: Validate final evidence recursively before writing
+    from src.evidence_validation import validate_recursive
+    v_errors = validate_recursive(evidence, label="smoke_test")
+    if v_errors:
+        print("\n  Evidence validation errors (preserving partial evidence):")
+        for err in v_errors:
+            print(f"    [FAIL] {err}")
+        evidence["error"] = f"evidence_validation: {'; '.join(v_errors)}"
+        evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
+        return evidence
 
     evidence["evidence_path"] = write_evidence(evidence, evidence_dir, prefix="smoke_test")
     return evidence

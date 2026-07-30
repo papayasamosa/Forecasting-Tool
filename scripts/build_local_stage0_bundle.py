@@ -323,6 +323,45 @@ def _check_revision_consistency(all_data: dict[str, dict[str, Any]]) -> list[str
     return errors
 
 
+def _validate_receipt_binding(
+    receipt_path: str,
+    component_path: str,
+    component_label: str,
+) -> list[str]:
+    """Validate that a receipt matches a component file.
+
+    Checks:
+    - component_sha256 in receipt matches file SHA-256
+    - code_commit in receipt matches file code_commit
+    """
+    errors: list[str] = []
+    try:
+        receipt_data = _load_json(receipt_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"{component_label}_receipt: could not load '{receipt_path}': {exc}")
+        return errors
+
+    if not isinstance(receipt_data, dict):
+        errors.append(f"{component_label}_receipt: root must be a JSON object")
+        return errors
+
+    # Load the component file to compute its SHA-256
+    try:
+        actual_sha = _sha256_file(component_path)
+    except OSError as exc:
+        errors.append(f"{component_label}_receipt: could not hash component '{component_path}': {exc}")
+        return errors
+
+    receipt_sha = receipt_data.get("component_sha256", "")
+    if receipt_sha and receipt_sha != actual_sha:
+        errors.append(
+            f"{component_label}_receipt: component_sha256 '{receipt_sha}' "
+            f"!= actual '{actual_sha}'"
+        )
+
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build a validated local Stage 0 evidence bundle",
@@ -332,6 +371,11 @@ def main() -> int:
     parser.add_argument("--benchmark", required=True, help="Benchmark suite JSON")
     parser.add_argument("--token-present-smoke", required=True, help="Token-present smoke JSON")
     parser.add_argument("--model-artifact", required=True, help="Model artifact JSON")
+    parser.add_argument("--download-cold-smoke-receipt", default="", help="Receipt for download-cold smoke")
+    parser.add_argument("--process-cold-smoke-receipt", default="", help="Receipt for process-cold smoke")
+    parser.add_argument("--benchmark-receipt", default="", help="Receipt for benchmark")
+    parser.add_argument("--token-present-smoke-receipt", default="", help="Receipt for token-present smoke")
+    parser.add_argument("--model-artifact-receipt", default="", help="Receipt for model artifact")
     parser.add_argument("--output", default="", help="Output path (default: stdout)")
     args = parser.parse_args()
 
@@ -381,12 +425,37 @@ def main() -> int:
         args.process_cold_smoke, args.token_present_smoke, pc_smoke, tp_smoke,
     ))
 
-    # Smoke must succeed
-    bundle_passed = len(all_errors) == 0 and all(
-        isinstance(c, dict) and c.get("success", False) if c.get("evidence_type") == "smoke_test" else True
-        for c in [dc_smoke, pc_smoke, benchmark, tp_smoke]
+    # WP6: Validate receipt bindings
+    receipt_args = [
+        ("download_cold_smoke", args.download_cold_smoke_receipt, args.download_cold_smoke),
+        ("process_cold_smoke", args.process_cold_smoke_receipt, args.process_cold_smoke),
+        ("benchmark", args.benchmark_receipt, args.benchmark),
+        ("token_present_smoke", args.token_present_smoke_receipt, args.token_present_smoke),
+        ("model_artifact", args.model_artifact_receipt, args.model_artifact),
+    ]
+    receipts: dict[str, Any] = {}
+    for label, receipt_path, component_path in receipt_args:
+        if receipt_path:
+            r_errors = _validate_receipt_binding(receipt_path, component_path, label)
+            all_errors.extend(r_errors)
+            if not r_errors:
+                receipts[label] = _load_json(receipt_path)
+        else:
+            receipts[label] = None
+
+    # WP7: Explicitly require all smoke runs successful and benchmark.suite_passed == true
+    smoke_success = all(
+        isinstance(c, dict) and c.get("evidence_type") == "smoke_test" and c.get("success", False)
+        for c in [dc_smoke, pc_smoke, tp_smoke]
         if isinstance(c, dict)
     )
+    benchmark_passed = isinstance(benchmark, dict) and benchmark.get("suite_passed", False)
+    bundle_passed = len(all_errors) == 0 and smoke_success and benchmark_passed
+
+    if not smoke_success:
+        all_errors.append("bundle: not all smoke runs are successful")
+    if not benchmark_passed:
+        all_errors.append("bundle: benchmark.suite_passed is false")
 
     if all_errors:
         print("Bundle validation errors:")
@@ -396,6 +465,8 @@ def main() -> int:
 
     # Build bundle
     started_utc = datetime.now(timezone.utc).isoformat()
+    # Only include non-None receipts
+    bundle_receipts = {k: v for k, v in receipts.items() if v is not None}
     bundle = {
         "evidence_schema_version": "2",
         "evidence_type": "local_stage0_bundle",
@@ -412,9 +483,18 @@ def main() -> int:
             "token_present_smoke": tp_smoke,
         },
         "model_artifact": model_art,
+        "receipts": bundle_receipts if bundle_receipts else {},
     }
 
     bundle["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+    # WP7: Recursively validate the final assembled bundle before writing
+    final_errors = validate_recursive(bundle, label="local_stage0_bundle")
+    if final_errors:
+        print("Final bundle recursive validation errors:")
+        for err in final_errors:
+            print(f"  [FAIL] {err}")
+        return 1
 
     output = args.output
     if output:

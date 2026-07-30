@@ -770,25 +770,31 @@ def run_benchmarks(
     json_path = os.path.join(output_dir, f"benchmark_{timestamp}.json")
     md_path = os.path.join(output_dir, f"benchmark_{timestamp}.md")
 
-    # Compute suite-level fields (WP8)
+    # Compute suite-level fields (WP8 + WP3)
+    from src.config import MODEL_REVISION as CONFIGURED_REVISION
     resolved_revision = ""
     pipeline_construction_count = 0
     peak_rss_mb = 0.0
     if all_results:
         # Use first scenario's model_revision as suite resolved_revision
         resolved_revision = all_results[0].model_revision or ""
-        # Pipeline construction count from cold sample
+        # WP3: Use measured pipeline construction count — do NOT default to 1
         for r in all_results:
             for s in r.samples:
-                if s.label == "cold_forecast" and s.success:
+                # Track the actual pipeline construction count from the adapter
+                if s.pipeline_call_count > 0:
                     pipeline_construction_count = max(pipeline_construction_count, s.pipeline_call_count)
                 peak_rss_mb = max(peak_rss_mb, s.peak_rss_mb)
-        if pipeline_construction_count == 0:
-            pipeline_construction_count = 1  # real model always constructs once
 
-    # Compute cache preflight evidence
-    from src.telemetry import inspect_hf_cache
-    cache_preflight = inspect_hf_cache(CONFIGURED_REVISION)
+    # WP1 + WP3: Cache inspection before and after scenarios
+    from src.telemetry import inspect_hf_cache, build_cache_preflight
+    pre_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
+
+    # WP3: Post-run cache inspection and build complete CachePreflight
+    post_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
+    cache_preflight = build_cache_preflight(
+        pre_run_inspection, post_run_inspection, initial_cache_state,
+    )
 
     _write_json(all_results, json_path, suite_passed=suite_ok,
                 initial_cache_state=initial_cache_state,

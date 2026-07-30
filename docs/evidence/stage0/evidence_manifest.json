@@ -39,5 +39,5 @@
       "notes": "Populate after Community Cloud deployment (Gate C)."
     }
   },
-  "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand."
+  "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand. Cloud evidence is built via scripts/build_cloud_stage0_evidence.py."
 }

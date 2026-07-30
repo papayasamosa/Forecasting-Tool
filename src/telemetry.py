@@ -12,7 +12,9 @@ import subprocess
 import sys
 import time
 import threading
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -129,6 +131,88 @@ def cpu_info() -> str:
         return f"{psutil.cpu_count()} logical cores"
     except ImportError:
         return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Receipt writer
+# ---------------------------------------------------------------------------
+
+
+def write_execution_receipt(
+    component_path: str,
+    sanitised_command: str,
+    model_id: str = "",
+    configured_revision: str = "",
+    resolved_revision: str = "",
+    evidence_dir: str = "",
+    attestation_type: str = "operator_attested",
+) -> dict[str, Any]:
+    """Write an ``ExecutionReceipt`` for a completed component file.
+
+    Parameters
+    ----------
+    component_path : str
+        Path to the final component evidence file.
+    sanitised_command : str
+        The command that produced the component.
+    model_id : str
+        Model identifier (e.g. ``amazon/chronos-2``).
+    configured_revision : str
+        Pinned model revision.
+    resolved_revision : str
+        Resolved model revision.
+    evidence_dir : str
+        Directory for the receipt JSON output.
+    attestation_type : str
+        ``github_attestation`` or ``operator_attested``.
+
+    Returns
+    -------
+    dict
+        The receipt dict, also written to ``<evidence_dir>/<prefix>_receipt.json``.
+    """
+    from src.evidence_schemas import ExecutionReceipt
+    import hashlib
+
+    # Compute component SHA-256
+    component_sha256 = ""
+    try:
+        h = hashlib.sha256()
+        with open(component_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        component_sha256 = h.hexdigest()
+    except OSError:
+        component_sha256 = ""
+
+    # Capture traceability
+    trace = capture_traceability()
+
+    started = datetime.now(timezone.utc)
+    receipt = ExecutionReceipt(
+        execution_id=str(uuid.uuid4()),
+        attestation_type=attestation_type,
+        code_commit=trace.get("code_commit", ""),
+        producer_version="1.0",
+        sanitised_command=sanitised_command,
+        started_at_utc=started.isoformat(),
+        completed_at_utc=started.isoformat(),
+        component_sha256=component_sha256,
+        model_id=model_id,
+        configured_revision=configured_revision,
+        resolved_revision=resolved_revision,
+        environment_summary=f"python={sys.version.split()[0]} os={sys.platform}",
+        immutable_artifact_reference="",
+    )
+
+    receipt_dict = receipt.to_dict()
+    if evidence_dir:
+        receipt_path = write_evidence(
+            receipt_dict, evidence_dir, prefix=f"{Path(component_path).stem}_receipt"
+        )
+        receipt_dict["evidence_path"] = receipt_path
+
+    return receipt_dict
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +409,61 @@ def machine_summary() -> dict[str, Any]:
     return result
 
 
+def build_cache_preflight(
+    pre_run_inspection: dict[str, Any],
+    post_run_inspection: dict[str, Any],
+    initial_cache_state: str,
+) -> dict[str, Any]:
+    """Build a ``CachePreflight`` dict from pre/post cache inspections.
+
+    Parameters
+    ----------
+    pre_run_inspection : dict
+        Result of ``inspect_hf_cache()`` before the run.
+    post_run_inspection : dict
+        Result of ``inspect_hf_cache()`` after the run.
+    initial_cache_state : str
+        One of ``download_cold`` or ``process_cold_cached_weights``.
+
+    Returns
+    -------
+    dict
+        A ``CachePreflight``-compatible dict with all required fields.
+    """
+    pre_succeeded = pre_run_inspection.get("inspection_succeeded", False)
+    post_succeeded = post_run_inspection.get("inspection_succeeded", False)
+    cache_source = pre_run_inspection.get("cache_source", "")
+
+    # Require consistent cache source
+    post_source = post_run_inspection.get("cache_source", "")
+    if cache_source and post_source and cache_source != post_source:
+        return {
+            "inspection_succeeded": False,
+            "cache_source": cache_source,
+            "initial_cache_state": initial_cache_state,
+            "snapshot_present": pre_run_inspection.get("snapshot_present", False),
+            "file_count": pre_run_inspection.get("file_count", 0),
+            "total_bytes": pre_run_inspection.get("total_bytes", 0),
+            "post_run_snapshot_present": post_run_inspection.get("snapshot_present", False),
+            "post_run_file_count": post_run_inspection.get("file_count", 0),
+            "post_run_total_bytes": post_run_inspection.get("total_bytes", 0),
+            "error": f"cache_source mismatch: pre='{cache_source}', post='{post_source}'",
+        }
+
+    return {
+        "inspection_succeeded": pre_succeeded and post_succeeded,
+        "cache_source": cache_source,
+        "initial_cache_state": initial_cache_state,
+        "snapshot_present": pre_run_inspection.get("snapshot_present", False),
+        "file_count": pre_run_inspection.get("file_count", 0),
+        "total_bytes": pre_run_inspection.get("total_bytes", 0),
+        "post_run_snapshot_present": post_run_inspection.get("snapshot_present", False),
+        "post_run_file_count": post_run_inspection.get("file_count", 0),
+        "post_run_total_bytes": post_run_inspection.get("total_bytes", 0),
+        "error": "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Cache-state verification helpers (WP5)
 # ---------------------------------------------------------------------------
@@ -400,10 +539,12 @@ def inspect_hf_cache(
     Does not return personal paths.
     """
     result: dict[str, Any] = {
+        "inspection_succeeded": False,
         "snapshot_present": False,
         "file_count": 0,
         "total_bytes": 0,
         "cache_source": "",
+        "error_code": "",
         "error": "",
     }
     try:
@@ -412,6 +553,7 @@ def inspect_hf_cache(
         result["cache_source"] = cache_source
         if not hub_cache or not os.path.isdir(hub_cache):
             result["error"] = "HF_HUB_CACHE not found"
+            result["error_code"] = "CACHE_DIR_NOT_FOUND"
             return result
 
         model_dir = os.path.join(
@@ -422,6 +564,7 @@ def inspect_hf_cache(
         )
         if os.path.isdir(model_dir):
             result["snapshot_present"] = True
+            result["inspection_succeeded"] = True
             total_bytes = 0
             file_count = 0
             for dirpath, _dirnames, filenames in os.walk(model_dir):
@@ -436,8 +579,12 @@ def inspect_hf_cache(
             result["total_bytes"] = total_bytes
         else:
             result["snapshot_present"] = False
+            result["inspection_succeeded"] = True
+            # Expected absence for download_cold is not a failure
+            result["error_code"] = "SNAPSHOT_NOT_FOUND"
             result["error"] = f"snapshot for revision '{configured_revision}' not found"
     except Exception as exc:
         result["error"] = f"cache inspection failed: {exc}"
+        result["error_code"] = "INSPECTION_FAILED"
 
     return result

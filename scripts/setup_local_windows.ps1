@@ -4,10 +4,11 @@
 .DESCRIPTION
     Creates D:\Forecasting-Tool-Local with venv, caches, temp, and installs all
     dependencies.  Requires Python 3.12.
+    All installation, cache, and runtime paths use D: drive exclusively.
 .PARAMETER LocalRoot
     Root directory for all local artefacts. Default: D:\Forecasting-Tool-Local
 .PARAMETER PythonPath
-    Full path to the Python 3.12 executable. If omitted, uses the Python launcher (py -3.12).
+    Full path to the Python 3.12 executable. If omitted, discovers or downloads.
 #>
 
 param(
@@ -36,9 +37,64 @@ if (-not (Test-Path $driveRoot)) {
     exit 1
 }
 
-# ---- Step 2: Find Python 3.12 -----------------------------------------------
+# ---- Step 2: Preflight — require repository under D:\Forecasting-Tool-Local\repo ----
+$expectedRepoPath = "$LocalRoot\repo"
+$resolvedRepoExpected = [System.IO.Path]::GetFullPath($expectedRepoPath)
+$resolvedRepoActual = [System.IO.Path]::GetFullPath($repoRoot)
+if ($resolvedRepoActual -ne $resolvedRepoExpected) {
+    Write-Error @"
+Repository must be at '$expectedRepoPath'.
+Current location: '$repoRoot'
+Clone or move the repository to:
+  git clone https://github.com/papayasamosa/Forecasting-Tool.git "$expectedRepoPath"
+Then re-run this script from that location.
+"@
+    exit 1
+}
+
+# ---- Step 3: Create ALL required directories (must match storage_policy) ----
+$dirs = @(
+    "$LocalRoot\repo",
+    "$LocalRoot\python312",
+    "$LocalRoot\installers",
+    "$LocalRoot\downloads",
+    "$LocalRoot\venv",
+    "$LocalRoot\cache",
+    "$LocalRoot\cache\pip",
+    "$LocalRoot\cache\huggingface",
+    "$LocalRoot\cache\huggingface\hub",
+    "$LocalRoot\cache\huggingface\xet",
+    "$LocalRoot\cache\transformers",
+    "$LocalRoot\cache\torch",
+    "$LocalRoot\cache\pycache",
+    "$LocalRoot\cache\npm",
+    "$LocalRoot\cache\npm-prefix",
+    "$LocalRoot\cache\uv",
+    "$LocalRoot\cache\uv-tools",
+    "$LocalRoot\cache\playwright",
+    "$LocalRoot\cache\matplotlib",
+    "$LocalRoot\cache\ruff",
+    "$LocalRoot\temp",
+    "$LocalRoot\temp\pytest",
+    "$LocalRoot\test-output",
+    "$LocalRoot\benchmarks",
+    "$LocalRoot\evidence-work",
+    "$LocalRoot\logs"
+)
+foreach ($d in $dirs) {
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+}
+Write-Host "All required directories created under $LocalRoot"
+
+# ---- Step 4: Find or download Python 3.12 (D: drive) ------------------------
+$pythonInstallDir = "$LocalRoot\python312"
+$installersDir = "$LocalRoot\installers"
+
 if ($PythonPath -and (Test-Path $PythonPath)) {
     $pythonCmd = $PythonPath
+}
+elseif (Test-Path "$pythonInstallDir\python.exe") {
+    $pythonCmd = "$pythonInstallDir\python.exe"
 }
 else {
     # Try the Python launcher first
@@ -62,17 +118,34 @@ else {
 }
 
 if (-not $pythonCmd) {
-    Write-Error @"
-Python 3.12 is required but not found.
-Install Python 3.12 from https://www.python.org/downloads/
-Make sure to check "Add Python to PATH" during installation.
-"@
-    exit 1
+    Write-Host "Python 3.12 not found. Downloading to D: drive installer cache..."
+    $installerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+    $installerPath = "$installersDir\python-3.12.10-amd64.exe"
+    
+    if (-not (Test-Path $installerPath)) {
+        # Use a download approach that works without external tools
+        $webClient = New-Object System.Net.WebClient
+        Write-Host "  Downloading from $installerUrl ..."
+        $webClient.DownloadFile($installerUrl, $installerPath)
+    }
+    
+    Write-Host "Installing Python 3.12 to $pythonInstallDir (D: drive)..."
+    $installArgs = "/quiet InstallAllUsers=0 TargetDir=`"$pythonInstallDir`" Include_launcher=0 Include_test=0"
+    $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        Write-Error "Python installer failed with exit code $($process.ExitCode)."
+        Write-Error "Try installing manually from https://www.python.org/downloads/ to: $pythonInstallDir"
+        exit 1
+    }
+    $pythonCmd = "$pythonInstallDir\python.exe"
+    if (-not (Test-Path $pythonCmd)) {
+        Write-Error "Python installation completed but python.exe not found at $pythonCmd"
+        exit 1
+    }
+    Write-Host "Python 3.12 installed to D: drive."
 }
 
-# Report the resolved Python version. Keep the launcher and its argument as
-# separate tokens -- PowerShell's & operator treats a quoted string as a
-# single executable name, so "py -3.12" as one string is not invokable.
+# Report the resolved Python version
 if ($pythonCmd -match "py(\.exe)?$") {
     Write-Host "Using Python: $pythonCmd -3.12"
     $pyVer = & $pythonCmd -3.12 --version 2>&1
@@ -83,25 +156,7 @@ else {
 }
 Write-Host "Version: $pyVer"
 
-# ---- Step 3: Create directory structure -------------------------------------
-$dirs = @(
-    "$LocalRoot\venv",
-    "$LocalRoot\cache\pip",
-    "$LocalRoot\cache\huggingface",
-    "$LocalRoot\cache\huggingface\hub",
-    "$LocalRoot\cache\huggingface\xet",
-    "$LocalRoot\cache\transformers",
-    "$LocalRoot\cache\torch",
-    "$LocalRoot\temp",
-    "$LocalRoot\test-output",
-    "$LocalRoot\benchmarks"
-)
-foreach ($d in $dirs) {
-    New-Item -ItemType Directory -Force -Path $d | Out-Null
-}
-Write-Host "Directories created under $LocalRoot"
-
-# ---- Step 4: Set environment variables --------------------------------------
+# ---- Step 5: Set ALL required environment variables (match storage_policy) ----
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
@@ -112,10 +167,20 @@ $env:TRANSFORMERS_CACHE = "$LocalRoot\cache\transformers"
 $env:TORCH_HOME = "$LocalRoot\cache\torch"
 $env:TMP = "$LocalRoot\temp"
 $env:TEMP = "$LocalRoot\temp"
+$env:PYTHONPYCACHEPREFIX = "$LocalRoot\cache\pycache"
+$env:XDG_CACHE_HOME = "$LocalRoot\cache"
+$env:NPM_CONFIG_CACHE = "$LocalRoot\cache\npm"
+$env:NPM_CONFIG_PREFIX = "$LocalRoot\cache\npm-prefix"
+$env:UV_CACHE_DIR = "$LocalRoot\cache\uv"
+$env:UV_TOOL_DIR = "$LocalRoot\cache\uv-tools"
+$env:UV_PYTHON_INSTALL_DIR = "$LocalRoot\python312"
+$env:PLAYWRIGHT_BROWSERS_PATH = "$LocalRoot\cache\playwright"
+$env:MPLCONFIGDIR = "$LocalRoot\cache\matplotlib"
+$env:RUFF_CACHE_DIR = "$LocalRoot\cache\ruff"
 
-Write-Host "Environment variables set (all point to D: drive)"
+Write-Host "All environment variables set to D: drive (matching storage_policy)"
 
-# ---- Step 5: Create virtual environment -------------------------------------
+# ---- Step 6: Create virtual environment -------------------------------------
 if (-not (Test-Path "$LocalRoot\venv\Scripts\python.exe")) {
     Write-Host "Creating virtual environment..."
     if ($pythonCmd -match "py(\.exe)?$") {
@@ -131,27 +196,27 @@ if (-not (Test-Path "$LocalRoot\venv\Scripts\python.exe")) {
 
 $venvPython = "$LocalRoot\venv\Scripts\python.exe"
 
-# ---- Step 6: Upgrade pip ----------------------------------------------------
+# ---- Step 7: Upgrade pip ----------------------------------------------------
 Write-Host "Upgrading pip..."
 & $venvPython -m pip install --upgrade pip -q
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# ---- Step 7: Install PyTorch (CPU) ------------------------------------------
+# ---- Step 8: Install PyTorch (CPU) ------------------------------------------
 Write-Host "Installing PyTorch (CPU)..."
 & $venvPython -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# ---- Step 8: Install runtime dependencies -----------------------------------
+# ---- Step 9: Install runtime dependencies -----------------------------------
 Write-Host "Installing runtime dependencies..."
 & $venvPython -m pip install -r "$repoRoot\requirements.txt"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# ---- Step 9: Install dev dependencies ---------------------------------------
+# ---- Step 10: Install dev dependencies --------------------------------------
 Write-Host "Installing development dependencies..."
 & $venvPython -m pip install -r "$repoRoot\requirements-dev.txt"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# ---- Step 10: Verify environment --------------------------------------------
+# ---- Step 11: Verify environment --------------------------------------------
 Write-Host "`nVerifying environment..."
 & $venvPython "$repoRoot\scripts\verify_environment.py"
 if ($LASTEXITCODE -ne 0) {

@@ -239,7 +239,7 @@ def main() -> int:
         required=True,
         choices=[
             "smoke_test", "benchmark_suite", "model_artifact",
-            "local_stage0_bundle", "cloud_stage0",
+            "local_stage0_bundle", "cloud_stage0", "execution_receipt",
         ],
         help="Evidence type matching the evidence_type field in the JSON",
     )

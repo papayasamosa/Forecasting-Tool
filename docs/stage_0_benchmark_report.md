@@ -1,10 +1,12 @@
 # Stage 0 Benchmark Report
 
 **Generated:** 29 July 2026  
-**Status:** ⏳ Prior local evidence exists but was collected before PR #7
-evidence-integrity closure.  A current-head rerun is required after the
-post-evidence repair PR (A7) is merged.  See `docs/evidence/stage0/` for
-the sanitised evidence layout.
+**Status:** ⏳ Prior local evidence exists but was collected before the
+evidence-integrity closure.  A current-head rerun is required after this
+producer-parity PR is merged and post-merge CI is verified. This report is
+informational — it describes historical feasibility, not valid current-head
+release evidence. See `docs/evidence/stage0/` for the sanitised evidence
+layout and the evidence manifest for the invalidation status of each entry.
 
 ## Environment
 

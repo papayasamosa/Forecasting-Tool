@@ -30,6 +30,7 @@ from src.evidence_schemas import (
     CACHE_STATE_PROCESS_COLD,
     CACHE_STATE_WARM,
     CACHE_STATE_AGGREGATE,
+    CachePreflight,
 )
 
 
@@ -203,6 +204,44 @@ def _valid_model_artifact_dict(overrides: dict | None = None) -> dict:
 # ---------------------------------------------------------------------------
 # SmokeEvidence tests
 # ---------------------------------------------------------------------------
+
+
+class TestCachePreflightValidation:
+    def test_cache_preflight_missing_source(self):
+        cp = CachePreflight(inspection_succeeded=True, initial_cache_state="download_cold")
+        errors = cp.validate()
+        assert any("cache_source" in e for e in errors)
+
+    def test_cache_preflight_invalid_source(self):
+        cp = CachePreflight(
+            inspection_succeeded=True, cache_source="invalid",
+            initial_cache_state="download_cold",
+        )
+        errors = cp.validate()
+        assert any("cache_source" in e for e in errors)
+
+    def test_cache_preflight_invalid_initial_state(self):
+        cp = CachePreflight(
+            inspection_succeeded=True, cache_source="explicit",
+            initial_cache_state="invalid",
+        )
+        errors = cp.validate()
+        assert any("initial_cache_state" in e for e in errors)
+
+    def test_cache_preflight_inspection_failed(self):
+        cp = CachePreflight(inspection_succeeded=False)
+        errors = cp.validate()
+        assert any("inspection_succeeded" in e for e in errors)
+
+    def test_cache_preflight_process_cold_no_snapshot(self):
+        cp = CachePreflight(
+            inspection_succeeded=True,
+            cache_source="explicit",
+            initial_cache_state="process_cold_cached_weights",
+            snapshot_present=False,
+        )
+        errors = cp.validate()
+        assert any("process_cold" in e for e in errors)
 
 
 class TestSmokeEvidenceValidation:
@@ -660,10 +699,12 @@ class TestCloudEvidenceValidation:
                 "rss_mb": 600.0,
             },
             "cold_peak_rss_mb": 800.0,
-            "warm_rss_mb": 600.0,
             "process_peak_rss_mb": 850.0,
+            "dependency_resolver": "pip",
+            "resource_limit_exceeded": False,
+            "app_restart_occurred": False,
             "concurrent_users": 2,
-            "timeout_result": "CoordinatorTimeoutError",
+            "timeout_result": "no_timeout",
             "concurrency_requests": [
                 {"request_id": "req1", "start_time_utc": "2026-07-29T00:00:00",
                  "inference_start_utc": "2026-07-29T00:00:00",
@@ -796,6 +837,258 @@ class TestCloudEvidenceValidation:
         ev = evidence_from_dict(data)
         errors = ev.validate()
         assert any("revision mismatch" in e for e in errors)
+
+
+    def test_resource_limit_exceeded_rejected(self):
+        """Successful Cloud evidence must fail when resource_limit_exceeded is true."""
+        data = self._valid_cloud_dict({"resource_limit_exceeded": True})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("resource_limit_exceeded" in e for e in errors)
+
+    def test_dependency_resolver_required(self):
+        """Successful Cloud evidence must have non-empty dependency_resolver."""
+        data = self._valid_cloud_dict({"dependency_resolver": ""})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("dependency_resolver" in e for e in errors)
+
+    def test_app_restart_occurred_rejected(self):
+        """Successful Cloud evidence must fail when app_restart_occurred is true."""
+        data = self._valid_cloud_dict({"app_restart_occurred": True})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("app_restart_occurred" in e for e in errors)
+
+    def test_timeout_result_semantics(self):
+        """Timeout result must be a valid value."""
+        data = self._valid_cloud_dict({"timeout_result": "invalid_value"})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("timeout_result" in e for e in errors)
+
+    def test_timeout_occurred_requires_error(self):
+        """timeout_occurred without recovery error must fail."""
+        data = self._valid_cloud_dict({
+            "timeout_result": "timeout_occurred",
+            "error": "",
+        })
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("timeout_occurred" in e for e in errors)
+
+    def test_empty_dependency_resolver_rejected(self):
+        data = self._valid_cloud_dict({"dependency_resolver": ""})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("dependency_resolver" in e for e in errors)
+
+    def test_app_restart_occurred_rejected(self):
+        data = self._valid_cloud_dict({"app_restart_occurred": True})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("app_restart_occurred" in e for e in errors)
+
+    def test_success_false_rejected(self):
+        data = self._valid_cloud_dict({"success": False})
+        ev = evidence_from_dict(data)
+        errors = ev.validate()
+        assert any("success" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Execution receipt tests (WP5)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionReceiptValidation:
+    def test_valid_receipt_passes(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="python scripts/chronos2_smoke_test.py --initial-cache-state download_cold",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+            environment_summary="python=3.12 os=win32",
+        )
+        errors = receipt.validate()
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_receipt_requires_evidence_type(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(execution_id="exec-1", attestation_type="operator_attested")
+        assert receipt.evidence_type == "execution_receipt"
+        assert receipt.evidence_schema_version == EVIDENCE_SCHEMA_VERSION
+
+    def test_receipt_requires_execution_id(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(attestation_type="operator_attested")
+        errors = receipt.validate()
+        assert any("execution_id" in e for e in errors)
+
+    def test_receipt_requires_attestation_type(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(execution_id="exec-1")
+        errors = receipt.validate()
+        assert any("attestation_type" in e for e in errors)
+
+    def test_receipt_requires_producer_version(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+        )
+        errors = receipt.validate()
+        assert any("producer_version" in e for e in errors)
+
+    def test_receipt_invalid_attestation_rejected(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="self_signed",
+        )
+        errors = receipt.validate()
+        assert any("attestation_type" in e for e in errors)
+
+    def test_receipt_ordered_timestamps(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="test",
+            started_at_utc="2026-07-29T00:02:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+        )
+        errors = receipt.validate()
+        assert any("after completed" in e for e in errors)
+
+    def test_receipt_deserialization(self):
+        """ExecutionReceipt must be deserializable through evidence_from_dict."""
+        from src.evidence_schemas import evidence_from_dict
+        data = {
+            "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+            "evidence_type": "execution_receipt",
+            "execution_id": "exec-1",
+            "attestation_type": "operator_attested",
+            "code_commit": "abc123",
+            "producer_version": "1.0",
+            "sanitised_command": "test command",
+            "started_at_utc": "2026-07-29T00:00:00",
+            "completed_at_utc": "2026-07-29T00:01:00",
+            "component_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "model_id": "amazon/chronos-2",
+            "configured_revision": "rev1",
+            "resolved_revision": "rev1",
+        }
+        obj = evidence_from_dict(data)
+        from src.evidence_schemas import ExecutionReceipt
+        assert isinstance(obj, ExecutionReceipt)
+        errors = obj.validate()
+        assert errors == []
+
+    def test_receipt_registered_in_type_map(self):
+        """execution_receipt must be in the evidence type map."""
+        from src.evidence_schemas import _EVIDENCE_TYPE_MAP, ExecutionReceipt
+        assert "execution_receipt" in _EVIDENCE_TYPE_MAP
+        assert _EVIDENCE_TYPE_MAP["execution_receipt"] == ExecutionReceipt
+
+    def test_receipt_recursive_validation(self):
+        """ExecutionReceipt must pass recursive validation."""
+        from src.evidence_validation import validate_recursive
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="test",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+        )
+        errors = validate_recursive(receipt.to_dict(), label="execution_receipt")
+        assert errors == []
+
+    def test_receipt_wrong_schema_version(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(evidence_schema_version="1")
+        errors = receipt.validate()
+        assert any("schema version" in e for e in errors)
+
+    def test_receipt_wrong_evidence_type(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(evidence_type="wrong")
+        errors = receipt.validate()
+        assert any("evidence_type" in e for e in errors)
+
+    def test_receipt_missing_model_id(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="test",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        )
+        errors = receipt.validate()
+        assert any("model_id" in e for e in errors)
+
+    def test_receipt_revision_mismatch(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="test",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev2",
+        )
+        errors = receipt.validate()
+        assert any("rev1" in e and "rev2" in e for e in errors)
+
+    def test_receipt_empty_immutable_reference(self):
+        """immutable_artifact_reference can be empty for operator_attested."""
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt(
+            execution_id="exec-1",
+            attestation_type="operator_attested",
+            code_commit="abc123",
+            producer_version="1.0",
+            sanitised_command="test",
+            started_at_utc="2026-07-29T00:00:00",
+            completed_at_utc="2026-07-29T00:01:00",
+            component_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+        )
+        errors = receipt.validate()
+        assert errors == []
 
 
 # ---------------------------------------------------------------------------

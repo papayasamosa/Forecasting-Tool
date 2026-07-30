@@ -1,3 +1,4 @@
+# pragma: no cover
 """Streamlit page: Methodology — Documentation and references.
 """
 import streamlit as st
