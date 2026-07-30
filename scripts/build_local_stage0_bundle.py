@@ -552,9 +552,12 @@ def main() -> int:
     started_utc = datetime.now(timezone.utc).isoformat()
     # Only include non-None receipts
     bundle_receipts = {k: v for k, v in receipts.items() if v is not None}
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_schemas import EVIDENCE_ORIGIN_REAL
     bundle = {
         "evidence_schema_version": "2",
         "evidence_type": "local_stage0_bundle",
+        "evidence_origin": EVIDENCE_ORIGIN_REAL,
         "bundle_passed": bundle_passed,
         "code_commit": expected_commit,
         "git_worktree_clean": dc_smoke.get("git_worktree_clean", False) if isinstance(dc_smoke, dict) else False,

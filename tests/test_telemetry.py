@@ -207,6 +207,7 @@ class TestWriteExecutionReceipt:
             configured_revision="rev1",
             resolved_revision="rev1",
             evidence_dir=evidence_dir,
+            evidence_origin="real_measurement",
         )
 
         assert receipt["evidence_type"] == "execution_receipt"
@@ -240,6 +241,7 @@ class TestWriteExecutionReceipt:
             sanitised_command="test",
             evidence_dir=str(tmp_path / "r"),
             attestation_type="github_attestation",
+            evidence_origin="real_measurement",
         )
         assert receipt["attestation_type"] == "github_attestation"
 
@@ -272,6 +274,7 @@ class TestWriteExecutionReceipt:
             component_path=str(tmp_path / "nonexistent.json"),
             sanitised_command="test",
             evidence_dir=str(tmp_path / "r2"),
+            evidence_origin="real_measurement",
         )
         assert receipt["component_sha256"] == ""
 
@@ -308,6 +311,7 @@ class TestRunWithReceipt:
         exit_code, receipt = run_with_receipt(
             command=[sys.executable, "-c", "import sys; sys.exit(3)"],
             output_component_path=component_path,
+            evidence_origin="real_measurement",
         )
         assert exit_code == 3
         assert receipt["exit_code"] == 3
@@ -326,6 +330,7 @@ class TestRunWithReceipt:
                 "--hf-token", "hf_realsecretvalue123456",
             ],
             output_component_path=component_path,
+            evidence_origin="real_measurement",
         )
         assert "hf_realsecretvalue123456" not in receipt["sanitised_command"]
         assert contains_exposed_secret(receipt["sanitised_command"]) is None
@@ -340,6 +345,7 @@ class TestRunWithReceipt:
         exit_code, receipt = run_with_receipt(
             command=["HF_TOKEN=hf_realsecretvalue123456", sys.executable, "-c", "pass"],
             output_component_path=component_path,
+            evidence_origin="real_measurement",
         )
         assert "hf_realsecretvalue123456" not in receipt["sanitised_command"]
 

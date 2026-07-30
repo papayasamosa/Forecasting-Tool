@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import MODEL_ID
+from src.evidence_schemas import EVIDENCE_ORIGIN_REAL
 from src.schemas import ForecastMode, ForecastTask
 from src.telemetry import rss_mb, cpu_info, capture_package_versions, capture_traceability, machine_summary
 from src.forecasting.chronos2_adapter import (
@@ -846,6 +847,7 @@ def _write_json(results: list[BenchmarkResult], path: str, *,
     envelope: dict[str, Any] = {
         "evidence_schema_version": "2",
         "evidence_type": "benchmark_suite",
+        "evidence_origin": EVIDENCE_ORIGIN_REAL,
         "suite_passed": suite_passed,
         "code_commit": trace.get("code_commit", ""),
         "git_worktree_clean": trace.get("git_worktree_clean", False),

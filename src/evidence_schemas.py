@@ -355,7 +355,7 @@ class ExecutionReceipt:
     published_file_sha256: str = ""
     canonical_content_sha256: str = ""
     # WP7: Evidence origin
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     model_id: str = ""
     configured_revision: str = ""
     resolved_revision: str = ""
@@ -628,7 +628,7 @@ class SmokeEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "smoke_test"
     # WP7: Evidence origin
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     test: str = "chronos2_smoke_test"
     success: bool = False
     code_commit: str = ""
@@ -850,7 +850,7 @@ class BenchmarkScenarioRecord:
 class BenchmarkSuiteEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "benchmark_suite"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     suite_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -985,7 +985,7 @@ class ModelArtifactFile:
 class ModelArtifactEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "model_artifact"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     code_commit: str = ""
     git_worktree_clean: bool = False
     model_id: str = ""
@@ -1094,7 +1094,7 @@ class ModelArtifactEvidence:
 class LocalStage0Bundle:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "local_stage0_bundle"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     bundle_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -1358,7 +1358,7 @@ class LocalStage0Bundle:
 class CloudEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "cloud_stage0"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     success: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False

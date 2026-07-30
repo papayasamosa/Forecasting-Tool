@@ -105,6 +105,79 @@ def _sanitise_evidence(data: dict[str, Any]) -> dict[str, Any]:
     return _sanitise_value(data)
 
 
+def _sanitisation_is_idempotent(data: dict[str, Any]) -> bool:
+    """Prove sanitising already-sanitised data changes nothing further.
+
+    If a second pass still mutates the data, the first pass's digests/
+    receipt bindings would not describe the bytes actually published.
+    """
+    once = _sanitise_evidence(data)
+    twice = _sanitise_evidence(once)
+    return once == twice
+
+
+def _collect_nested_origins(data: Any, path: str = "root") -> list[tuple[str, Any]]:
+    """Recursively find every ``evidence_origin`` key anywhere in ``data``.
+
+    Used to prove nested receipts/records (e.g. a bundle's ``receipts.*``,
+    or a Cloud record's ``token_*_receipt``/``collection_receipt``) agree
+    with the top-level origin — a synthetic receipt can't be smuggled
+    inside a record claiming ``real_measurement`` at the top level, and
+    omitting the field on a nested record can't relabel it as real.
+    """
+    found: list[tuple[str, Any]] = []
+    if isinstance(data, dict):
+        if "evidence_origin" in data:
+            found.append((path, data.get("evidence_origin")))
+        for key, value in data.items():
+            found.extend(_collect_nested_origins(value, f"{path}.{key}"))
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            found.extend(_collect_nested_origins(item, f"{path}[{i}]"))
+    return found
+
+
+def _check_origin_consistency(raw_data: dict[str, Any]) -> list[str]:
+    """WP-D/WP-H: require an explicit, internally-consistent evidence_origin.
+
+    - The top-level ``evidence_origin`` must be present (no default-to-real)
+      and must be a recognised value.
+    - Every nested record that carries its own ``evidence_origin`` must
+      agree with the top-level value.
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_schemas import VALID_EVIDENCE_ORIGINS
+
+    errors: list[str] = []
+    if "evidence_origin" not in raw_data:
+        errors.append(
+            "evidence_origin: missing — must be set explicitly to "
+            "'real_measurement' or 'synthetic_fixture', it is never "
+            "defaulted"
+        )
+        return errors
+
+    top_origin = raw_data["evidence_origin"]
+    if top_origin not in VALID_EVIDENCE_ORIGINS:
+        errors.append(f"evidence_origin: '{top_origin}' not recognised")
+        return errors
+
+    for path, origin in _collect_nested_origins(raw_data, path="root"):
+        if path == "root":
+            continue
+        if origin is None or origin == "":
+            errors.append(
+                f"{path}.evidence_origin: missing — nested records must "
+                f"set evidence_origin explicitly"
+            )
+        elif origin != top_origin:
+            errors.append(
+                f"{path}.evidence_origin: '{origin}' != top-level "
+                f"'{top_origin}' — parent and nested origins must agree"
+            )
+    return errors
+
+
 def _load_json_file(path: Path) -> Any:
     """Load and parse a JSON file, returning the parsed object."""
     with open(path, encoding="utf-8") as f:
@@ -131,6 +204,33 @@ def _collision_guard_path(dest_dir: Path, prefix: str, suffix: str = ".json") ->
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     rand = f"{random.getrandbits(32):08x}"
     return dest_dir / f"{prefix}_{ts}_{rand}{suffix}"
+
+
+def _write_receipt_files(
+    receipts: dict[str, Any],
+    manifest: dict[str, Any],
+    bound_to: str,
+) -> None:
+    """WP-I: write each receipt as its own real JSON file under the
+    evidence directory and record its actual filename and byte-for-byte
+    SHA-256 in the manifest — never a synthetic ``embedded_in_...``
+    filename that ``verify_evidence_manifest.py`` would fail to resolve.
+    """
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    for rec_key, rec_data in receipts.items():
+        if not isinstance(rec_data, dict) or not rec_data:
+            continue
+        receipt_path = _collision_guard_path(EVIDENCE_DIR, f"evidence_receipt_{rec_key}")
+        with open(receipt_path, "w", encoding="utf-8") as f:
+            json.dump(rec_data, f, indent=2, default=str)
+        rec_sha = _compute_sha256(receipt_path)
+        manifest["files"][f"receipt_{rec_key}"] = {
+            "filename": receipt_path.name,
+            "sha256": rec_sha,
+            "code_commit": rec_data.get("code_commit", ""),
+            "evidence_type": "execution_receipt",
+            "notes": f"Receipt for {rec_key}, bound to {bound_to}",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +329,10 @@ def _validate_and_load(
                 f"code_commit: expected '{expected_code_commit}', got '{actual_cc}'"
             )
 
-    # WP7: Reject synthetic evidence origin for release publication
-    evidence_origin = raw_data.get("evidence_origin", EVIDENCE_ORIGIN_REAL)
+    # WP-D/WP7: evidence_origin must be explicit (never defaulted to real)
+    # and internally consistent with every nested receipt/record.
+    errors.extend(_check_origin_consistency(raw_data))
+    evidence_origin = raw_data.get("evidence_origin", "")
     if evidence_origin == EVIDENCE_ORIGIN_SYNTHETIC:
         errors.append(
             f"evidence_origin is '{EVIDENCE_ORIGIN_SYNTHETIC}' — "
@@ -353,6 +455,37 @@ def main() -> int:
     sanitised = _sanitise_evidence(raw_data)
     print("✅ Evidence sanitised (recursive, all types)")
 
+    # WP-F: sanitisation must never silently break a receipt binding
+    # (a regex substitution could otherwise mutate semantically-validated
+    # content after it was already checked). Prove the sanitiser is
+    # idempotent, then re-run both validators against the SANITISED
+    # object — not the raw one — before anything is written to disk.
+    if not _sanitisation_is_idempotent(raw_data):
+        print("Validation errors:")
+        print("  ❌ sanitisation is not idempotent — a second pass still changes the data")
+        return 1
+
+    post_recursive_errors = validate_recursive(sanitised, label=f"{args.type} (post-sanitisation)")
+    if post_recursive_errors:
+        print("Post-sanitisation validation errors:")
+        for err in post_recursive_errors:
+            print(f"  ❌ {err}")
+        return 1
+
+    _, post_errors = _validate_and_load(
+        sanitised,
+        expected_type=args.type,
+        expected_token_state=expected_token,
+        expected_initial_cache_state=args.initial_cache_state or None,
+        expected_code_commit=args.expected_commit or None,
+    )
+    if post_errors:
+        print("Post-sanitisation validation errors:")
+        for err in post_errors:
+            print(f"  ❌ {err}")
+        return 1
+    print("✅ Post-sanitisation validation passed (idempotent, still binds)")
+
     # Determine type key for manifest
     type_key_map = {
         "smoke_test": "smoke_test",
@@ -386,20 +519,20 @@ def main() -> int:
         "notes": f"Published {datetime.now().strftime('%Y%m%d_%H%M%S')}",
     }
 
-    # WP11: For bundles, also track each receipt file separately in the manifest
+    # WP-I: track each receipt as its own real file in the manifest — never
+    # a synthetic "embedded_in_<bundle>" filename that doesn't exist on disk.
     if args.type == "local_stage0_bundle":
         receipts = sanitised.get("receipts", {})
         if isinstance(receipts, dict):
-            for rec_key, rec_data in receipts.items():
-                if isinstance(rec_data, dict):
-                    rec_sha = rec_data.get("canonical_content_sha256", "") or rec_data.get("component_sha256", "")
-                    manifest["files"][f"receipt_{rec_key}"] = {
-                        "filename": f"embedded_in_{dest_path.name}",
-                        "sha256": rec_sha,
-                        "code_commit": rec_data.get("code_commit", ""),
-                        "evidence_type": "execution_receipt",
-                        "notes": f"Receipt for {rec_key}, bound to bundle {dest_path.name}",
-                    }
+            _write_receipt_files(receipts, manifest, bound_to=dest_path.name)
+    elif args.type == "cloud_stage0":
+        cloud_receipts = {
+            key: sanitised.get(key)
+            for key in ("token_absent_receipt", "token_present_receipt", "collection_receipt")
+        }
+        cloud_receipts = {k: v for k, v in cloud_receipts.items() if isinstance(v, dict) and v}
+        if cloud_receipts:
+            _write_receipt_files(cloud_receipts, manifest, bound_to=dest_path.name)
 
     manifest_tmp = MANIFEST_PATH.with_suffix(".tmp.json")
     try:

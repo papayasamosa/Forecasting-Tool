@@ -45,6 +45,7 @@ from src.telemetry import (  # noqa: E402
     capture_traceability,
     machine_summary,
 )
+from src.evidence_schemas import EVIDENCE_ORIGIN_REAL  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Default evidence output path (platform-aware)
@@ -114,6 +115,7 @@ def run_smoke_test(
         evidence = {
             "evidence_schema_version": "2",
             "evidence_type": "smoke_test",
+            "evidence_origin": EVIDENCE_ORIGIN_REAL,
             "test": "chronos2_smoke_test",
             "timestamp": _started.isoformat(),
             "started_at_utc": _started.isoformat(),
@@ -141,6 +143,7 @@ def run_smoke_test(
         evidence = {
             "evidence_schema_version": "2",
             "evidence_type": "smoke_test",
+            "evidence_origin": EVIDENCE_ORIGIN_REAL,
             "test": "chronos2_smoke_test",
             "timestamp": _started.isoformat(),
             "started_at_utc": _started.isoformat(),
@@ -166,6 +169,7 @@ def run_smoke_test(
     evidence: dict = {
         "evidence_schema_version": "2",
         "evidence_type": "smoke_test",
+        "evidence_origin": EVIDENCE_ORIGIN_REAL,
         "test": "chronos2_smoke_test",
         "timestamp": _started.isoformat(),
         "started_at_utc": _started.isoformat(),
@@ -435,6 +439,7 @@ if __name__ == "__main__":
             "success": False,
             "evidence_schema_version": "2",
             "evidence_type": "smoke_test",
+            "evidence_origin": EVIDENCE_ORIGIN_REAL,
             "failure_phase": "top_level_invocation",
             "error": f"{type(exc).__name__}: {exc}",
             "python_version": sys.version.split()[0],

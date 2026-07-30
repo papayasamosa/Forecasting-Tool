@@ -45,6 +45,7 @@ def _valid_smoke_dict(overrides: dict | None = None) -> dict:
         "evidence_type": "smoke_test",
         "test": "chronos2_smoke_test",
         "code_commit": "abc123",
+        "evidence_origin": "real_measurement",
         "git_worktree_clean": True,
         "success": True,
         "started_at_utc": "2026-07-29T00:00:00",
@@ -120,6 +121,7 @@ def _valid_benchmark_suite_dict(overrides: dict | None = None) -> dict:
         "evidence_type": "benchmark_suite",
         "suite_passed": True,
         "code_commit": "abc123",
+        "evidence_origin": "real_measurement",
         "git_worktree_clean": True,
         "initial_cache_state": "process_cold_cached_weights",
         "started_at_utc": "2026-07-29T00:00:00",
@@ -184,6 +186,7 @@ def _valid_model_artifact_dict(overrides: dict | None = None) -> dict:
         "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
         "evidence_type": "model_artifact",
         "code_commit": "abc123",
+        "evidence_origin": "real_measurement",
         "git_worktree_clean": True,
         "model_id": "amazon/chronos-2",
         "configured_revision": "rev1",
@@ -525,6 +528,7 @@ class TestBundleValidation:
     def test_valid_bundle_passes(self):
         bundle = LocalStage0Bundle(
             code_commit="abc123",
+            evidence_origin="real_measurement",
             git_worktree_clean=True,
             bundle_passed=False,  # No receipts provided, so bundle_passed must be False
             started_at_utc="2026-01-01T00:00:00",
@@ -649,6 +653,7 @@ class TestCloudEvidenceValidation:
             "evidence_type": "cloud_stage0",
             "success": True,
             "code_commit": "abc123",
+            "evidence_origin": "real_measurement",
             "git_worktree_clean": True,
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:05:00",
@@ -772,6 +777,7 @@ class TestCloudEvidenceValidation:
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
+            "evidence_origin": "real_measurement",
         })
         data.setdefault("token_present_receipt", {
             "execution_id": "run-present-1",
@@ -787,6 +793,7 @@ class TestCloudEvidenceValidation:
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
+            "evidence_origin": "real_measurement",
         })
         data.setdefault("collection_receipt", {
             "execution_id": "collection-1",
@@ -802,6 +809,7 @@ class TestCloudEvidenceValidation:
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
+            "evidence_origin": "real_measurement",
         })
         return data
 
@@ -1055,19 +1063,30 @@ class TestSHA256Validation:
 
 
 class TestEvidenceOrigin:
-    def test_smoke_evidence_default_origin(self):
-        from src.evidence_schemas import SmokeEvidence, EVIDENCE_ORIGIN_REAL
-        ev = SmokeEvidence()
-        assert ev.evidence_origin == EVIDENCE_ORIGIN_REAL
+    """WP-D: evidence_origin has no real-default — omitting it must fail
+    validation rather than silently being treated as real_measurement."""
 
-    def test_cloud_evidence_default_origin(self):
-        from src.evidence_schemas import CloudEvidence, EVIDENCE_ORIGIN_REAL
+    def test_smoke_evidence_no_default_origin(self):
+        from src.evidence_schemas import SmokeEvidence
+        ev = SmokeEvidence()
+        assert ev.evidence_origin == ""
+        assert any("evidence_origin" in e for e in ev.validate())
+
+    def test_cloud_evidence_no_default_origin(self):
+        from src.evidence_schemas import CloudEvidence
         ev = CloudEvidence()
-        assert ev.evidence_origin == EVIDENCE_ORIGIN_REAL
+        assert ev.evidence_origin == ""
+        assert any("evidence_origin" in e for e in ev.validate())
+
+    def test_execution_receipt_no_default_origin(self):
+        from src.evidence_schemas import ExecutionReceipt
+        receipt = ExecutionReceipt()
+        assert receipt.evidence_origin == ""
+        assert any("evidence_origin" in e for e in receipt.validate())
 
     def test_bundle_synthetic_origin_accepted_by_schema(self):
         """synthetic_fixture is valid for schema - publisher rejects it."""
-        from src.evidence_schemas import LocalStage0Bundle, EVIDENCE_ORIGIN_SYNTHETIC, EVIDENCE_ORIGIN_REAL
+        from src.evidence_schemas import LocalStage0Bundle, EVIDENCE_ORIGIN_SYNTHETIC
         ev = LocalStage0Bundle(
             evidence_origin=EVIDENCE_ORIGIN_SYNTHETIC,
             code_commit="abc123",
@@ -1077,9 +1096,12 @@ class TestEvidenceOrigin:
         origin_errors = [e for e in errors if "origin" in e.lower()]
         # synthetic_fixture is a valid origin value, so no origin-specific errors
         assert not origin_errors, f"Unexpected origin errors: {origin_errors}"
-        # Verify default is real_measurement
-        ev2 = LocalStage0Bundle()
-        assert ev2.evidence_origin == EVIDENCE_ORIGIN_REAL
+
+    def test_bundle_missing_origin_rejected_by_schema(self):
+        from src.evidence_schemas import LocalStage0Bundle
+        ev = LocalStage0Bundle()
+        assert ev.evidence_origin == ""
+        assert any("evidence_origin" in e for e in ev.validate())
 
 
 class TestReceiptContentBinding:
@@ -1103,6 +1125,7 @@ class TestReceiptContentBinding:
             configured_revision="rev1",
             resolved_revision="rev1",
             environment_summary="python=3.12",
+            evidence_origin="real_measurement",
         )
         assert receipt.validate() == []
 
@@ -1219,6 +1242,7 @@ class TestExecutionReceiptValidation:
             configured_revision="rev1",
             resolved_revision="rev1",
             environment_summary="python=3.12 os=win32",
+            evidence_origin="real_measurement",
         )
         errors = receipt.validate()
         assert errors == [], f"Unexpected errors: {errors}"
@@ -1297,6 +1321,7 @@ class TestExecutionReceiptValidation:
             "resolved_revision": "rev1",
             "exit_code": 0,
             "environment_summary": "python=3.12",
+            "evidence_origin": "real_measurement",
         }
         obj = evidence_from_dict(data)
         from src.evidence_schemas import ExecutionReceipt
@@ -1328,6 +1353,7 @@ class TestExecutionReceiptValidation:
             resolved_revision="rev1",
             exit_code=0,
             environment_summary="python=3.12",
+            evidence_origin="real_measurement",
         )
         errors = validate_recursive(receipt.to_dict(), label="execution_receipt")
         assert errors == []
@@ -1394,6 +1420,7 @@ class TestExecutionReceiptValidation:
             resolved_revision="rev1",
             exit_code=0,
             environment_summary="python=3.12",
+            evidence_origin="real_measurement",
         )
         errors = receipt.validate()
         assert errors == []
@@ -1481,6 +1508,7 @@ class TestModelArtifactFields:
         ev = ModelArtifactEvidence(
             code_commit="abc123",
             git_worktree_clean=True,
+            evidence_origin="real_measurement",
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
@@ -1506,6 +1534,7 @@ class TestModelArtifactFields:
         ev = evidence_from_dict({
             "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
             "evidence_type": "model_artifact",
+            "evidence_origin": "real_measurement",
             "code_commit": "abc123",
             "git_worktree_clean": True,
             "model_id": "amazon/chronos-2",
@@ -1559,6 +1588,7 @@ class TestManifestVerifier:
             valid_bundle = {
                 "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
                 "evidence_type": "local_stage0_bundle",
+                "evidence_origin": "real_measurement",
                 "bundle_passed": False,  # No receipts provided
                 "code_commit": "abc123",
                 "git_worktree_clean": True,
@@ -1722,6 +1752,7 @@ class TestProducerSchemaAlignment:
         data = {
             "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
             "evidence_type": "benchmark_suite",
+            "evidence_origin": "real_measurement",
             "suite_passed": True,
             "code_commit": "abc123",
             "git_worktree_clean": True,
@@ -1860,6 +1891,7 @@ class TestBundleBuilderSubprocess:
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12 os=linux",
+            "evidence_origin": "real_measurement",
         }
         path = os.path.join(tmpdir, fname)
         with open(path, "w") as f:
@@ -2748,6 +2780,7 @@ class TestReceiptContext:
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
+            evidence_origin="real_measurement",
         )
         assert receipt["execution_id"] == ctx.execution_id
         assert receipt["exit_code"] == 0
@@ -2770,6 +2803,7 @@ class TestReceiptContext:
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
+            evidence_origin="real_measurement",
         )
         assert receipt["exit_code"] == 1
 
@@ -2785,6 +2819,7 @@ class TestReceiptContext:
             model_id="amazon/chronos-2",
             configured_revision="rev1",
             resolved_revision="rev1",
+            evidence_origin="real_measurement",
         )
         assert receipt["started_at_utc"] < receipt["completed_at_utc"]
         assert receipt["exit_code"] == 0
@@ -2801,6 +2836,7 @@ class TestRunWithReceipt:
             command=[sys.executable, "-c", "print('hello')"],
             output_component_path=component_path,
             model_id="amazon/chronos-2",
+            evidence_origin="real_measurement",
         )
         assert exit_code == 0
         assert receipt["evidence_type"] == "execution_receipt"
@@ -2817,6 +2853,7 @@ class TestRunWithReceipt:
             command=[sys.executable, "-c", "import sys; sys.exit(1)"],
             output_component_path=component_path,
             model_id="amazon/chronos-2",
+            evidence_origin="real_measurement",
         )
         assert exit_code == 1
         assert receipt["canonical_content_sha256"]
