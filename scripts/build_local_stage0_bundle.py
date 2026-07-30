@@ -372,6 +372,7 @@ def main() -> int:
         "process_cold_smoke": pc_smoke,
         "benchmark": benchmark,
         "token_present_smoke": tp_smoke,
+        "model_artifact": model_art,
     }))
 
     # Evidence-integrity closure: reject a token-present record that

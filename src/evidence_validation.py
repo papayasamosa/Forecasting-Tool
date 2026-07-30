@@ -133,7 +133,7 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
         tpr = data.get("token_present_result")
         if isinstance(tpr, dict):
             try:
-                obj = _deserialise({"evidence_type": SMOKE, **tar})
+                obj = _deserialise({"evidence_type": SMOKE, **tpr})
             except Exception:
                 pass  # not a full smoke record, skip recursive
 

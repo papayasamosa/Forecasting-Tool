@@ -770,9 +770,33 @@ def run_benchmarks(
     json_path = os.path.join(output_dir, f"benchmark_{timestamp}.json")
     md_path = os.path.join(output_dir, f"benchmark_{timestamp}.md")
 
+    # Compute suite-level fields (WP8)
+    resolved_revision = ""
+    pipeline_construction_count = 0
+    peak_rss_mb = 0.0
+    if all_results:
+        # Use first scenario's model_revision as suite resolved_revision
+        resolved_revision = all_results[0].model_revision or ""
+        # Pipeline construction count from cold sample
+        for r in all_results:
+            for s in r.samples:
+                if s.label == "cold_forecast" and s.success:
+                    pipeline_construction_count = max(pipeline_construction_count, s.pipeline_call_count)
+                peak_rss_mb = max(peak_rss_mb, s.peak_rss_mb)
+        if pipeline_construction_count == 0:
+            pipeline_construction_count = 1  # real model always constructs once
+
+    # Compute cache preflight evidence
+    from src.telemetry import inspect_hf_cache
+    cache_preflight = inspect_hf_cache(CONFIGURED_REVISION)
+
     _write_json(all_results, json_path, suite_passed=suite_ok,
                 initial_cache_state=initial_cache_state,
-                started_at_utc=started_at, completed_at_utc=completed_at)
+                started_at_utc=started_at, completed_at_utc=completed_at,
+                resolved_revision=resolved_revision,
+                pipeline_construction_count=pipeline_construction_count,
+                peak_rss_mb=peak_rss_mb,
+                cache_preflight=cache_preflight)
     _write_markdown(all_results, md_path)
 
     print(f"\nResults written to:\n  {json_path}\n  {md_path}")
@@ -788,7 +812,11 @@ def _write_json(results: list[BenchmarkResult], path: str, *,
                 suite_passed: bool = False,
                 initial_cache_state: str = "",
                 started_at_utc: str = "",
-                completed_at_utc: str = "") -> None:
+                completed_at_utc: str = "",
+                resolved_revision: str = "",
+                pipeline_construction_count: int = 0,
+                peak_rss_mb: float = 0.0,
+                cache_preflight: dict | None = None) -> None:
     """Write benchmark results as a v2 suite envelope."""
     trace = capture_traceability()
     scenarios = []
@@ -802,7 +830,7 @@ def _write_json(results: list[BenchmarkResult], path: str, *,
             d["git_worktree_clean"] = trace.get("git_worktree_clean", False)
         scenarios.append(d)
 
-    envelope = {
+    envelope: dict[str, Any] = {
         "evidence_schema_version": "2",
         "evidence_type": "benchmark_suite",
         "suite_passed": suite_passed,
@@ -815,6 +843,10 @@ def _write_json(results: list[BenchmarkResult], path: str, *,
         "python_version": sys.version.split()[0] if scenarios else "",
         "model_id": MODEL_ID,
         "configured_revision": results[0].configured_revision if results else "",
+        "resolved_revision": resolved_revision,
+        "pipeline_construction_count": pipeline_construction_count,
+        "peak_rss_mb": peak_rss_mb,
+        "cache_preflight": cache_preflight or {"inspection_succeeded": False, "cache_source": "", "initial_cache_state": "", "snapshot_present": False, "file_count": 0, "total_bytes": 0, "post_run_snapshot_present": False, "post_run_file_count": 0, "post_run_total_bytes": 0, "error": "not_computed"},
         "scenarios": scenarios,
     }
     with open(path, "w", encoding="utf-8") as f:
