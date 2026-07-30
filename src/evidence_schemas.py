@@ -1350,6 +1350,62 @@ class LocalStage0Bundle:
 
 
 # ---------------------------------------------------------------------------
+# Cloud collection session (WP-G)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class CloudCollectionSession:
+    """What a Cloud evidence-collection run actually collected.
+
+    ``collection_receipt`` on ``CloudEvidence`` previously bound to nothing
+    — unlike the token-path receipts, which bind their canonical digest to
+    ``token_absent_result``/``token_present_result``, there was no record
+    for the collection receipt to describe. This is that record: naming the
+    session, the code/deployment it ran against, and which of the canonical
+    Cloud tests it collected, so ``collection_receipt.canonical_content_sha256``
+    has real content to bind.
+    """
+    evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
+    evidence_type: str = "collection_session"
+    evidence_origin: str = ""
+    session_id: str = ""
+    code_commit: str = ""
+    deployed_commit: str = ""
+    test_names: list[str] = dataclasses.field(default_factory=list)
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
+            errors.append(f"collection_session: schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
+        if self.evidence_type != "collection_session":
+            errors.append("collection_session: evidence_type: expected 'collection_session'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"collection_session: evidence_origin: expected one of "
+                f"{VALID_EVIDENCE_ORIGINS}, got '{self.evidence_origin}'"
+            )
+        if not self.session_id:
+            errors.append("collection_session: session_id: empty")
+        if not self.code_commit:
+            errors.append("collection_session: code_commit: empty")
+        if not self.test_names:
+            errors.append("collection_session: test_names: empty — must name what was collected")
+        if not self.started_at_utc:
+            errors.append("collection_session: started_at_utc: empty")
+        if not self.completed_at_utc:
+            errors.append("collection_session: completed_at_utc: empty")
+        if self.started_at_utc and self.completed_at_utc and self.completed_at_utc < self.started_at_utc:
+            errors.append("collection_session: completed_at_utc before started_at_utc")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
 # Cloud evidence
 # ---------------------------------------------------------------------------
 
@@ -1404,6 +1460,9 @@ class CloudEvidence:
     token_absent_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
     token_present_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
     collection_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # WP-G: what collection_receipt actually describes — without this,
+    # collection_receipt bound to nothing (see CloudCollectionSession above).
+    collection_session: dict[str, Any] = dataclasses.field(default_factory=dict)
     error: str = ""
 
     def validate(self) -> list[str]:
@@ -1458,7 +1517,11 @@ class CloudEvidence:
                 f"deployed_commit '{self.deployed_commit}'"
             )
 
-        # WP4: Receipt bindings — validate typed execution receipts (only when successful)
+        # WP4/WP-G/WP-H: Receipt bindings — validate typed execution receipts
+        # (only when successful). This is the schema-level check shared by
+        # the builder, the publisher, and verify_evidence_manifest.py's
+        # recursive validation, so none of them can disagree about what
+        # counts as a bound receipt.
         if self.success:
             receipt_fields = [
                 ("token_absent_receipt", "token_absent_result"),
@@ -1476,6 +1539,16 @@ class CloudEvidence:
                     rec_errors = receipt_obj.validate()
                     for re in rec_errors:
                         errors.append(f"{rec_field}: {re}")
+                    # WP-H: a synthetic receipt can never bind real Cloud
+                    # evidence, regardless of the top-level CLI flag used to
+                    # build this record — production mode is defined by
+                    # every nested receipt's own origin agreeing with it.
+                    if receipt_obj.evidence_origin != self.evidence_origin:
+                        errors.append(
+                            f"{rec_field}: evidence_origin "
+                            f"'{receipt_obj.evidence_origin}' != Cloud record "
+                            f"evidence_origin '{self.evidence_origin}'"
+                        )
                     # Check commit matches deployed_commit
                     if receipt_obj.code_commit and self.deployed_commit and receipt_obj.code_commit != self.deployed_commit:
                         errors.append(
@@ -1491,7 +1564,9 @@ class CloudEvidence:
                             f"{rec_field}: resolved_revision '{receipt_obj.resolved_revision}' "
                             f"!= Cloud model_revision '{self.model_revision}'"
                         )
-                    # Check execution ID against token path result for token receipts
+                    # WP-G: token receipts bind the canonical digest of the
+                    # token path result they describe; the collection
+                    # receipt binds the canonical digest of collection_session.
                     if result_field:
                         result = getattr(self, result_field, None)
                         if result and hasattr(result, "run_id") and result.run_id:
@@ -1500,6 +1575,54 @@ class CloudEvidence:
                                     f"{rec_field}: execution_id '{receipt_obj.execution_id}' "
                                     f"!= {result_field}.run_id '{result.run_id}'"
                                 )
+                        if result is not None and hasattr(result, "to_dict"):
+                            expected_digest = canonical_evidence_sha256(result.to_dict())
+                            if not receipt_obj.canonical_content_sha256:
+                                errors.append(
+                                    f"{rec_field}: canonical_content_sha256 empty — "
+                                    f"required to bind {result_field}"
+                                )
+                            elif receipt_obj.canonical_content_sha256 != expected_digest:
+                                errors.append(
+                                    f"{rec_field}: canonical_content_sha256 "
+                                    f"'{receipt_obj.canonical_content_sha256}' != "
+                                    f"computed '{expected_digest}' from {result_field}"
+                                )
+                    else:
+                        # collection_receipt: bind against collection_session
+                        session_data = self.collection_session
+                        if not isinstance(session_data, dict) or not session_data:
+                            errors.append(
+                                "collection_session: missing or empty — "
+                                "collection_receipt has nothing to bind to"
+                            )
+                        else:
+                            try:
+                                session_obj = CloudCollectionSession(**session_data)
+                            except Exception as exc:
+                                errors.append(f"collection_session: construction failed: {exc}")
+                                session_obj = None
+                            if session_obj is not None:
+                                for se in session_obj.validate():
+                                    errors.append(f"collection_session: {se}")
+                                if session_obj.evidence_origin != self.evidence_origin:
+                                    errors.append(
+                                        f"collection_session: evidence_origin "
+                                        f"'{session_obj.evidence_origin}' != Cloud "
+                                        f"record evidence_origin '{self.evidence_origin}'"
+                                    )
+                                expected_digest = canonical_evidence_sha256(session_obj.to_dict())
+                                if not receipt_obj.canonical_content_sha256:
+                                    errors.append(
+                                        "collection_receipt: canonical_content_sha256 "
+                                        "empty — required to bind collection_session"
+                                    )
+                                elif receipt_obj.canonical_content_sha256 != expected_digest:
+                                    errors.append(
+                                        f"collection_receipt: canonical_content_sha256 "
+                                        f"'{receipt_obj.canonical_content_sha256}' != "
+                                        f"computed '{expected_digest}' from collection_session"
+                                    )
                     # Execution ID uniqueness
                     if receipt_obj.execution_id:
                         if receipt_obj.execution_id in seen_rec_exec_ids:
@@ -1757,6 +1880,7 @@ _EVIDENCE_TYPE_MAP: dict[str, type] = {
     "local_stage0_bundle": LocalStage0Bundle,
     "cloud_stage0": CloudEvidence,
     "execution_receipt": ExecutionReceipt,
+    "collection_session": CloudCollectionSession,
 }
 
 

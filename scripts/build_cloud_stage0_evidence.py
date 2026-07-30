@@ -191,17 +191,27 @@ def _check_measured_inputs(data: dict[str, Any]) -> list[str]:
 
 
 def _check_receipts(data: dict[str, Any], allow_synthetic: bool) -> list[str]:
-    """Validate that execution receipts are provided.
+    """Pre-check that execution receipts look structurally present.
 
-    In production mode (default), all three receipts are required and
+    In production mode (default), all three receipts are required here and
     must contain valid execution data — the builder never fabricates them.
 
-    In synthetic mode (--allow-synthetic-fixture), missing receipts are
-    tolerated for testing purposes.
+    WP-H: synthetic mode (--allow-synthetic-fixture) skips this early
+    presence pre-check, but does NOT tolerate missing receipts overall —
+    CloudEvidence.validate() (called later, from _build_cloud_evidence)
+    requires all three receipts and collection_session regardless of
+    evidence_origin, and additionally requires every receipt's own
+    evidence_origin to match the record's. A synthetic-fixture caller must
+    supply synthetic receipts (evidence_origin=synthetic_fixture) — use
+    tests.fixtures.cloud_valid_fixture.json, or an equivalent fixture
+    helper, as the template. This is what makes production mode reject a
+    synthetic receipt even if a caller forgets to omit --allow-synthetic-
+    fixture: the schema-level origin check fires regardless of this
+    pre-check.
     """
     errors: list[str] = []
     if allow_synthetic:
-        return errors  # Synthetic mode tolerates missing receipts
+        return errors  # Structural pre-check skipped; schema-level validate() is authoritative.
 
     # Production mode: all three receipts are mandatory
     receipt_fields = [
@@ -333,6 +343,7 @@ def _build_cloud_evidence(data: dict[str, Any], allow_synthetic: bool = False) -
         token_absent_receipt=data.get("token_absent_receipt", {}),
         token_present_receipt=data.get("token_present_receipt", {}),
         collection_receipt=data.get("collection_receipt", {}),
+        collection_session=data.get("collection_session", {}),
         error=data.get("error", ""),
     )
 
@@ -365,8 +376,10 @@ def main() -> int:
         help=(
             "Allow synthetic CI fixture data. The output record will be "
             "marked with evidence_origin=synthetic_fixture and cannot be "
-            "published as release evidence. Missing execution receipts are "
-            "tolerated in this mode."
+            "published as release evidence. Execution receipts (and "
+            "collection_session) are still required, and must themselves "
+            "be marked evidence_origin=synthetic_fixture — see "
+            "tests/fixtures/cloud_valid_fixture.json for the template."
         ),
     )
     args = parser.parse_args()
@@ -409,18 +422,25 @@ def main() -> int:
 
     evidence_dict = evidence.to_dict()
 
+    # WP-G/WP-H: report the SPECIFIC receipt/origin/digest errors that
+    # actually caused success=False first — once success is False,
+    # CloudEvidence.validate() short-circuits its receipt-binding checks
+    # (they only run "if self.success"), so re-validating the collapsed
+    # dict below would otherwise only ever show a generic "success: false"
+    # message and hide the real reason (e.g. a synthetic receipt in
+    # production mode, or a digest that doesn't bind its result).
+    if not evidence.success:
+        print("Cloud evidence validation failed — record is not passing")
+        for err in evidence.error.split("; ") if evidence.error else []:
+            print(f"  [FAIL] {err}")
+        return 1
+
     # Recursively validate
     from src.evidence_validation import validate_recursive
     v_errors = validate_recursive(evidence_dict, label="cloud_stage0")
     if v_errors:
         print("Schema validation errors:")
         for err in v_errors:
-            print(f"  [FAIL] {err}")
-        return 1
-
-    if not evidence.success:
-        print("Cloud evidence validation failed — record is not passing")
-        for err in evidence.validate():
             print(f"  [FAIL] {err}")
         return 1
 

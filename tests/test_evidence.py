@@ -762,54 +762,78 @@ class TestCloudEvidenceValidation:
         }
         if overrides:
             data.update(overrides)
-        # Add receipt data for passing Cloud evidence
+        # Add receipt data for passing Cloud evidence. WP-G: token receipts
+        # bind canonical_content_sha256 to the canonical digest of the
+        # token path result they describe, and the collection receipt
+        # binds to collection_session — computed here (not hand-hashed)
+        # so the fixture can never drift from the real digest function.
+        from src.evidence_schemas import TokenPathResult, CloudCollectionSession, canonical_evidence_sha256
+        origin = data.get("evidence_origin", "real_measurement")
+        commit = data.get("code_commit", "abc123")
+
+        tar_digest = canonical_evidence_sha256(TokenPathResult(**data["token_absent_result"]).to_dict())
         data.setdefault("token_absent_receipt", {
-            "execution_id": "run-absent-1",
+            "execution_id": data["token_absent_result"]["run_id"],
             "attestation_type": "operator_attested",
-            "code_commit": data.get("code_commit", "abc123"),
+            "code_commit": commit,
             "producer_version": "1.0",
             "sanitised_command": "python smoke_test.py",
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:00:30",
             "exit_code": 0,
-            "component_sha256": "a" * 64,
+            "canonical_content_sha256": tar_digest,
             "model_id": "amazon/chronos-2",
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
-            "evidence_origin": "real_measurement",
+            "evidence_origin": origin,
         })
+        tpr_digest = canonical_evidence_sha256(TokenPathResult(**data["token_present_result"]).to_dict())
         data.setdefault("token_present_receipt", {
-            "execution_id": "run-present-1",
+            "execution_id": data["token_present_result"]["run_id"],
             "attestation_type": "operator_attested",
-            "code_commit": data.get("code_commit", "abc123"),
+            "code_commit": commit,
             "producer_version": "1.0",
             "sanitised_command": "python smoke_test.py",
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:00:30",
             "exit_code": 0,
-            "component_sha256": "b" * 64,
+            "canonical_content_sha256": tpr_digest,
             "model_id": "amazon/chronos-2",
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
-            "evidence_origin": "real_measurement",
+            "evidence_origin": origin,
         })
+        data.setdefault("collection_session", {
+            "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+            "evidence_type": "collection_session",
+            "evidence_origin": origin,
+            "session_id": "collection-session-1",
+            "code_commit": commit,
+            "deployed_commit": data.get("deployed_commit", commit),
+            "test_names": ["dependency_install", "cold_forecast", "warm_forecast"],
+            "started_at_utc": "2026-07-29T00:00:00",
+            "completed_at_utc": "2026-07-29T00:05:00",
+        })
+        session_digest = canonical_evidence_sha256(
+            CloudCollectionSession(**data["collection_session"]).to_dict()
+        )
         data.setdefault("collection_receipt", {
             "execution_id": "collection-1",
             "attestation_type": "operator_attested",
-            "code_commit": data.get("code_commit", "abc123"),
+            "code_commit": commit,
             "producer_version": "1.0",
             "sanitised_command": "python build_cloud_stage0_evidence.py",
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:05:00",
             "exit_code": 0,
-            "component_sha256": "c" * 64,
+            "canonical_content_sha256": session_digest,
             "model_id": "amazon/chronos-2",
             "configured_revision": "rev1",
             "resolved_revision": "rev1",
             "environment_summary": "python=3.12",
-            "evidence_origin": "real_measurement",
+            "evidence_origin": origin,
         })
         return data
 
