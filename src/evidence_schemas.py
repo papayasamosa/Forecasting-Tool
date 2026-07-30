@@ -11,7 +11,9 @@ Each model class provides:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +21,70 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 EVIDENCE_SCHEMA_VERSION = "2"
+
+# Evidence-origin enum (WP7: synthetic evidence isolation)
+EVIDENCE_ORIGIN_REAL = "real_measurement"
+EVIDENCE_ORIGIN_SYNTHETIC = "synthetic_fixture"
+VALID_EVIDENCE_ORIGINS = {EVIDENCE_ORIGIN_REAL, EVIDENCE_ORIGIN_SYNTHETIC}
+
+# Attestation types
+ATTESTATION_GITHUB = "github_attestation"
+ATTESTATION_OPERATOR = "operator_attested"
+VALID_ATTESTATION_TYPES = {ATTESTATION_GITHUB, ATTESTATION_OPERATOR}
+
+
+def canonical_evidence_sha256(data: dict[str, Any]) -> str:
+    """Deterministic SHA-256 of a dict using canonical JSON serialisation.
+
+    Rules:
+    - UTF-8 JSON serialisation with sorted keys at every nesting level.
+    - Fixed separators (no whitespace): ``(',', ':')``.
+    - Floats serialised via ``repr()`` to avoid platform-dependent rounding.
+    - No timestamps or fields are removed — the full semantic content is
+      hashed, so any semantic mutation changes the digest.
+    - Returns a lowercase 64-character hex SHA-256 string.
+
+    Parameters
+    ----------
+    data : dict[str, Any]
+        The evidence object to digest.
+
+    Returns
+    -------
+    str
+        Lowercase 64-character hex SHA-256.
+    """
+    def _sort(obj: Any) -> Any:
+        """Recursively sort keys and convert tuples to lists."""
+        if isinstance(obj, dict):
+            return {k: _sort(v) for k, v in sorted(obj.items())}
+        elif isinstance(obj, list):
+            return [_sort(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return [_sort(item) for item in obj]
+        return obj
+
+    sorted_data = _sort(data)
+
+    # Serialise with fixed separators, sorted keys, and explicit float repr
+    canonical = json.dumps(
+        sorted_data,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=_canonical_json_default,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _canonical_json_default(obj: Any) -> str:
+    """JSON default serialiser for canonical hashing.
+
+    Handles floats via ``repr()`` for cross-platform determinism.
+    """
+    if isinstance(obj, float):
+        return repr(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +290,17 @@ class TokenPathResult:
 
 
 # ---------------------------------------------------------------------------
+# Constants for SHA-256 validation
+# ---------------------------------------------------------------------------
+_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+
+
+def _is_valid_sha256(value: str) -> bool:
+    """Return True if *value* is a valid lowercase 64-char SHA-256 hex string."""
+    return bool(_SHA256_RE.match(value)) if value else False
+
+
+# ---------------------------------------------------------------------------
 # Execution receipt (WP3) — tamper-evident proof that a command ran
 # ---------------------------------------------------------------------------
 
@@ -231,6 +308,17 @@ class TokenPathResult:
 @dataclasses.dataclass
 class ExecutionReceipt:
     """Evidence that a specific command was executed.
+
+    Contains three distinct digest fields (WP2):
+    - ``source_file_sha256`` — hash of the raw producer output file.
+    - ``published_file_sha256`` — hash of the exact final published file
+      (after sanitisation).
+    - ``canonical_content_sha256`` — deterministic content digest of the
+      embedded evidence object (WP1). This is the primary tamper-evident
+      binding.
+
+    ``component_sha256`` is kept for backward compatibility but should be
+    source_file_sha256 in new evidence.
 
     When independent attestation (e.g. GitHub-generated) is unavailable,
     the evidence should be labelled "operator-attested and tamper-evident".
@@ -245,7 +333,14 @@ class ExecutionReceipt:
     sanitised_command: str = ""
     started_at_utc: str = ""
     completed_at_utc: str = ""
-    component_sha256: str = ""
+    exit_code: int = 0
+    # WP2: Three distinct digest fields
+    component_sha256: str = ""  # backward compat — source_file_sha256 preferred
+    source_file_sha256: str = ""
+    published_file_sha256: str = ""
+    canonical_content_sha256: str = ""
+    # WP7: Evidence origin
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     model_id: str = ""
     configured_revision: str = ""
     resolved_revision: str = ""
@@ -262,7 +357,7 @@ class ExecutionReceipt:
             errors.append("execution_receipt: execution_id empty")
         if not self.attestation_type:
             errors.append("execution_receipt: attestation_type empty")
-        if self.attestation_type not in ("github_attestation", "operator_attested"):
+        if self.attestation_type not in VALID_ATTESTATION_TYPES:
             errors.append(
                 f"execution_receipt: attestation_type '{self.attestation_type}' "
                 f"not recognized"
@@ -277,8 +372,24 @@ class ExecutionReceipt:
             errors.append("execution_receipt: started_at_utc empty")
         if not self.completed_at_utc:
             errors.append("execution_receipt: completed_at_utc empty")
-        if not self.component_sha256:
-            errors.append("execution_receipt: component_sha256 empty")
+        # Exit code validation (WP9)
+        if self.exit_code < 0:
+            errors.append("execution_receipt: exit_code must be >= 0")
+        # WP9: SHA-256 format validation
+        for field_name, value in [
+            ("component_sha256", self.component_sha256),
+            ("source_file_sha256", self.source_file_sha256),
+            ("published_file_sha256", self.published_file_sha256),
+            ("canonical_content_sha256", self.canonical_content_sha256),
+        ]:
+            if value and not _is_valid_sha256(value):
+                errors.append(
+                    f"execution_receipt: {field_name} '{value}' is not a "
+                    f"valid lowercase 64-character SHA-256"
+                )
+        # WP9: At least one content digest must be populated
+        if not (self.component_sha256 or self.source_file_sha256 or self.canonical_content_sha256):
+            errors.append("execution_receipt: no content digest provided")
         if not self.model_id:
             errors.append("execution_receipt: model_id empty")
         if not self.configured_revision:
@@ -290,6 +401,21 @@ class ExecutionReceipt:
                 f"execution_receipt: configured_revision '{self.configured_revision}' != "
                 f"resolved_revision '{self.resolved_revision}'"
             )
+        # WP9: Non-empty environment summary
+        if not self.environment_summary:
+            errors.append("execution_receipt: environment_summary empty")
+        # WP7: Evidence origin validation
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"execution_receipt: evidence_origin '{self.evidence_origin}' "
+                f"not recognized"
+            )
+        # WP9: Immutable artifact reference required for github_attestation
+        if self.attestation_type == ATTESTATION_GITHUB and not self.immutable_artifact_reference:
+            errors.append(
+                "execution_receipt: immutable_artifact_reference required "
+                "for github_attestation"
+            )
         # Ordered timestamps
         if self.started_at_utc and self.completed_at_utc:
             try:
@@ -297,6 +423,19 @@ class ExecutionReceipt:
                     errors.append("execution_receipt: started_at_utc after completed_at_utc")
             except (ValueError, TypeError):
                 errors.append("execution_receipt: cannot parse timestamps")
+        # WP9: Reject placeholder values in release evidence
+        placeholders = {"not_available", "token-absent-auto", "token-present-auto", "collection-auto"}
+        for field_name, value in [
+            ("execution_id", self.execution_id),
+            ("component_sha256", self.component_sha256),
+            ("source_file_sha256", self.source_file_sha256),
+            ("canonical_content_sha256", self.canonical_content_sha256),
+        ]:
+            if value in placeholders:
+                errors.append(
+                    f"execution_receipt: {field_name} contains placeholder "
+                    f"'{value}' — not valid for release evidence"
+                )
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -434,6 +573,8 @@ class SmokePhase:
 class SmokeEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "smoke_test"
+    # WP7: Evidence origin
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     test: str = "chronos2_smoke_test"
     success: bool = False
     code_commit: str = ""
@@ -471,6 +612,11 @@ class SmokeEvidence:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}', got '{self.evidence_schema_version}'")
         if self.evidence_type != "smoke_test":
             errors.append(f"evidence_type: expected 'smoke_test', got '{self.evidence_type}'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
+                f"got '{self.evidence_origin}'"
+            )
         if not self.code_commit:
             errors.append("code_commit: empty — cannot publish")
         if not self.git_worktree_clean:
@@ -650,6 +796,7 @@ class BenchmarkScenarioRecord:
 class BenchmarkSuiteEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "benchmark_suite"
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     suite_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -674,6 +821,11 @@ class BenchmarkSuiteEvidence:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}', got '{self.evidence_schema_version}'")
         if self.evidence_type != "benchmark_suite":
             errors.append(f"evidence_type: expected 'benchmark_suite', got '{self.evidence_type}'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
+                f"got '{self.evidence_origin}'"
+            )
         if not self.code_commit:
             errors.append("code_commit: empty")
         if not self.git_worktree_clean:
@@ -779,6 +931,7 @@ class ModelArtifactFile:
 class ModelArtifactEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "model_artifact"
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     code_commit: str = ""
     git_worktree_clean: bool = False
     model_id: str = ""
@@ -802,6 +955,11 @@ class ModelArtifactEvidence:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "model_artifact":
             errors.append(f"evidence_type: expected 'model_artifact'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
+                f"got '{self.evidence_origin}'"
+            )
         if not self.code_commit:
             errors.append("code_commit: empty")
         if not self.git_worktree_clean:
@@ -882,6 +1040,7 @@ class ModelArtifactEvidence:
 class LocalStage0Bundle:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "local_stage0_bundle"
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     bundle_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -900,6 +1059,11 @@ class LocalStage0Bundle:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "local_stage0_bundle":
             errors.append(f"evidence_type: expected 'local_stage0_bundle'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
+                f"got '{self.evidence_origin}'"
+            )
         if not self.code_commit:
             errors.append("code_commit: empty")
         if not self.git_worktree_clean:
@@ -987,12 +1151,17 @@ class LocalStage0Bundle:
     def _validate_receipts(self) -> list[str]:
         """Validate receipt bindings for a passing bundle.
 
-        Checks that every required component has a typed ExecutionReceipt
-        with matching hash, commit, model ID, revision, and distinct
-        execution IDs.
+        WP4: For each required bundle component, this method:
+        1. Validates the receipt schema.
+        2. Computes the canonical digest of the embedded component.
+        3. Compares it with the receipt's ``canonical_content_sha256``.
+        4. Verifies commit, model ID, configured revision, resolved revision.
+        5. Requires distinct execution IDs.
+        6. Requires the receipt's attestation type.
+        7. Rejects missing, extra, malformed, or mismatched bindings.
         """
         errors: list[str] = []
-        from src.evidence_schemas import ExecutionReceipt
+        from src.evidence_schemas import ExecutionReceipt, canonical_evidence_sha256
 
         expected_receipts = [
             "download_cold_smoke",
@@ -1031,9 +1200,75 @@ class LocalStage0Bundle:
             for re in r_errors:
                 errors.append(f"receipts.{key}: {re}")
 
-            # Component file SHA-256 must be present and non-empty
-            if not receipt.component_sha256:
-                errors.append(f"receipts.{key}: component_sha256 empty")
+            # WP4: Compute canonical digest of embedded component
+            comp_data = None
+            if key in self.runs:
+                comp_data = self.runs[key]
+            elif key == "model_artifact":
+                comp_data = self.model_artifact
+
+            if comp_data and isinstance(comp_data, dict):
+                # Compute canonical content digest of the embedded component
+                try:
+                    canonical_digest = canonical_evidence_sha256(comp_data)
+                except Exception as exc:
+                    errors.append(
+                        f"receipts.{key}: canonical digest computation failed: {exc}"
+                    )
+                    continue
+
+                # Compare with receipt's canonical_content_sha256
+                if receipt.canonical_content_sha256:
+                    if receipt.canonical_content_sha256 != canonical_digest:
+                        errors.append(
+                            f"receipts.{key}: canonical_content_sha256 "
+                            f"'{receipt.canonical_content_sha256}' != computed "
+                            f"'{canonical_digest}' — component content mutated"
+                        )
+                else:
+                    errors.append(
+                        f"receipts.{key}: canonical_content_sha256 empty — "
+                        f"required for content binding"
+                    )
+
+                # Check source_file_sha256 if present (transport hash)
+                if receipt.source_file_sha256:
+                    if not _is_valid_sha256(receipt.source_file_sha256):
+                        errors.append(
+                            f"receipts.{key}: source_file_sha256 "
+                            f"'{receipt.source_file_sha256}' is not a valid "
+                            f"SHA-256"
+                        )
+
+                # Verify commit, model ID, revisions from embedded component
+                comp_commit = comp_data.get("code_commit", "")
+                if comp_commit and receipt.code_commit and receipt.code_commit != comp_commit:
+                    errors.append(
+                        f"receipts.{key}: code_commit '{receipt.code_commit}' "
+                        f"!= component code_commit '{comp_commit}'"
+                    )
+                comp_mid = comp_data.get("model_id", "")
+                if comp_mid and receipt.model_id and receipt.model_id != comp_mid:
+                    errors.append(
+                        f"receipts.{key}: model_id '{receipt.model_id}' "
+                        f"!= component model_id '{comp_mid}'"
+                    )
+                comp_cr = comp_data.get("configured_revision", "")
+                if comp_cr and receipt.configured_revision and receipt.configured_revision != comp_cr:
+                    errors.append(
+                        f"receipts.{key}: configured_revision '{receipt.configured_revision}' "
+                        f"!= component configured_revision '{comp_cr}'"
+                    )
+                comp_rev = comp_data.get("model_revision", "") or comp_data.get("resolved_revision", "")
+                if comp_rev and receipt.resolved_revision and receipt.resolved_revision != comp_rev:
+                    errors.append(
+                        f"receipts.{key}: resolved_revision '{receipt.resolved_revision}' "
+                        f"!= component revision '{comp_rev}'"
+                    )
+
+            # Legacy component_sha256 check (backward compat transport hash)
+            if not receipt.component_sha256 and not receipt.canonical_content_sha256:
+                errors.append(f"receipts.{key}: no content digest provided")
 
             # receipt commit must equal bundle commit
             if receipt.code_commit and receipt.code_commit != self.code_commit:
@@ -1045,17 +1280,6 @@ class LocalStage0Bundle:
             # Model ID must match
             if receipt.model_id and receipt.model_id != "amazon/chronos-2":
                 errors.append(f"receipts.{key}: model_id '{receipt.model_id}' != amazon/chronos-2")
-
-            # Resolved revision must match corresponding component's revision
-            if key in self.runs:
-                comp = self.runs[key]
-                if isinstance(comp, dict):
-                    comp_rev = comp.get("model_revision", "") or comp.get("resolved_revision", "")
-                    if comp_rev and receipt.resolved_revision and receipt.resolved_revision != comp_rev:
-                        errors.append(
-                            f"receipts.{key}: resolved_revision '{receipt.resolved_revision}' "
-                            f"!= component revision '{comp_rev}'"
-                        )
 
             # Execution ID uniqueness
             if receipt.execution_id:
@@ -1080,6 +1304,7 @@ class LocalStage0Bundle:
 class CloudEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "cloud_stage0"
+    evidence_origin: str = EVIDENCE_ORIGIN_REAL
     success: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -1133,6 +1358,11 @@ class CloudEvidence:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "cloud_stage0":
             errors.append(f"evidence_type: expected 'cloud_stage0'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
+                f"got '{self.evidence_origin}'"
+            )
         if not self.success:
             errors.append("success: false — cannot publish failed Cloud evidence")
         if not self.code_commit:

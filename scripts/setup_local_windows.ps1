@@ -122,12 +122,49 @@ if (-not $pythonCmd) {
     $installerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
     $installerPath = "$installersDir\python-3.12.10-amd64.exe"
     
+    # WP13: Pinned installer version and expected SHA-256
+    $expectedSha256 = "be2551f5a3280b96d4d3c9472cdcd1c2443b58f11ddef5c270596a6223e5e68f"
+    $expectedPublisher = "Python Software Foundation"
+    
     if (-not (Test-Path $installerPath)) {
         # Use a download approach that works without external tools
         $webClient = New-Object System.Net.WebClient
         Write-Host "  Downloading from $installerUrl ..."
         $webClient.DownloadFile($installerUrl, $installerPath)
     }
+    
+    # WP13: Verify SHA-256 of downloaded installer
+    Write-Host "  Verifying SHA-256 of installer..."
+    $actualSha256 = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLower()
+    if ($actualSha256 -ne $expectedSha256) {
+        Write-Error "Installer SHA-256 mismatch!"
+        Write-Error "  Expected: $expectedSha256"
+        Write-Error "  Actual:   $actualSha256"
+        Write-Error "The downloaded Python installer does not match the pinned hash."
+        Write-Error "Delete $installerPath and re-run, or update the expected hash."
+        exit 1
+    }
+    Write-Host "  SHA-256 verified: $actualSha256"
+    
+    # WP13: Verify Authenticode signature
+    Write-Host "  Verifying Authenticode signature..."
+    $sig = Get-AuthenticodeSignature -FilePath $installerPath
+    if ($sig.Status -ne "Valid") {
+        Write-Error "Installer Authenticode signature verification FAILED."
+        Write-Error "  Status: $($sig.Status)"
+        Write-Error "  SignerCertificate: $($sig.SignerCertificate)"
+        Write-Error "The downloaded Python installer has an invalid or missing digital signature."
+        exit 1
+    }
+    # Verify the expected publisher
+    $publisher = $sig.SignerCertificate.Subject
+    if ($publisher -notmatch $expectedPublisher) {
+        Write-Error "Installer publisher mismatch!"
+        Write-Error "  Expected publisher to contain: $expectedPublisher"
+        Write-Error "  Actual subject: $publisher"
+        exit 1
+    }
+    Write-Host "  Authenticode signature verified: $($sig.SignerCertificate.Subject)"
     
     Write-Host "Installing Python 3.12 to $pythonInstallDir (D: drive)..."
     $installArgs = "/quiet InstallAllUsers=0 TargetDir=`"$pythonInstallDir`" Include_launcher=0 Include_test=0"
