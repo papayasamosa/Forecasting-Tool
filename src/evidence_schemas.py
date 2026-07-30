@@ -39,7 +39,12 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
     Rules:
     - UTF-8 JSON serialisation with sorted keys at every nesting level.
     - Fixed separators (no whitespace): ``(',', ':')``.
-    - Floats serialised via ``repr()`` to avoid platform-dependent rounding.
+    - Floats are serialised by the standard library's own ``repr``-equivalent
+      float formatter (``json.dumps`` handles native floats directly — the
+      ``default`` callback below is never invoked for them).
+    - Non-finite floats (``NaN``, ``Infinity``, ``-Infinity``) are rejected
+      with ``ValueError`` rather than silently emitted as non-standard JSON
+      tokens, since they cannot round-trip deterministically across readers.
     - No timestamps or fields are removed — the full semantic content is
       hashed, so any semantic mutation changes the digest.
     - Returns a lowercase 64-character hex SHA-256 string.
@@ -53,6 +58,11 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
     -------
     str
         Lowercase 64-character hex SHA-256.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` contains a NaN or +/-Infinity float anywhere.
     """
     def _sort(obj: Any) -> Any:
         """Recursively sort keys and convert tuples to lists."""
@@ -66,12 +76,15 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
 
     sorted_data = _sort(data)
 
-    # Serialise with fixed separators, sorted keys, and explicit float repr
+    # allow_nan=False makes json.dumps raise ValueError on NaN/Infinity/
+    # -Infinity instead of silently emitting the non-standard JSON tokens
+    # `NaN`/`Infinity`/`-Infinity`, which most JSON readers cannot parse.
     canonical = json.dumps(
         sorted_data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
         default=_canonical_json_default,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -80,10 +93,10 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
 def _canonical_json_default(obj: Any) -> str:
     """JSON default serialiser for canonical hashing.
 
-    Handles floats via ``repr()`` for cross-platform determinism.
+    Only invoked for types ``json.dumps`` cannot natively serialise (e.g.
+    sets, datetimes) — floats, including non-finite ones, are handled
+    natively by ``json.dumps`` before this callback is ever consulted.
     """
-    if isinstance(obj, float):
-        return repr(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 

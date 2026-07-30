@@ -984,6 +984,59 @@ class TestCanonicalDigest:
         h = canonical_evidence_sha256(d)
         assert len(h) == 64
 
+    def test_unicode_stable_and_distinct(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        data1 = {"name": "café"}
+        data2 = {"name": "cafe"}
+        assert canonical_evidence_sha256(data1) == canonical_evidence_sha256(data1)
+        assert canonical_evidence_sha256(data1) != canonical_evidence_sha256(data2)
+
+    def test_tuple_and_list_equivalent(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        data_tuple = {"items": (1, 2, 3)}
+        data_list = {"items": [1, 2, 3]}
+        assert canonical_evidence_sha256(data_tuple) == canonical_evidence_sha256(data_list)
+
+    def test_negative_zero_handled_as_finite(self):
+        # -0.0 is finite (not rejected like NaN/Infinity) and produces a
+        # stable, valid digest; it is not required to collide with 0.0
+        # since canonical digests intentionally reflect JSON byte content.
+        from src.evidence_schemas import canonical_evidence_sha256
+        h1 = canonical_evidence_sha256({"v": -0.0})
+        h2 = canonical_evidence_sha256({"v": -0.0})
+        assert h1 == h2
+        assert len(h1) == 64
+
+    def test_normal_float_accepted(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        h = canonical_evidence_sha256({"v": 81.91})
+        assert len(h) == 64
+
+    def test_nan_rejected(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        with pytest.raises(ValueError):
+            canonical_evidence_sha256({"v": float("nan")})
+
+    def test_positive_infinity_rejected(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        with pytest.raises(ValueError):
+            canonical_evidence_sha256({"v": float("inf")})
+
+    def test_negative_infinity_rejected(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        with pytest.raises(ValueError):
+            canonical_evidence_sha256({"v": float("-inf")})
+
+    def test_non_finite_rejected_when_nested(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        with pytest.raises(ValueError):
+            canonical_evidence_sha256({"outer": {"inner": [1, float("nan")]}})
+
+    def test_non_json_serialisable_type_rejected(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        with pytest.raises(TypeError):
+            canonical_evidence_sha256({"v": {1, 2, 3}})
+
 
 class TestSHA256Validation:
     def test_valid_sha256_accepted(self):
