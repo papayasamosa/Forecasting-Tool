@@ -200,6 +200,17 @@ def verify_manifest() -> int:
         if not code_commit:
             errors.append(f"{key}: code_commit is empty or null")
 
+        # Determine if this entry is invalidated — skip recursive JSON
+        # content validation for invalidated entries because they were
+        # created under an older schema and will not conform to the
+        # current validation requirements.
+        is_invalidated = isinstance(entry, dict) and entry.get("status") == "invalidated"
+
+        if is_invalidated:
+            # Still verify hash for invalidated entries (tamper detection)
+            # but skip recursive schema validation.
+            continue  # hash was already verified above
+
         # Parse and validate internal JSON content
         if expected_type and fname:
             internal_errors = _validate_referenced_json(resolved, expected_type, code_commit or "")
