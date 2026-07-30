@@ -416,42 +416,15 @@ def _validate_receipt_binding(
                 f"!= component model/resolved_revision '{comp_mr}'"
             )
 
-    # WP10: Safe secret-redaction validation
-    # Allow redacted patterns and legitimate references; reject exposed values
-    import re as _re
-    cmd = receipt.sanitised_command
-
-    # Allowed patterns (redacted or legitimate references)
-    allowed_patterns = [
-        _re.compile(r'HF_TOKEN=\[REDACTED\]', _re.IGNORECASE),
-        _re.compile(r'HF_TOKEN=<redacted>', _re.IGNORECASE),
-        _re.compile(r'HF_TOKEN=\$\(.*\)', _re.IGNORECASE),  # script variable
-        _re.compile(r'--token-state\s+present', _re.IGNORECASE),
-        _re.compile(r'token-present-smoke\.json', _re.IGNORECASE),
-        _re.compile(r'token-absent-run', _re.IGNORECASE),
-        _re.compile(r'token-present-run', _re.IGNORECASE),
-    ]
-    # If the entire command matches an allowed pattern, skip exposed-value check
-    is_allowed = any(p.search(cmd) for p in allowed_patterns)
-
-    # Rejected patterns (exposed values)
-    rejected_patterns = [
-        (_re.compile(r'HF_TOKEN=[a-zA-Z0-9_]{10,}', _re.IGNORECASE), "exposed HF_TOKEN value"),
-        (_re.compile(r'Authorization:\s*Bearer\s+\S+', _re.IGNORECASE), "exposed Authorization header"),
-        (_re.compile(r'password=\S+', _re.IGNORECASE), "exposed password value"),
-        (_re.compile(r'secret=\S+', _re.IGNORECASE), "exposed secret value"),
-        (_re.compile(r'api[_-]?key[=:]\s*\S+', _re.IGNORECASE), "exposed API key"),
-        (_re.compile(r'token=\S+', _re.IGNORECASE) if not is_allowed else None, "exposed token value"),
-    ]
-
-    for pattern, description in rejected_patterns:
-        if pattern is None:
-            continue
-        if pattern.search(cmd):
-            errors.append(
-                f"{component_label}_receipt: sanitised_command contains "
-                f"{description}"
-            )
+    # WP5/WP10: Secret-redaction validation via the shared detector, so this
+    # script and ExecutionReceipt.validate() can never disagree about what
+    # counts as an exposed credential.
+    from src.redaction import contains_exposed_secret
+    exposure = contains_exposed_secret(receipt.sanitised_command)
+    if exposure:
+        errors.append(
+            f"{component_label}_receipt: sanitised_command contains {exposure}"
+        )
 
     return errors
 

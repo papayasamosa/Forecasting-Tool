@@ -17,6 +17,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from src.redaction import contains_exposed_secret
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -381,6 +383,10 @@ class ExecutionReceipt:
             errors.append("execution_receipt: producer_version empty")
         if not self.sanitised_command:
             errors.append("execution_receipt: sanitised_command empty")
+        # WP5: Reject exposed secrets stored in the command field
+        exposure = contains_exposed_secret(self.sanitised_command)
+        if exposure:
+            errors.append(f"execution_receipt: sanitised_command contains {exposure}")
         if not self.started_at_utc:
             errors.append("execution_receipt: started_at_utc empty")
         if not self.completed_at_utc:

@@ -320,12 +320,13 @@ def run_with_receipt(
         canonical_digest = ""
 
     # Build receipt
+    from src.redaction import sanitise_command
     receipt = ExecutionReceipt(
         execution_id=execution_id,
         attestation_type=attestation_type,
         code_commit=trace.get("code_commit", ""),
         producer_version="1.0",
-        sanitised_command=" ".join(command),
+        sanitised_command=sanitise_command(command),
         started_at_utc=now.isoformat(),
         completed_at_utc=completed.isoformat(),
         exit_code=exit_code,
