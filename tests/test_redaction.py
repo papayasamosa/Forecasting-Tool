@@ -122,3 +122,64 @@ class TestContainsExposedSecret:
 
     def test_accepts_space_separated_redacted_marker(self):
         assert contains_exposed_secret(f"--hf-token {REDACTED_MARKER}") is None
+
+
+class TestNearbySafeMarkerCannotSuppressExposure:
+    """PR #26 review finding P1-1: a safe marker anywhere in a ±20-char
+    window used to exempt an unrelated real exposure. Exemption must apply
+    only to the matched value itself."""
+
+    def test_hf_token_exposed_despite_nearby_token_state_marker(self):
+        assert contains_exposed_secret("HF_TOKEN=abcdef --token-state present") is not None
+
+    def test_password_exposed_despite_trailing_redacted_marker(self):
+        assert contains_exposed_secret("password=hunter2 ***REDACTED***") is not None
+
+    def test_password_exposed_despite_leading_redacted_marker(self):
+        assert contains_exposed_secret("***REDACTED*** password=hunter2") is not None
+
+    def test_secret_exposed_between_two_safe_markers(self):
+        text = f"HF_TOKEN={REDACTED_MARKER} password=hunter2 HF_TOKEN={REDACTED_MARKER}"
+        assert contains_exposed_secret(text) is not None
+
+    def test_adjacent_safe_and_unsafe_assignments(self):
+        assert contains_exposed_secret(f"HF_TOKEN={REDACTED_MARKER} password=hunter2") is not None
+        assert contains_exposed_secret(f"password=hunter2 HF_TOKEN={REDACTED_MARKER}") is not None
+
+
+class TestSafeRedactionMarkerVariants:
+    def test_accepts_bracket_redacted(self):
+        assert contains_exposed_secret("HF_TOKEN=[REDACTED]") is None
+
+    def test_accepts_angle_bracket_redacted(self):
+        assert contains_exposed_secret("HF_TOKEN=<redacted>") is None
+
+    def test_accepts_mixed_case_redacted(self):
+        assert contains_exposed_secret("hf_token=[Redacted]") is None
+
+    def test_accepts_token_present_smoke_reference(self):
+        assert contains_exposed_secret("token-present-smoke.json") is None
+
+    def test_accepts_token_absent_smoke_reference(self):
+        assert contains_exposed_secret("--evidence-file token-absent-smoke.json") is None
+
+
+class TestQuotedAndCompoundValues:
+    def test_detects_quoted_password(self):
+        assert contains_exposed_secret('--password="hunter2"') is not None
+
+    def test_accepts_quoted_redacted_marker(self):
+        assert contains_exposed_secret(f'--password="{REDACTED_MARKER}"') is None
+
+    def test_detects_quoted_space_separated_secret(self):
+        assert contains_exposed_secret('--secret "topsecretvalue"') is not None
+
+    def test_detects_env_style_assignment_without_dashes(self):
+        assert contains_exposed_secret("PASSWORD=hunter2") is not None
+
+    def test_mixed_case_name_is_still_sensitive(self):
+        assert contains_exposed_secret("Password=hunter2") is not None
+
+    def test_multiple_sensitive_arguments_first_exposure_reported(self):
+        exposure = contains_exposed_secret("--token=abc123456 --password=def")
+        assert exposure is not None

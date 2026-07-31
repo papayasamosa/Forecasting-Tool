@@ -195,6 +195,53 @@ class TestDDriveSetupContract:
         for var in REQUIRED_ENV_VARS:
             assert var in content, f"Activation script missing env var {var}"
 
+    def test_installer_sha256_is_well_formed(self):
+        """The pinned installer SHA-256 must be a 64-char lowercase hex
+        digest — catches truncation/typo without requiring a real download."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        m = re.search(r'\$expectedSha256\s*=\s*"([0-9a-fA-F]+)"', content)
+        assert m, "Could not locate $expectedSha256 in setup script"
+        digest = m.group(1)
+        assert digest == digest.lower(), "pinned SHA-256 must be lowercase"
+        assert len(digest) == 64, f"pinned SHA-256 has {len(digest)} chars, expected 64"
+
+    def test_installer_sha256_matches_verified_official_release(self):
+        """Regression guard for a live defect found while implementing this
+        work: the previously pinned SHA-256 (be2551f5...) never matched the
+        real python-3.12.10-amd64.exe release artifact — it would fail this
+        check on every run, blocking the D-drive runtime install entirely.
+        The corrected value below was verified against python.org's
+        published MD5 (5eddb0b6f12c852725de071ae681dde4) for the same file
+        and a valid Authenticode signature from the Python Software
+        Foundation. Pinned literally so a future edit can't silently
+        reintroduce a wrong hash."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert (
+            "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb" in content
+        ), "setup script no longer pins the verified python-3.12.10-amd64.exe SHA-256"
+        assert "be2551f5a3280b96d4d3c9472cdcd1c2443b58f11ddef5c270596a6223e5e68f" not in content, (
+            "setup script reverted to the stale, never-matching SHA-256"
+        )
+
+    def test_installer_download_url_matches_pinned_version(self):
+        """The download URL must reference the exact pinned installer file
+        the SHA-256/Authenticode checks below it were computed against."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert "python-3.12.10-amd64.exe" in content
+        assert "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" in content
+
+    def test_installer_authenticode_publisher_pinned(self):
+        """The installer's Authenticode signer must be checked against the
+        expected publisher string, not just 'has any valid signature'."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert "Get-AuthenticodeSignature" in content
+        assert "Python Software Foundation" in content
+        assert "expectedPublisher" in content
+
 
 class TestActivationContract:
     """Tests for the activation script."""

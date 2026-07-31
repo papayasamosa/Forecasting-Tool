@@ -98,60 +98,72 @@ def sanitise_command(command: Sequence[str]) -> str:
     return " ".join(out)
 
 
-# Substrings that prove a value was already redacted or is a legitimate,
-# non-secret reference — never flagged as an exposure even though they
-# contain a sensitive keyword.
-_ALLOWED_EXPOSURE_SUBSTRINGS = (
-    REDACTED_MARKER,
-    "token-state",
-    "token-present-run",
-    "token-absent-run",
-    "token-present-smoke",
-    "token-absent-smoke",
+# Values that prove a specific match was already redacted — checked against
+# the exact matched value/argument only, never against surrounding text, so
+# a safe marker on one assignment can never exempt a *different* exposed
+# value elsewhere in the same command (PR #26 review finding P1-1).
+_SAFE_VALUE_RE = re.compile(r"^(\*\*\*redacted\*\*\*|\[redacted\]|<redacted>)$", re.IGNORECASE)
+
+# A raw Hugging Face token literal is self-evidently a secret regardless of
+# what flag (if any) precedes it in the command string.
+_RAW_HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9]{16,}\b")
+
+_BEARER_RE = re.compile(r"authorization:\s*bearer\s+(\S+)", re.IGNORECASE)
+
+# "--name=value" or "NAME=value" (contiguous, no surrounding whitespace).
+_INLINE_NAME_VALUE_RE = re.compile(
+    r"(?<![\w-])(--?[A-Za-z][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_]*)=(\S*)"
 )
 
-_EXPOSURE_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
-    (re.compile(r"HF_TOKEN=[A-Za-z0-9_]{6,}", re.IGNORECASE), "exposed HF_TOKEN value"),
-    (re.compile(r"authorization:\s*bearer\s+\S+", re.IGNORECASE), "exposed Authorization header"),
-    (re.compile(r"password=\S+", re.IGNORECASE), "exposed password value"),
-    (re.compile(r"secret=\S+", re.IGNORECASE), "exposed secret value"),
-    (re.compile(r"api[_-]?key[=:]\s*\S+", re.IGNORECASE), "exposed API key"),
-    (re.compile(r"(?<![\w-])token=\S+", re.IGNORECASE), "exposed token value"),
-    # A raw Hugging Face token literal is self-evidently a secret regardless
-    # of what flag (if any) precedes it in the command string.
-    (re.compile(r"\bhf_[A-Za-z0-9]{16,}\b"), "raw Hugging Face token literal"),
-)
-
-# "--name value" (space-separated, not "--name=value") is the one form the
-# assignment-style patterns above can't express as a fixed regex, since
-# "name" varies. Reuses _name_is_sensitive so compound flags like
-# "--token-state" or "--token-present-run" are correctly left unflagged —
-# the same rule sanitise_command() uses to decide what to redact.
+# "--name value" (space-separated, not "--name=value"). Reuses
+# _name_is_sensitive so compound flags like "--token-state" or
+# "--token-present-run" are correctly left unflagged — the same rule
+# sanitise_command() uses to decide what to redact.
 _SPACE_SEPARATED_RE = re.compile(r"(--?[A-Za-z0-9][A-Za-z0-9_-]*)\s+(\S+)")
+
+
+def _strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _is_safe_value(value: str) -> bool:
+    return bool(_SAFE_VALUE_RE.match(_strip_matching_quotes(value)))
 
 
 def contains_exposed_secret(text: str) -> str | None:
     """Return a description of the first exposed secret found, else ``None``.
 
-    Skips any match whose surrounding line also contains one of the
-    allow-listed markers (the redaction marker itself, or a known
-    non-secret compound flag/value like ``token-state``).
+    Exempts only the matched value or compound flag itself — never a
+    surrounding window of text — so a safe marker elsewhere in the command
+    (e.g. ``--token-state present`` appearing near an unredacted
+    ``HF_TOKEN=...``) can never suppress a real, separate exposure.
     """
     if not text:
         return None
-    for pattern, description in _EXPOSURE_PATTERNS:
-        for match in pattern.finditer(text):
-            start = max(0, match.start() - 20)
-            end = min(len(text), match.end() + 20)
-            window = text[start:end]
-            if any(allowed in window for allowed in _ALLOWED_EXPOSURE_SUBSTRINGS):
-                continue
-            return description
+
+    if _RAW_HF_TOKEN_RE.search(text):
+        return "raw Hugging Face token literal"
+
+    for match in _BEARER_RE.finditer(text):
+        if not _is_safe_value(match.group(1)):
+            return "exposed Authorization header"
+
+    for match in _INLINE_NAME_VALUE_RE.finditer(text):
+        name, value = match.group(1), match.group(2)
+        if not _name_is_sensitive(name):
+            continue
+        if not value or _is_safe_value(value):
+            continue
+        return f"exposed {name.lstrip('-')} value"
+
     for match in _SPACE_SEPARATED_RE.finditer(text):
         name, value = match.group(1), match.group(2)
         if not _name_is_sensitive(name):
             continue
-        if value == REDACTED_MARKER:
+        if _is_safe_value(value):
             continue
         return f"exposed {name.lstrip('-')} value"
+
     return None

@@ -1008,7 +1008,7 @@ class ModelArtifactEvidence:
         if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "model_artifact":
-            errors.append(f"evidence_type: expected 'model_artifact'")
+            errors.append("evidence_type: expected 'model_artifact'")
         if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
             errors.append(
                 f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
@@ -1112,7 +1112,7 @@ class LocalStage0Bundle:
         if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "local_stage0_bundle":
-            errors.append(f"evidence_type: expected 'local_stage0_bundle'")
+            errors.append("evidence_type: expected 'local_stage0_bundle'")
         if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
             errors.append(
                 f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
@@ -1135,15 +1135,6 @@ class LocalStage0Bundle:
 
         if not self.model_artifact:
             errors.append("model_artifact: missing or empty")
-
-        # WP3: For a passing bundle, all 5 receipts are required
-        expected_receipts = [
-            "download_cold_smoke",
-            "process_cold_smoke",
-            "benchmark",
-            "token_present_smoke",
-            "model_artifact",
-        ]
 
         if self.bundle_passed:
             if not self.started_at_utc:
@@ -1398,14 +1389,45 @@ class CloudCollectionSession:
             errors.append("collection_session: session_id: empty")
         if not self.code_commit:
             errors.append("collection_session: code_commit: empty")
+        # PR #26 review finding P1-2: deployed_commit was not required, so a
+        # session describing a different (or no) deployment could still
+        # validate as long as its receipt digest was updated to match.
+        if not self.deployed_commit:
+            errors.append("collection_session: deployed_commit: empty")
+        if (
+            self.evidence_origin == EVIDENCE_ORIGIN_REAL
+            and self.code_commit
+            and self.deployed_commit
+            and self.code_commit != self.deployed_commit
+        ):
+            errors.append(
+                f"collection_session: code_commit '{self.code_commit}' != "
+                f"deployed_commit '{self.deployed_commit}' — a real collection "
+                f"session must describe a single deployment"
+            )
         if not self.test_names:
             errors.append("collection_session: test_names: empty — must name what was collected")
+        else:
+            seen_test_names: set[str] = set()
+            for name in self.test_names:
+                if name not in CANONICAL_CLOUD_TESTS:
+                    errors.append(f"collection_session: test_names: unexpected test '{name}'")
+                if name in seen_test_names:
+                    errors.append(f"collection_session: test_names: duplicate test '{name}'")
+                seen_test_names.add(name)
         if not self.started_at_utc:
             errors.append("collection_session: started_at_utc: empty")
         if not self.completed_at_utc:
             errors.append("collection_session: completed_at_utc: empty")
-        if self.started_at_utc and self.completed_at_utc and self.completed_at_utc < self.started_at_utc:
-            errors.append("collection_session: completed_at_utc before started_at_utc")
+        # Parsed, timezone-aware comparison — not lexical string comparison,
+        # which silently mis-orders timestamps with differing UTC offset
+        # notation (e.g. "+00:00" vs "Z" vs no offset at all).
+        if self.started_at_utc and self.completed_at_utc:
+            try:
+                if datetime.fromisoformat(self.started_at_utc) > datetime.fromisoformat(self.completed_at_utc):
+                    errors.append("collection_session: completed_at_utc before started_at_utc")
+            except (ValueError, TypeError):
+                errors.append("collection_session: cannot parse timestamps")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -1477,7 +1499,7 @@ class CloudEvidence:
         if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
             errors.append(f"schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
         if self.evidence_type != "cloud_stage0":
-            errors.append(f"evidence_type: expected 'cloud_stage0'")
+            errors.append("evidence_type: expected 'cloud_stage0'")
         if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
             errors.append(
                 f"evidence_origin: expected one of {VALID_EVIDENCE_ORIGINS}, "
@@ -1626,6 +1648,24 @@ class CloudEvidence:
                                         f"collection_session: evidence_origin "
                                         f"'{session_obj.evidence_origin}' != Cloud "
                                         f"record evidence_origin '{self.evidence_origin}'"
+                                    )
+                                # PR #26 review finding P1-2: a collection
+                                # session naming a different deployment could
+                                # still validate as long as its receipt
+                                # digest was updated to match — bind both
+                                # commit fields to the enclosing record, not
+                                # just the session's own internal consistency.
+                                if session_obj.code_commit != self.code_commit:
+                                    errors.append(
+                                        f"collection_session: code_commit "
+                                        f"'{session_obj.code_commit}' != Cloud "
+                                        f"record code_commit '{self.code_commit}'"
+                                    )
+                                if session_obj.deployed_commit != self.deployed_commit:
+                                    errors.append(
+                                        f"collection_session: deployed_commit "
+                                        f"'{session_obj.deployed_commit}' != Cloud "
+                                        f"record deployed_commit '{self.deployed_commit}'"
                                     )
                                 expected_digest = canonical_evidence_sha256(session_obj.to_dict())
                                 if not receipt_obj.canonical_content_sha256:
