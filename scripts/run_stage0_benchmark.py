@@ -6,7 +6,7 @@ Output directory defaults to D:\\Forecasting-Tool-Local\\benchmarks on Windows.
 Exits non-zero when the required suite fails (WP2).
 
 Usage:
-    D:\Forecasting-Tool-Local\venv\Scripts\python.exe scripts\run_stage0_benchmark.py --initial-cache-state process_cold_cached_weights
+    D:\\Forecasting-Tool-Local\\venv\\Scripts\\python.exe scripts\\run_stage0_benchmark.py --initial-cache-state process_cold_cached_weights
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def main() -> int:
             for err in v_errors:
                 print(f"  [FAIL] {err}")
             return 1
-        print(f"  Release validation: OK")
+        print("  Release validation: OK")
 
     return 0 if suite_ok else 1
 

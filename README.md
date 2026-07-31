@@ -205,14 +205,32 @@ The intended `main` branch protection policy requires:
 - Resolved review threads
 - Up-to-date branch
 
-PR CI must be green before merging. Note that PR #8 and PR #9 were merged
-while review threads remained unresolved — either the repository settings
-do not enforce the documented policy or the threads were created after
-merge. The documentation here describes the required policy, which should
-be independently verified against the GitHub repository settings.
+PR CI must be green before merging. Note that PR #8, PR #9, and PR #26 were
+merged while review threads remained unresolved — either the repository
+settings do not enforce the documented policy or the threads were created
+after merge. The documentation here describes the required policy, which
+should be independently verified against the GitHub repository settings.
 
-Push-to-main CI is configured but no post-merge commit has yet been
-verified on `main` — this will be confirmed after the next merge.
+A passing PR must satisfy all of the following before merge, not just a
+green CI run:
+
+- CI green (including the fail-closed coverage gate and targeted lint gate)
+- Review completed
+- Zero unresolved review conversations
+- Branch up to date with `main`
+- PR head SHA recorded in the PR description/commit trail
+- Post-merge `main` CI (the push-triggered run for the exact merge commit)
+  checked separately from the PR's own merge-ref run — a PR passing CI on
+  its merge ref does not by itself prove the merge commit on `main` is green
+
+`.github/workflows/ci.yml` triggers on both `push` to `main` and
+`pull_request` against `main`, so the mechanism for a separate post-merge
+run already exists; what has repeatedly been missing is someone actually
+checking that run's result before treating a merge as final.
+
+Push-to-main CI is configured but no post-merge commit had been verified on
+`main` as of PR #26's merge — this is confirmed after each subsequent merge
+(see below for this corrective PR's own record).
 
 Real-model evidence (Gates B2–D) has not yet been collected on the current head.
 
@@ -271,16 +289,39 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 > lock — capture a lock file after Cloud success. Community Cloud may process
 > `requirements.txt` with `uv` before falling back to `pip`.
 
-## Stage 0 publication and CI integrity closure
+## Stage 0 publication and CI integrity closure (PR #26)
 
-This PR closes the receipt/evidence-integrity and CI gaps found in PR #25's
+PR #26 closed the receipt/evidence-integrity and CI gaps found in PR #25's
 review (see PR #25 threads on `build_cloud_stage0_evidence.py`,
 `evidence_schemas.py`, `publish_evidence.py`, and `telemetry.py`) and the
-false-green coverage gate found in PR #25's own CI run. It does **not**
-collect any real Stage 0 evidence — Gate B3 stays invalid, Cloud Gate C
-stays pending, ADR-001 stays provisional, and Phase 1 stays paused; only
-the mechanisms that will validate a future real evidence collection are
-built and offline-contract-tested here.
+false-green coverage gate found in PR #25's own CI run. It did **not**
+collect any real Stage 0 evidence — Gate B3 stayed invalid, Cloud Gate C
+stayed pending, ADR-001 stayed provisional, and Phase 1 stayed paused; only
+the mechanisms that will validate a future real evidence collection were
+built and offline-contract-tested there.
+
+**Authoritative PR #26 CI results** (workflow run `30587158601`; the PR
+description's "86.70%" coverage figure is stale — this is the verified log):
+
+- 506 tests passed, 5 warnings
+- Actual coverage: 86.34% (configured gate: 82%)
+- Offline readiness verifier: 21/21 checks passed
+
+**Two P1 findings were live at merge** (both review threads were unresolved
+when PR #26 merged, verified via GitHub GraphQL):
+
+1. `src/redaction.py` — `contains_exposed_secret()` used a ±20-character
+   window allowlist, so a safe marker anywhere near a real credential (e.g.
+   `HF_TOKEN=abcdef --token-state present`) suppressed the exposure instead
+   of exempting only the matched value.
+2. `src/evidence_schemas.py` — `CloudCollectionSession.validate()` did not
+   require `deployed_commit`, and `CloudEvidence.validate()` never compared
+   the session's `code_commit`/`deployed_commit` against the enclosing
+   record, so a collection session describing a different deployment could
+   still validate once its receipt digest was updated to match.
+
+Both are fixed in the corrective PR described below, with regression tests
+that reproduce the reviewer's exact examples.
 
 Status tiers used below: **implemented** (code exists) → **offline
 contract-tested** (pytest/readiness-script coverage against synthetic
@@ -302,8 +343,74 @@ Stage 0/Cloud run has produced and published data through it) →
 
 None of the above have real evidence collected against them yet, and Cloud
 Gate C has not been attempted. The gated follow-on work (local Stage 0
-evidence rerun, then Community Cloud Gate C) is unblocked by this PR but
+evidence rerun, then Community Cloud Gate C) is unblocked by PR #26 but was
 out of scope for it.
+
+## PR #26 review closure and release-readiness closure
+
+This corrective PR fixes the two P1 findings that were live when PR #26
+merged (see above), adds behavioral readiness checks for both, and closes
+several related gaps found while doing that work. It does **not** collect
+any real Stage 0 evidence, deploy to Community Cloud, change the model ID
+or pinned revision, or resume Phase 1 — Gate B3 stays invalid, Cloud Gate C
+stays pending, ADR-001 stays provisional, and Phase 1 stays paused.
+
+Fixes:
+
+- **P1-1 (exact-match secret detection)**: `src/redaction.py`'s
+  `contains_exposed_secret()` no longer uses a surrounding-text window to
+  decide whether a match is exempt — only the matched value/argument
+  itself is checked against a safe-marker allowlist (`***REDACTED***`,
+  `[REDACTED]`, `<redacted>`). `tests/test_redaction.py` and
+  `tests/test_redaction_contract.py` reproduce the reviewer's exact
+  examples and prove every production receipt-validation path
+  (`ExecutionReceipt.validate()`, `receipt_is_release_ready()`, the local
+  bundle builder's `_validate_receipt_binding()`, and the readiness
+  verifier) rejects the same unsafe command.
+- **P1-2 (collection-session identity binding)**: `CloudCollectionSession.validate()`
+  now requires `deployed_commit` (previously optional) and rejects a real
+  session whose `code_commit` disagrees with its own `deployed_commit`.
+  `CloudEvidence.validate()` now additionally compares the collection
+  session's `code_commit`/`deployed_commit` against the enclosing record's
+  own fields, and validates session timestamps as parsed, timezone-aware
+  datetimes rather than lexical string comparison. `tests/test_evidence.py::TestCollectionSessionBinding`
+  mutates session commit, deployed commit, top-level commits, receipt
+  commit, receipt digest, and session ID independently — each fails
+  validation.
+- **Readiness verifier**: expanded from 21 to 25 checks — 4 new behavioral
+  checks cover a collection session naming another commit, an empty
+  `deployed_commit`, a collection receipt with the wrong commit identity,
+  and that a legitimately sanitised session/receipt pair still validates;
+  the existing secret-redaction check (`[9/25]`) gained the exact P1-1
+  reproduction strings.
+- **Installer integrity bug found while verifying the D-drive runtime
+  path**: the SHA-256 pinned in `scripts/setup_local_windows.ps1` for the
+  Python 3.12.10 installer never matched the real python.org release
+  artifact (verified against the official published MD5 and a valid
+  Authenticode signature from the Python Software Foundation) — every run
+  of the setup script would have failed this check. Corrected, with a
+  regression test pinning the verified value so it can't silently revert.
+- **Targeted lint debt**: fixed all F811 (redefinition), F541 (f-string
+  without placeholders), F841 (unused local variable), and W605 (invalid
+  escape sequence) findings in `src/redaction.py`, `src/evidence_schemas.py`,
+  `scripts/verify_stage0_evidence_readiness.py`,
+  `scripts/run_stage0_benchmark.py`, and `tests/test_evidence.py` — the
+  files this PR touches. Two of those findings were genuine test bugs, not
+  just style: a duplicate `test_app_restart_occurred_rejected` definition
+  silently shadowed the first (removed), and `test_missing_rolling_folds_rejected`
+  never called `.validate()` or asserted anything (fixed to actually
+  exercise the fold-count check). Repo-wide F811/F541/F841/W605 debt exists
+  in files this PR doesn't touch (`build_cloud_stage0_evidence.py`,
+  `build_local_stage0_bundle.py`, `chronos2_smoke_test.py`,
+  `install_simple.py`, `publish_evidence.py`, `benchmarking.py`,
+  `data_ingestion.py`, `test_benchmarking.py`, `test_producer_contract.py`)
+  and is intentionally left for a separate maintenance PR. CI now runs a
+  fail-closed `flake8 --select=F811,F541,F841,W605` step scoped to the four
+  modules this PR can hold at zero, alongside the existing fatal-only
+  (`E9,F63,F7,F82`) gate over the whole tree.
+
+**This PR's own CI results:** _(to be filled in the pull request description
+after CI runs, per the same governance requirement above.)_
 
 ## Developer MCP integrations (optional)
 

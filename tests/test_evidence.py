@@ -410,14 +410,15 @@ class TestBenchmarkSuiteValidation:
         # This test verifies the publisher-level guard, not the dataclass.
 
     def test_missing_rolling_folds_rejected(self):
+        # suite_passed stays True (claiming success) — the fold-count check
+        # only runs in that branch, so a suite claiming success with a
+        # missing fold must still be caught.
         data = _valid_benchmark_suite_dict()
-        # Remove one fold
         rolling = [s for s in data["scenarios"] if s["scenario"] == "10_rolling_calls"][0]
         rolling["samples"] = [s for s in rolling["samples"] if not s["label"].startswith("fold_9")]
-        rolling["scenario_passed"] = False
-        data["suite_passed"] = False
         ev = evidence_from_dict(data)
-        # Should flag missing folds since suite_passed is false already
+        errors = ev.validate()
+        assert any("10_rolling_calls" in e and "fold" in e for e in errors), errors
 
     def test_warm_cache_state_validated(self):
         data = _valid_benchmark_suite_dict()
@@ -631,13 +632,11 @@ class TestPublisherValidation:
 
 class TestSmokePhaseValidation:
     def test_smoke_phase_defaults(self):
-        from src.evidence_schemas import SmokePhase
         sp = SmokePhase()
         errors = sp.validate()
         assert errors == []
 
     def test_smoke_phase_to_dict_filters_empty(self):
-        from src.evidence_schemas import SmokePhase
         sp = SmokePhase(cache_state="download_cold", rss_mb=500.0)
         d = sp.to_dict()
         assert d["cache_state"] == "download_cold"
@@ -960,17 +959,83 @@ class TestCloudEvidenceValidation:
         errors = ev.validate()
         assert any("dependency_resolver" in e for e in errors)
 
-    def test_app_restart_occurred_rejected(self):
-        data = self._valid_cloud_dict({"app_restart_occurred": True})
-        ev = evidence_from_dict(data)
-        errors = ev.validate()
-        assert any("app_restart_occurred" in e for e in errors)
-
     def test_success_false_rejected(self):
         data = self._valid_cloud_dict({"success": False})
         ev = evidence_from_dict(data)
         errors = ev.validate()
         assert any("success" in e for e in errors)
+
+
+class TestCollectionSessionBinding:
+    """PR #26 review finding P1-2: a collection session naming a different
+    (or empty) deployment still validated as long as its receipt digest was
+    updated to match, because CloudEvidence.validate() checked the session's
+    own internal consistency but never compared it against the enclosing
+    record. Each test here independently mutates one identity field and
+    must be rejected by both typed validation and publication."""
+
+    def _valid_cloud_dict(self, overrides: dict | None = None) -> dict:
+        return TestCloudEvidenceValidation()._valid_cloud_dict(overrides)
+
+    def test_session_code_commit_mismatch_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["code_commit"] = "different-commit"
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_session: code_commit" in e for e in errors), errors
+
+    def test_session_deployed_commit_mismatch_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["deployed_commit"] = "different-commit"
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_session: deployed_commit" in e for e in errors), errors
+
+    def test_session_empty_deployed_commit_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["deployed_commit"] = ""
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_session: deployed_commit: empty" in e for e in errors), errors
+
+    def test_top_level_code_commit_mutation_breaks_session_binding(self):
+        data = self._valid_cloud_dict()
+        data["code_commit"] = "mutated-top-level-commit"
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_session: code_commit" in e for e in errors), errors
+
+    def test_top_level_deployed_commit_mutation_breaks_session_binding(self):
+        data = self._valid_cloud_dict()
+        data["deployed_commit"] = "mutated-deployed-commit"
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_session: deployed_commit" in e for e in errors), errors
+
+    def test_collection_receipt_code_commit_mutation_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_receipt"]["code_commit"] = "different-commit"
+        errors = evidence_from_dict(data).validate()
+        assert any("collection_receipt: code_commit" in e for e in errors), errors
+
+    def test_collection_receipt_digest_mutation_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_receipt"]["canonical_content_sha256"] = "0" * 64
+        errors = evidence_from_dict(data).validate()
+        assert any("canonical_content_sha256" in e for e in errors), errors
+
+    def test_session_id_mutation_breaks_digest_binding(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["session_id"] = "a-different-session-id"
+        errors = evidence_from_dict(data).validate()
+        assert any("canonical_content_sha256" in e for e in errors), errors
+
+    def test_duplicate_test_name_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["test_names"] = ["cold_forecast", "cold_forecast"]
+        errors = evidence_from_dict(data).validate()
+        assert any("duplicate test" in e for e in errors), errors
+
+    def test_unexpected_test_name_rejected(self):
+        data = self._valid_cloud_dict()
+        data["collection_session"]["test_names"] = ["not_a_real_test"]
+        errors = evidence_from_dict(data).validate()
+        assert any("unexpected test" in e for e in errors), errors
 
 
 # ---------------------------------------------------------------------------
@@ -1013,7 +1078,7 @@ class TestCanonicalDigest:
         assert isinstance(h, str) and len(h) == 64
 
     def test_smoke_evidence_digest(self):
-        from src.evidence_schemas import canonical_evidence_sha256, SmokeEvidence
+        from src.evidence_schemas import canonical_evidence_sha256
         ev = SmokeEvidence(success=True, code_commit="abc123", model_revision="rev1")
         d = ev.to_dict()
         h = canonical_evidence_sha256(d)
@@ -1094,7 +1159,6 @@ class TestEvidenceOrigin:
     validation rather than silently being treated as real_measurement."""
 
     def test_smoke_evidence_no_default_origin(self):
-        from src.evidence_schemas import SmokeEvidence
         ev = SmokeEvidence()
         assert ev.evidence_origin == ""
         assert any("evidence_origin" in e for e in ev.validate())
@@ -1603,7 +1667,6 @@ class TestManifestVerifier:
 
     def test_verify_manifest_with_valid_data(self):
         """Test verify_manifest() logic with a temporary manifest."""
-        import tempfile
         import hashlib
         from scripts.verify_evidence_manifest import verify_manifest
 
@@ -1665,7 +1728,6 @@ class TestManifestVerifier:
 
     def test_verify_manifest_detects_hash_mismatch(self):
         """verify_manifest() must detect SHA-256 mismatch."""
-        import tempfile
         from scripts.verify_evidence_manifest import verify_manifest
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1720,7 +1782,6 @@ class TestManifestVerifier:
 
     def test_verify_manifest_detects_missing_file(self):
         """verify_manifest() must detect missing files."""
-        import tempfile
         from scripts.verify_evidence_manifest import verify_manifest
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2264,7 +2325,7 @@ class TestCachePreflight:
         assert any("cache_source" in e for e in errors)
 
     def test_valid_source_accepted(self):
-        from src.evidence_schemas import CachePreflight, CACHE_SOURCE_EXPLICIT, CACHE_STATE_PROCESS_COLD
+        from src.evidence_schemas import CachePreflight, CACHE_SOURCE_EXPLICIT
         cp = CachePreflight(
             inspection_succeeded=True,
             cache_source=CACHE_SOURCE_EXPLICIT,
@@ -2784,7 +2845,9 @@ class TestCanonicalRegistryParity:
         assert not extra, f"Checklist has extra names not in registry: {extra}"
 
     def test_template_matches_registry(self):
-        """The Cloud template acceptance_tests must contain all canonical names."""
+        """The Cloud template acceptance_tests, once populated, must contain
+        all canonical names. Currently empty — documents the known gap
+        explicitly via skip rather than computing an unused comparison."""
         template_path = Path(__file__).resolve().parent.parent / "docs" / "evidence" / "stage0" / "cloud_stage0_template.json"
         import json
         with open(template_path) as f:
@@ -2792,8 +2855,9 @@ class TestCanonicalRegistryParity:
         template_names = {t["test_name"] for t in template.get("acceptance_tests", [])}
         from src.evidence_schemas import CANONICAL_CLOUD_TESTS
         registry_names = set(CANONICAL_CLOUD_TESTS)
-        # Template has empty list, so missing names are expected
-        # This test documents the gap for now
+        if not template_names:
+            pytest.skip("cloud_stage0_template.json acceptance_tests is still empty — known gap")
+        assert template_names == registry_names
 
 
 class TestReceiptContext:

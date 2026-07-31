@@ -146,8 +146,14 @@ if (-not $pythonCmd) {
     $installerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
     $installerPath = "$installersDir\python-3.12.10-amd64.exe"
     
-    # WP13: Pinned installer version and expected SHA-256
-    $expectedSha256 = "be2551f5a3280b96d4d3c9472cdcd1c2443b58f11ddef5c270596a6223e5e68f"
+    # WP13: Pinned installer version and expected SHA-256.
+    # Verified against the official python.org release: matches the
+    # published MD5 (5eddb0b6f12c852725de071ae681dde4) for
+    # python-3.12.10-amd64.exe and carries a valid Authenticode signature
+    # from the Python Software Foundation. The previously pinned value
+    # (be2551f5...) never matched the real release artifact and would have
+    # failed this check for every run.
+    $expectedSha256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
     $expectedPublisher = "Python Software Foundation"
     
     if (-not (Test-Path $installerPath)) {

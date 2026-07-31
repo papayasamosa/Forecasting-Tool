@@ -385,6 +385,11 @@ def _check_secret_redaction() -> list[str]:
         # undetected by contains_exposed_secret() (only "name=value" forms
         # were checked) even though sanitise_command() already redacted it.
         "python smoke_test.py --hf-token hf_realsecretvalue1234567890",
+        # PR #26 review finding P1-1: a safe marker anywhere in a ±20-char
+        # window used to exempt an unrelated real exposure elsewhere in the
+        # same command. Exemption must apply only to the matched value.
+        "HF_TOKEN=abcdef --token-state present",
+        "password=hunter2 ***REDACTED***",
     ]
 
     for cmd in allowed_commands:
@@ -394,6 +399,174 @@ def _check_secret_redaction() -> list[str]:
         if contains_exposed_secret(cmd) is None:
             errors.append(f"rejected command was not caught: '{cmd}'")
 
+    return errors
+
+
+def _check_collection_session_wrong_commit_rejected() -> list[str]:
+    """PR #26 review finding P1-2: a collection_session naming a different
+    commit than the enclosing Cloud record must be rejected — its own
+    internal consistency (code_commit == deployed_commit within the
+    session) is not enough."""
+    errors: list[str] = []
+    try:
+        from src.evidence_schemas import CloudEvidence, CloudCollectionSession, canonical_evidence_sha256
+    except ImportError as exc:
+        errors.append(f"evidence_schemas import failed: {exc}")
+        return errors
+
+    session_kwargs = dict(
+        evidence_schema_version="2", evidence_type="collection_session",
+        evidence_origin="real_measurement", session_id="session-1",
+        code_commit="different-commit", deployed_commit="different-commit",
+        test_names=["cold_forecast"],
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+    )
+    digest = canonical_evidence_sha256(CloudCollectionSession(**session_kwargs).to_dict())
+    receipt_kwargs = dict(
+        evidence_schema_version="2", evidence_type="execution_receipt",
+        execution_id="exec-1", attestation_type="operator_attested",
+        code_commit="abc123", producer_version="1.0",
+        sanitised_command="python build_cloud_stage0_evidence.py",
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+        exit_code=0, canonical_content_sha256=digest,
+        model_id="amazon/chronos-2", configured_revision="rev1",
+        resolved_revision="rev1", environment_summary="python=3.12",
+        evidence_origin="real_measurement", git_worktree_clean=True,
+    )
+    evidence = CloudEvidence(
+        evidence_origin="real_measurement", success=True,
+        code_commit="abc123", deployed_commit="abc123",
+        collection_session=session_kwargs, collection_receipt=receipt_kwargs,
+    )
+    errs = evidence.validate()
+    if not any("collection_session: code_commit" in e for e in errs):
+        errors.append(
+            "CloudEvidence.validate() accepted a collection_session naming a "
+            "different code_commit than the enclosing record"
+        )
+    if not any("collection_session: deployed_commit" in e for e in errs):
+        errors.append(
+            "CloudEvidence.validate() accepted a collection_session naming a "
+            "different deployed_commit than the enclosing record"
+        )
+    return errors
+
+
+def _check_collection_session_empty_deployed_commit_rejected() -> list[str]:
+    """PR #26 review finding P1-2: deployed_commit was not required on
+    CloudCollectionSession — an empty value must be rejected."""
+    errors: list[str] = []
+    try:
+        from src.evidence_schemas import CloudCollectionSession
+    except ImportError as exc:
+        errors.append(f"evidence_schemas import failed: {exc}")
+        return errors
+
+    session = CloudCollectionSession(
+        evidence_schema_version="2", evidence_type="collection_session",
+        evidence_origin="real_measurement", session_id="session-1",
+        code_commit="abc123", deployed_commit="",
+        test_names=["cold_forecast"],
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+    )
+    errs = session.validate()
+    if not any("deployed_commit: empty" in e for e in errs):
+        errors.append("CloudCollectionSession.validate() accepted an empty deployed_commit")
+    return errors
+
+
+def _check_collection_receipt_wrong_identity_rejected() -> list[str]:
+    """A collection_receipt whose own code_commit disagrees with the Cloud
+    record's deployed_commit must be rejected, even when it binds a
+    structurally valid, otherwise-matching collection_session."""
+    errors: list[str] = []
+    try:
+        from src.evidence_schemas import CloudEvidence, CloudCollectionSession, canonical_evidence_sha256
+    except ImportError as exc:
+        errors.append(f"evidence_schemas import failed: {exc}")
+        return errors
+
+    session_kwargs = dict(
+        evidence_schema_version="2", evidence_type="collection_session",
+        evidence_origin="real_measurement", session_id="session-1",
+        code_commit="abc123", deployed_commit="abc123",
+        test_names=["cold_forecast"],
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+    )
+    digest = canonical_evidence_sha256(CloudCollectionSession(**session_kwargs).to_dict())
+    receipt_kwargs = dict(
+        evidence_schema_version="2", evidence_type="execution_receipt",
+        execution_id="exec-1", attestation_type="operator_attested",
+        code_commit="wrong-commit",  # disagrees with deployed_commit below
+        producer_version="1.0",
+        sanitised_command="python build_cloud_stage0_evidence.py",
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+        exit_code=0, canonical_content_sha256=digest,
+        model_id="amazon/chronos-2", configured_revision="rev1",
+        resolved_revision="rev1", environment_summary="python=3.12",
+        evidence_origin="real_measurement", git_worktree_clean=True,
+    )
+    evidence = CloudEvidence(
+        evidence_origin="real_measurement", success=True,
+        code_commit="abc123", deployed_commit="abc123",
+        collection_session=session_kwargs, collection_receipt=receipt_kwargs,
+    )
+    errs = evidence.validate()
+    if not any("collection_receipt: code_commit" in e for e in errs):
+        errors.append(
+            "CloudEvidence.validate() accepted a collection_receipt whose "
+            "code_commit disagrees with deployed_commit"
+        )
+    return errors
+
+
+def _check_sanitised_collection_binding_still_valid() -> list[str]:
+    """The publisher's sanitise-before-bind pipeline must not corrupt the
+    collection_session/collection_receipt identity binding added for PR #26
+    finding P1-2 — a legitimately matching session+receipt pair must still
+    validate with zero binding errors after passing through
+    publish_evidence.py's _sanitise_evidence()."""
+    errors: list[str] = []
+    try:
+        from src.evidence_schemas import CloudEvidence, CloudCollectionSession, canonical_evidence_sha256
+        from scripts.publish_evidence import _sanitise_evidence
+    except ImportError as exc:
+        errors.append(f"import failed: {exc}")
+        return errors
+
+    session_kwargs = dict(
+        evidence_schema_version="2", evidence_type="collection_session",
+        evidence_origin="real_measurement", session_id="session-1",
+        code_commit="abc123", deployed_commit="abc123",
+        test_names=["cold_forecast"],
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+    )
+    digest = canonical_evidence_sha256(CloudCollectionSession(**session_kwargs).to_dict())
+    receipt_kwargs = dict(
+        evidence_schema_version="2", evidence_type="execution_receipt",
+        execution_id="exec-1", attestation_type="operator_attested",
+        code_commit="abc123", producer_version="1.0",
+        sanitised_command="HF_TOKEN=***REDACTED*** python build_cloud_stage0_evidence.py",
+        started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
+        exit_code=0, canonical_content_sha256=digest,
+        model_id="amazon/chronos-2", configured_revision="rev1",
+        resolved_revision="rev1", environment_summary="python=3.12",
+        evidence_origin="real_measurement", git_worktree_clean=True,
+    )
+    raw = {
+        "evidence_origin": "real_measurement", "success": True,
+        "code_commit": "abc123", "deployed_commit": "abc123",
+        "collection_session": session_kwargs, "collection_receipt": receipt_kwargs,
+    }
+    sanitised = _sanitise_evidence(raw)
+    evidence = CloudEvidence(**sanitised)
+    errs = evidence.validate()
+    binding_errs = [e for e in errs if "collection_session" in e or "collection_receipt" in e]
+    if binding_errs:
+        errors.append(
+            "sanitisation broke the collection_session/collection_receipt "
+            "binding: " + "; ".join(binding_errs)
+        )
     return errors
 
 
@@ -748,7 +921,7 @@ def main() -> int:
     print("=" * 64)
 
     # 1. Schema module consistency
-    print("\n[1/21] Schema module consistency...")
+    print("\n[1/25] Schema module consistency...")
     errors = _check_schema_module()
     if errors:
         for e in errors:
@@ -758,7 +931,7 @@ def main() -> int:
         print("  [OK]")
 
     # 2. Canonical registry parity
-    print("\n[2/21] Canonical Cloud test registry parity...")
+    print("\n[2/25] Canonical Cloud test registry parity...")
     errors = _check_canonical_registry_parity()
     if errors:
         for e in errors:
@@ -768,7 +941,7 @@ def main() -> int:
         print("  [OK]")
 
     # 3. Cloud builder synthetic fixture
-    print("\n[3/21] Cloud builder with valid synthetic fixture...")
+    print("\n[3/25] Cloud builder with valid synthetic fixture...")
     errors = _check_cloud_builder_synthetic_fixture()
     if errors:
         for e in errors:
@@ -778,7 +951,7 @@ def main() -> int:
         print("  [OK]")
 
     # 4. Benchmark preflight ordering
-    print("\n[4/21] Benchmark preflight ordering contract...")
+    print("\n[4/25] Benchmark preflight ordering contract...")
     errors = _check_benchmark_preflight_ordering()
     if errors:
         for e in errors:
@@ -788,7 +961,7 @@ def main() -> int:
         print("  [OK]")
 
     # 5. Receipt binding contract
-    print("\n[5/21] Receipt binding typeness and mandatory validation...")
+    print("\n[5/25] Receipt binding typeness and mandatory validation...")
     errors = _check_receipt_binding_contract()
     if errors:
         for e in errors:
@@ -798,7 +971,7 @@ def main() -> int:
         print("  [OK]")
 
     # 6. Invalidated evidence
-    print("\n[6/21] Invalidated evidence remains non-passing...")
+    print("\n[6/25] Invalidated evidence remains non-passing...")
     errors = _check_invalidated_evidence()
     if errors:
         for e in errors:
@@ -808,7 +981,7 @@ def main() -> int:
         print("  [OK]")
 
     # 7. Canonical digest determinism
-    print("\n[7/21] Canonical digest determinism and mutation detection...")
+    print("\n[7/25] Canonical digest determinism and mutation detection...")
     errors = _check_canonical_digest()
     if errors:
         for e in errors:
@@ -818,7 +991,7 @@ def main() -> int:
         print("  [OK]")
 
     # 8. Sanitisation idempotence
-    print("\n[8/21] Sanitisation idempotence...")
+    print("\n[8/25] Sanitisation idempotence...")
     errors = _check_sanitisation()
     if errors:
         for e in errors:
@@ -828,7 +1001,7 @@ def main() -> int:
         print("  [OK]")
 
     # 9. Secret-redaction detection
-    print("\n[9/21] Secret-redaction detection...")
+    print("\n[9/25] Secret-redaction detection...")
     errors = _check_secret_redaction()
     if errors:
         for e in errors:
@@ -838,7 +1011,7 @@ def main() -> int:
         print("  [OK]")
 
     # 10. Manifest verification
-    print("\n[10/21] Manifest hash verification...")
+    print("\n[10/25] Manifest hash verification...")
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "verify_evidence_manifest.py")],
         capture_output=True, text=True, timeout=30,
@@ -852,7 +1025,7 @@ def main() -> int:
         print("  [OK]")
 
     # 11. WP12 regression tests for PR #24 defects
-    print("\n[11/21] WP12 regression tests (receipt SHA, digest mutation)...")
+    print("\n[11/25] WP12 regression tests (receipt SHA, digest mutation)...")
     errors = run_wp12_regression_tests()
     if errors:
         for e in errors:
@@ -873,9 +1046,14 @@ def main() -> int:
         (19, "Non-finite canonical JSON is rejected", _check_non_finite_canonical_json_rejected),
         (20, "MCP/Graphify paths outside D: are rejected", _check_mcp_graphify_paths_outside_d_rejected),
         (21, "Coverage gate is fail-closed (rounding fix in place)", _check_coverage_gate_fail_closed),
+        # PR #26 review regressions (P1-1, P1-2)
+        (22, "Collection session for another commit is rejected (P1-2)", _check_collection_session_wrong_commit_rejected),
+        (23, "Empty collection-session deployed_commit is rejected (P1-2)", _check_collection_session_empty_deployed_commit_rejected),
+        (24, "Collection receipt with wrong commit identity is rejected (P1-2)", _check_collection_receipt_wrong_identity_rejected),
+        (25, "Sanitised collection_session/collection_receipt binding still validates", _check_sanitised_collection_binding_still_valid),
     ]
     for n, label, check_fn in _wp_m_checks:
-        print(f"\n[{n}/21] {label}...")
+        print(f"\n[{n}/25] {label}...")
         errors = check_fn()
         if errors:
             for e in errors:
