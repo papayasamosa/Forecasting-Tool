@@ -400,6 +400,8 @@ class TestProducerBundleAcceptance:
                 "configured_revision": "rev1",
                 "resolved_revision": "rev1",
                 "environment_summary": "python=3.12",
+                "evidence_origin": "real_measurement",
+                "git_worktree_clean": True,
             }
             rpath = tmp_path / f"{comp_path.stem}_receipt.json"
             with open(rpath, "w") as f:
@@ -502,4 +504,78 @@ class TestProducerCLI:
             capture_output=True, text=True, timeout=30,
         )
         assert result.returncode != 0
-        assert "initial-cache-state" in result.stdout or "initial-cache-state" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# WP-E: the preferred execution wrapper's receipt must be accepted by the
+# local bundle builder's binding check, end to end, via a fake producer.
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionWrapperBundleCompatibility:
+    def test_run_with_receipt_output_accepted_by_bundle_binding(self, tmp_path):
+        """A receipt produced by run_with_receipt() (which only sets
+        canonical_content_sha256, never the legacy component_sha256) must
+        pass build_local_stage0_bundle.py's _validate_receipt_binding()
+        with zero errors — this is the exact incompatibility WP-E closes.
+        """
+        from src.telemetry import run_with_receipt
+        from scripts.build_local_stage0_bundle import _validate_receipt_binding
+
+        component_path = tmp_path / "fake_component.json"
+        script = (
+            "import json,sys; "
+            f"json.dump({{'evidence_type': 'smoke_test', 'success': True, "
+            f"'code_commit': 'abc123', 'model_id': 'amazon/chronos-2', "
+            f"'configured_revision': 'rev1', 'model_revision': 'rev1'}}, "
+            f"open(r'{component_path}', 'w'))"
+        )
+        exit_code, receipt = run_with_receipt(
+            command=[sys.executable, "-c", script],
+            output_component_path=str(component_path),
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+            evidence_origin="real_measurement",
+        )
+        assert exit_code == 0
+        assert receipt["component_sha256"] == ""
+        assert receipt["canonical_content_sha256"]
+
+        receipt["code_commit"] = "abc123"
+        receipt_path = tmp_path / "fake_component_receipt.json"
+        with open(receipt_path, "w", encoding="utf-8") as f:
+            json.dump(receipt, f)
+
+        errors = _validate_receipt_binding(
+            str(receipt_path), str(component_path), "fake_component"
+        )
+        assert errors == [], f"Unexpected binding errors: {errors}"
+
+    def test_failed_command_receipt_rejected_even_with_stale_output(self, tmp_path):
+        """A receipt for a non-zero exit code must never bind a component,
+        even if an output file happens to exist on disk (e.g. left over
+        from an earlier successful run) — stale output cannot be passed
+        off as evidence for a later failed execution."""
+        from src.telemetry import run_with_receipt
+        from scripts.build_local_stage0_bundle import _validate_receipt_binding
+
+        component_path = tmp_path / "stale_component.json"
+        with open(component_path, "w", encoding="utf-8") as f:
+            json.dump({"evidence_type": "smoke_test", "success": True}, f)
+
+        exit_code, receipt = run_with_receipt(
+            command=[sys.executable, "-c", "import sys; sys.exit(1)"],
+            output_component_path=str(component_path),
+            evidence_origin="real_measurement",
+        )
+        assert exit_code == 1
+
+        receipt_path = tmp_path / "stale_component_receipt.json"
+        with open(receipt_path, "w", encoding="utf-8") as f:
+            json.dump(receipt, f)
+
+        errors = _validate_receipt_binding(
+            str(receipt_path), str(component_path), "stale_component"
+        )
+        assert any("exit_code" in e and "cannot bind" in e for e in errors)

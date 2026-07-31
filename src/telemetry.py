@@ -194,7 +194,8 @@ class ReceiptContext:
         resolved_revision: str = "",
         environment_summary: str = "",
         attestation_type: str = "operator_attested",
-        evidence_origin: str = "real_measurement",
+        *,
+        evidence_origin: str,
     ) -> dict[str, Any]:
         """Build an ExecutionReceipt dict with captured execution metadata.
 
@@ -234,7 +235,9 @@ class ReceiptContext:
             execution_id=self.execution_id,
             attestation_type=attestation_type,
             code_commit=self.trace.get("code_commit", ""),
+            producer_name="ReceiptContext.build_receipt",
             producer_version="1.0",
+            git_worktree_clean=self.trace.get("git_worktree_clean", False),
             sanitised_command=sanitised_command,
             started_at_utc=self.started_at_utc,
             completed_at_utc=self.completed_at_utc,
@@ -256,7 +259,8 @@ def run_with_receipt(
     configured_revision: str = "",
     resolved_revision: str = "",
     attestation_type: str = "operator_attested",
-    evidence_origin: str = "real_measurement",
+    *,
+    evidence_origin: str,
     cwd: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run a subprocess command and capture execution metadata for a receipt.
@@ -320,12 +324,15 @@ def run_with_receipt(
         canonical_digest = ""
 
     # Build receipt
+    from src.redaction import sanitise_command
     receipt = ExecutionReceipt(
         execution_id=execution_id,
         attestation_type=attestation_type,
         code_commit=trace.get("code_commit", ""),
+        producer_name="run_with_receipt",
         producer_version="1.0",
-        sanitised_command=" ".join(command),
+        git_worktree_clean=trace.get("git_worktree_clean", False),
+        sanitised_command=sanitise_command(command),
         started_at_utc=now.isoformat(),
         completed_at_utc=completed.isoformat(),
         exit_code=exit_code,
@@ -353,6 +360,8 @@ def write_execution_receipt(
     resolved_revision: str = "",
     evidence_dir: str = "",
     attestation_type: str = "operator_attested",
+    *,
+    evidence_origin: str,
 ) -> dict[str, Any]:
     """Write an ``ExecutionReceipt`` for a completed component file.
 
@@ -372,6 +381,8 @@ def write_execution_receipt(
         Directory for the receipt JSON output.
     attestation_type : str
         ``github_attestation`` or ``operator_attested``.
+    evidence_origin : str
+        ``real_measurement`` or ``synthetic_fixture``. Never defaulted.
 
     Returns
     -------
@@ -411,7 +422,9 @@ def write_execution_receipt(
         execution_id=str(uuid.uuid4()),
         attestation_type=attestation_type,
         code_commit=trace.get("code_commit", ""),
+        producer_name="write_execution_receipt",
         producer_version="1.0",
+        git_worktree_clean=trace.get("git_worktree_clean", False),
         sanitised_command=sanitised_command,
         started_at_utc=started.isoformat(),
         completed_at_utc=started.isoformat(),
@@ -419,6 +432,7 @@ def write_execution_receipt(
         component_sha256=component_sha256,
         source_file_sha256=component_sha256,
         canonical_content_sha256=canonical_digest,
+        evidence_origin=evidence_origin,
         model_id=model_id,
         configured_revision=configured_revision,
         resolved_revision=resolved_revision,

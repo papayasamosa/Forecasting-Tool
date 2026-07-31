@@ -186,7 +186,12 @@ def verify_manifest() -> int:
             # Continue to report all errors even if hash fails
 
         # evidence_type validation
+        # WP-I: receipt_<key> entries (e.g. "receipt_token_absent_receipt")
+        # are dynamic per-bundle keys, not in the static EXPECTED_TYPES map —
+        # they are always execution_receipt records written as real files.
         expected_type = EXPECTED_TYPES.get(key)
+        if expected_type is None and key.startswith("receipt_"):
+            expected_type = "execution_receipt"
         if expected_type and evidence_type:
             if evidence_type != expected_type:
                 errors.append(

@@ -17,6 +17,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from src.redaction import contains_exposed_secret
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -39,7 +41,12 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
     Rules:
     - UTF-8 JSON serialisation with sorted keys at every nesting level.
     - Fixed separators (no whitespace): ``(',', ':')``.
-    - Floats serialised via ``repr()`` to avoid platform-dependent rounding.
+    - Floats are serialised by the standard library's own ``repr``-equivalent
+      float formatter (``json.dumps`` handles native floats directly — the
+      ``default`` callback below is never invoked for them).
+    - Non-finite floats (``NaN``, ``Infinity``, ``-Infinity``) are rejected
+      with ``ValueError`` rather than silently emitted as non-standard JSON
+      tokens, since they cannot round-trip deterministically across readers.
     - No timestamps or fields are removed — the full semantic content is
       hashed, so any semantic mutation changes the digest.
     - Returns a lowercase 64-character hex SHA-256 string.
@@ -53,6 +60,11 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
     -------
     str
         Lowercase 64-character hex SHA-256.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` contains a NaN or +/-Infinity float anywhere.
     """
     def _sort(obj: Any) -> Any:
         """Recursively sort keys and convert tuples to lists."""
@@ -66,12 +78,15 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
 
     sorted_data = _sort(data)
 
-    # Serialise with fixed separators, sorted keys, and explicit float repr
+    # allow_nan=False makes json.dumps raise ValueError on NaN/Infinity/
+    # -Infinity instead of silently emitting the non-standard JSON tokens
+    # `NaN`/`Infinity`/`-Infinity`, which most JSON readers cannot parse.
     canonical = json.dumps(
         sorted_data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
         default=_canonical_json_default,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -80,10 +95,10 @@ def canonical_evidence_sha256(data: dict[str, Any]) -> str:
 def _canonical_json_default(obj: Any) -> str:
     """JSON default serialiser for canonical hashing.
 
-    Handles floats via ``repr()`` for cross-platform determinism.
+    Only invoked for types ``json.dumps`` cannot natively serialise (e.g.
+    sets, datetimes) — floats, including non-finite ones, are handled
+    natively by ``json.dumps`` before this callback is ever consulted.
     """
-    if isinstance(obj, float):
-        return repr(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
@@ -340,12 +355,19 @@ class ExecutionReceipt:
     published_file_sha256: str = ""
     canonical_content_sha256: str = ""
     # WP7: Evidence origin
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     model_id: str = ""
     configured_revision: str = ""
     resolved_revision: str = ""
     environment_summary: str = ""
     immutable_artifact_reference: str = ""
+    # WP3: Producer identity and worktree cleanliness. Not structurally
+    # required here — a receipt can legitimately describe a failed or
+    # dirty-worktree run that is still worth recording as non-passing —
+    # but both are required for a receipt to be release-ready; see
+    # receipt_is_release_ready() below.
+    producer_name: str = ""
+    git_worktree_clean: bool = False
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -368,6 +390,10 @@ class ExecutionReceipt:
             errors.append("execution_receipt: producer_version empty")
         if not self.sanitised_command:
             errors.append("execution_receipt: sanitised_command empty")
+        # WP5: Reject exposed secrets stored in the command field
+        exposure = contains_exposed_secret(self.sanitised_command)
+        if exposure:
+            errors.append(f"execution_receipt: sanitised_command contains {exposure}")
         if not self.started_at_utc:
             errors.append("execution_receipt: started_at_utc empty")
         if not self.completed_at_utc:
@@ -440,6 +466,34 @@ class ExecutionReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def receipt_is_release_ready(receipt: ExecutionReceipt) -> list[str]:
+    """Check the stricter gate a receipt must pass to back *passing* release
+    evidence (WP3), on top of ``receipt.validate()``'s structural checks.
+
+    A structurally valid receipt can still describe a failed command, a
+    synthetic fixture run, or a dirty worktree — none of those are release
+    evidence. Returns an empty list only if the receipt is eligible to back
+    passing release evidence.
+    """
+    errors = list(receipt.validate())
+    if receipt.exit_code != 0:
+        errors.append(
+            f"execution_receipt: exit_code {receipt.exit_code} != 0 — "
+            f"not eligible for release evidence"
+        )
+    if receipt.evidence_origin != EVIDENCE_ORIGIN_REAL:
+        errors.append(
+            f"execution_receipt: evidence_origin '{receipt.evidence_origin}' "
+            f"!= '{EVIDENCE_ORIGIN_REAL}' — not eligible for release evidence"
+        )
+    if not receipt.git_worktree_clean:
+        errors.append(
+            "execution_receipt: git_worktree_clean is false — "
+            "not eligible for release evidence"
+        )
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +628,7 @@ class SmokeEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "smoke_test"
     # WP7: Evidence origin
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     test: str = "chronos2_smoke_test"
     success: bool = False
     code_commit: str = ""
@@ -796,7 +850,7 @@ class BenchmarkScenarioRecord:
 class BenchmarkSuiteEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "benchmark_suite"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     suite_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -931,7 +985,7 @@ class ModelArtifactFile:
 class ModelArtifactEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "model_artifact"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     code_commit: str = ""
     git_worktree_clean: bool = False
     model_id: str = ""
@@ -1040,7 +1094,7 @@ class ModelArtifactEvidence:
 class LocalStage0Bundle:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "local_stage0_bundle"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     bundle_passed: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -1195,8 +1249,15 @@ class LocalStage0Bundle:
                 )
                 continue
 
-            # Run receipt validate()
-            r_errors = receipt.validate()
+            # WP-J: a passing, real-measurement bundle must bind receipts
+            # that are actually release-ready (exit_code == 0,
+            # evidence_origin == real_measurement, git_worktree_clean ==
+            # true) — not just structurally valid. receipt.validate() alone
+            # would accept a receipt describing a failed or synthetic run.
+            if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+                r_errors = receipt_is_release_ready(receipt)
+            else:
+                r_errors = receipt.validate()
             for re in r_errors:
                 errors.append(f"receipts.{key}: {re}")
 
@@ -1296,6 +1357,62 @@ class LocalStage0Bundle:
 
 
 # ---------------------------------------------------------------------------
+# Cloud collection session (WP-G)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class CloudCollectionSession:
+    """What a Cloud evidence-collection run actually collected.
+
+    ``collection_receipt`` on ``CloudEvidence`` previously bound to nothing
+    — unlike the token-path receipts, which bind their canonical digest to
+    ``token_absent_result``/``token_present_result``, there was no record
+    for the collection receipt to describe. This is that record: naming the
+    session, the code/deployment it ran against, and which of the canonical
+    Cloud tests it collected, so ``collection_receipt.canonical_content_sha256``
+    has real content to bind.
+    """
+    evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
+    evidence_type: str = "collection_session"
+    evidence_origin: str = ""
+    session_id: str = ""
+    code_commit: str = ""
+    deployed_commit: str = ""
+    test_names: list[str] = dataclasses.field(default_factory=list)
+    started_at_utc: str = ""
+    completed_at_utc: str = ""
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if self.evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
+            errors.append(f"collection_session: schema version: expected '{EVIDENCE_SCHEMA_VERSION}'")
+        if self.evidence_type != "collection_session":
+            errors.append("collection_session: evidence_type: expected 'collection_session'")
+        if self.evidence_origin not in VALID_EVIDENCE_ORIGINS:
+            errors.append(
+                f"collection_session: evidence_origin: expected one of "
+                f"{VALID_EVIDENCE_ORIGINS}, got '{self.evidence_origin}'"
+            )
+        if not self.session_id:
+            errors.append("collection_session: session_id: empty")
+        if not self.code_commit:
+            errors.append("collection_session: code_commit: empty")
+        if not self.test_names:
+            errors.append("collection_session: test_names: empty — must name what was collected")
+        if not self.started_at_utc:
+            errors.append("collection_session: started_at_utc: empty")
+        if not self.completed_at_utc:
+            errors.append("collection_session: completed_at_utc: empty")
+        if self.started_at_utc and self.completed_at_utc and self.completed_at_utc < self.started_at_utc:
+            errors.append("collection_session: completed_at_utc before started_at_utc")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
 # Cloud evidence
 # ---------------------------------------------------------------------------
 
@@ -1304,7 +1421,7 @@ class LocalStage0Bundle:
 class CloudEvidence:
     evidence_schema_version: str = EVIDENCE_SCHEMA_VERSION
     evidence_type: str = "cloud_stage0"
-    evidence_origin: str = EVIDENCE_ORIGIN_REAL
+    evidence_origin: str = ""  # WP-D: no real-default; must be set explicitly
     success: bool = False
     code_commit: str = ""
     git_worktree_clean: bool = False
@@ -1350,6 +1467,9 @@ class CloudEvidence:
     token_absent_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
     token_present_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
     collection_receipt: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # WP-G: what collection_receipt actually describes — without this,
+    # collection_receipt bound to nothing (see CloudCollectionSession above).
+    collection_session: dict[str, Any] = dataclasses.field(default_factory=dict)
     error: str = ""
 
     def validate(self) -> list[str]:
@@ -1404,7 +1524,11 @@ class CloudEvidence:
                 f"deployed_commit '{self.deployed_commit}'"
             )
 
-        # WP4: Receipt bindings — validate typed execution receipts (only when successful)
+        # WP4/WP-G/WP-H: Receipt bindings — validate typed execution receipts
+        # (only when successful). This is the schema-level check shared by
+        # the builder, the publisher, and verify_evidence_manifest.py's
+        # recursive validation, so none of them can disagree about what
+        # counts as a bound receipt.
         if self.success:
             receipt_fields = [
                 ("token_absent_receipt", "token_absent_result"),
@@ -1419,9 +1543,28 @@ class CloudEvidence:
                     continue
                 try:
                     receipt_obj = ExecutionReceipt(**rec)
-                    rec_errors = receipt_obj.validate()
+                    # WP-J: a passing, real-measurement Cloud record must
+                    # bind release-ready receipts (exit_code == 0,
+                    # evidence_origin == real_measurement,
+                    # git_worktree_clean == true), not merely structurally
+                    # valid ones — plain validate() would accept a receipt
+                    # describing a failed command.
+                    if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+                        rec_errors = receipt_is_release_ready(receipt_obj)
+                    else:
+                        rec_errors = receipt_obj.validate()
                     for re in rec_errors:
                         errors.append(f"{rec_field}: {re}")
+                    # WP-H: a synthetic receipt can never bind real Cloud
+                    # evidence, regardless of the top-level CLI flag used to
+                    # build this record — production mode is defined by
+                    # every nested receipt's own origin agreeing with it.
+                    if receipt_obj.evidence_origin != self.evidence_origin:
+                        errors.append(
+                            f"{rec_field}: evidence_origin "
+                            f"'{receipt_obj.evidence_origin}' != Cloud record "
+                            f"evidence_origin '{self.evidence_origin}'"
+                        )
                     # Check commit matches deployed_commit
                     if receipt_obj.code_commit and self.deployed_commit and receipt_obj.code_commit != self.deployed_commit:
                         errors.append(
@@ -1437,7 +1580,9 @@ class CloudEvidence:
                             f"{rec_field}: resolved_revision '{receipt_obj.resolved_revision}' "
                             f"!= Cloud model_revision '{self.model_revision}'"
                         )
-                    # Check execution ID against token path result for token receipts
+                    # WP-G: token receipts bind the canonical digest of the
+                    # token path result they describe; the collection
+                    # receipt binds the canonical digest of collection_session.
                     if result_field:
                         result = getattr(self, result_field, None)
                         if result and hasattr(result, "run_id") and result.run_id:
@@ -1446,6 +1591,54 @@ class CloudEvidence:
                                     f"{rec_field}: execution_id '{receipt_obj.execution_id}' "
                                     f"!= {result_field}.run_id '{result.run_id}'"
                                 )
+                        if result is not None and hasattr(result, "to_dict"):
+                            expected_digest = canonical_evidence_sha256(result.to_dict())
+                            if not receipt_obj.canonical_content_sha256:
+                                errors.append(
+                                    f"{rec_field}: canonical_content_sha256 empty — "
+                                    f"required to bind {result_field}"
+                                )
+                            elif receipt_obj.canonical_content_sha256 != expected_digest:
+                                errors.append(
+                                    f"{rec_field}: canonical_content_sha256 "
+                                    f"'{receipt_obj.canonical_content_sha256}' != "
+                                    f"computed '{expected_digest}' from {result_field}"
+                                )
+                    else:
+                        # collection_receipt: bind against collection_session
+                        session_data = self.collection_session
+                        if not isinstance(session_data, dict) or not session_data:
+                            errors.append(
+                                "collection_session: missing or empty — "
+                                "collection_receipt has nothing to bind to"
+                            )
+                        else:
+                            try:
+                                session_obj = CloudCollectionSession(**session_data)
+                            except Exception as exc:
+                                errors.append(f"collection_session: construction failed: {exc}")
+                                session_obj = None
+                            if session_obj is not None:
+                                for se in session_obj.validate():
+                                    errors.append(f"collection_session: {se}")
+                                if session_obj.evidence_origin != self.evidence_origin:
+                                    errors.append(
+                                        f"collection_session: evidence_origin "
+                                        f"'{session_obj.evidence_origin}' != Cloud "
+                                        f"record evidence_origin '{self.evidence_origin}'"
+                                    )
+                                expected_digest = canonical_evidence_sha256(session_obj.to_dict())
+                                if not receipt_obj.canonical_content_sha256:
+                                    errors.append(
+                                        "collection_receipt: canonical_content_sha256 "
+                                        "empty — required to bind collection_session"
+                                    )
+                                elif receipt_obj.canonical_content_sha256 != expected_digest:
+                                    errors.append(
+                                        f"collection_receipt: canonical_content_sha256 "
+                                        f"'{receipt_obj.canonical_content_sha256}' != "
+                                        f"computed '{expected_digest}' from collection_session"
+                                    )
                     # Execution ID uniqueness
                     if receipt_obj.execution_id:
                         if receipt_obj.execution_id in seen_rec_exec_ids:
@@ -1703,6 +1896,7 @@ _EVIDENCE_TYPE_MAP: dict[str, type] = {
     "local_stage0_bundle": LocalStage0Bundle,
     "cloud_stage0": CloudEvidence,
     "execution_receipt": ExecutionReceipt,
+    "collection_session": CloudCollectionSession,
 }
 
 

@@ -207,6 +207,7 @@ class TestWriteExecutionReceipt:
             configured_revision="rev1",
             resolved_revision="rev1",
             evidence_dir=evidence_dir,
+            evidence_origin="real_measurement",
         )
 
         assert receipt["evidence_type"] == "execution_receipt"
@@ -240,6 +241,7 @@ class TestWriteExecutionReceipt:
             sanitised_command="test",
             evidence_dir=str(tmp_path / "r"),
             attestation_type="github_attestation",
+            evidence_origin="real_measurement",
         )
         assert receipt["attestation_type"] == "github_attestation"
 
@@ -272,8 +274,80 @@ class TestWriteExecutionReceipt:
             component_path=str(tmp_path / "nonexistent.json"),
             sanitised_command="test",
             evidence_dir=str(tmp_path / "r2"),
+            evidence_origin="real_measurement",
         )
         assert receipt["component_sha256"] == ""
+
+
+class TestRunWithReceipt:
+    """WP5/WP6: run_with_receipt() must redact secrets and capture real
+    subprocess execution metadata (not naively join raw argv)."""
+
+    def test_successful_command_captures_real_exit_code_and_digest(self, tmp_path):
+        from src.telemetry import run_with_receipt
+
+        component_path = str(tmp_path / "out.json")
+        script = (
+            "import json,sys; "
+            f"json.dump({{'ok': True}}, open(r'{component_path}', 'w'))"
+        )
+        exit_code, receipt = run_with_receipt(
+            command=[sys.executable, "-c", script],
+            output_component_path=component_path,
+            model_id="amazon/chronos-2",
+            configured_revision="rev1",
+            resolved_revision="rev1",
+            evidence_origin="real_measurement",
+        )
+        assert exit_code == 0
+        assert receipt["exit_code"] == 0
+        assert receipt["canonical_content_sha256"]
+        assert receipt["evidence_origin"] == "real_measurement"
+
+    def test_failing_command_captures_nonzero_exit_code(self, tmp_path):
+        from src.telemetry import run_with_receipt
+
+        component_path = str(tmp_path / "out.json")
+        exit_code, receipt = run_with_receipt(
+            command=[sys.executable, "-c", "import sys; sys.exit(3)"],
+            output_component_path=component_path,
+            evidence_origin="real_measurement",
+        )
+        assert exit_code == 3
+        assert receipt["exit_code"] == 3
+
+    def test_command_secret_is_redacted_from_receipt(self, tmp_path):
+        from src.telemetry import run_with_receipt
+        from src.redaction import contains_exposed_secret
+
+        component_path = str(tmp_path / "out.json")
+        with open(component_path, "w") as f:
+            json.dump({"x": 1}, f)
+
+        exit_code, receipt = run_with_receipt(
+            command=[
+                sys.executable, "-c", "pass",
+                "--hf-token", "hf_realsecretvalue123456",
+            ],
+            output_component_path=component_path,
+            evidence_origin="real_measurement",
+        )
+        assert "hf_realsecretvalue123456" not in receipt["sanitised_command"]
+        assert contains_exposed_secret(receipt["sanitised_command"]) is None
+
+    def test_env_assignment_secret_is_redacted_from_receipt(self, tmp_path):
+        from src.telemetry import run_with_receipt
+
+        component_path = str(tmp_path / "out.json")
+        with open(component_path, "w") as f:
+            json.dump({"x": 1}, f)
+
+        exit_code, receipt = run_with_receipt(
+            command=["HF_TOKEN=hf_realsecretvalue123456", sys.executable, "-c", "pass"],
+            output_component_path=component_path,
+            evidence_origin="real_measurement",
+        )
+        assert "hf_realsecretvalue123456" not in receipt["sanitised_command"]
 
 
 class TestMemoryHelpers:

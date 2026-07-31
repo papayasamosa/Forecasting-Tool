@@ -6,6 +6,7 @@ Does NOT perform a real Windows installation. Runs on any platform.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import subprocess
 from pathlib import Path
@@ -107,6 +108,86 @@ class TestDDriveSetupContract:
             # Check for the directory name in New-Item calls
             assert key_dir in content, f"Setup script missing mkdir for {key_dir}"
 
+    def test_setup_script_dirs_exact_parity_with_required_dirs(self):
+        """WP-L: the PS1 $dirs array (PowerShell can't import storage_policy)
+        must declare EXACTLY the same directory set as REQUIRED_DIRS — no
+        more, no fewer. This is the regression check that would have
+        caught the actual drift found while implementing WP-L: the PS1
+        script already had cache/pycache, cache/npm(-prefix), cache/uv(-
+        tools), cache/playwright, cache/matplotlib, and cache/ruff, none
+        of which were in REQUIRED_DIRS."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+
+        dirs_block_match = re.search(r'\$dirs\s*=\s*@\((.*?)\)', content, re.DOTALL)
+        assert dirs_block_match, "Could not locate $dirs = @(...) block in setup script"
+        dirs_block = dirs_block_match.group(1)
+
+        ps1_suffixes = set()
+        for line in dirs_block.splitlines():
+            m = re.search(r'"\$LocalRoot(\\[^"]*)?"', line)
+            if not m:
+                continue
+            suffix = (m.group(1) or "").lstrip("\\").replace("\\", "/")
+            ps1_suffixes.add(suffix)
+
+        assert ps1_suffixes, "No $LocalRoot-relative directories parsed from PS1 $dirs block"
+
+        policy_suffixes = set()
+        for d in REQUIRED_DIRS:
+            norm = d.replace("\\", "/")
+            root_norm = LOCAL_ROOT.replace("\\", "/")
+            assert norm.startswith(root_norm), f"{d} not under {LOCAL_ROOT}"
+            policy_suffixes.add(norm[len(root_norm):].lstrip("/"))
+
+        only_in_ps1 = ps1_suffixes - policy_suffixes
+        only_in_policy = policy_suffixes - ps1_suffixes
+        assert not only_in_ps1, (
+            f"setup_local_windows.ps1 creates directories not in "
+            f"storage_policy.REQUIRED_DIRS: {sorted(only_in_ps1)}"
+        )
+        assert not only_in_policy, (
+            f"storage_policy.REQUIRED_DIRS has directories the setup "
+            f"script never creates: {sorted(only_in_policy)}"
+        )
+
+    def test_activation_and_setup_scripts_env_vars_match_required_env_vars(self):
+        """Both PS1 scripts must set every REQUIRED_ENV_VARS key, and the
+        values must reference $LocalRoot with the same suffix as the
+        Python-side value (relative to LOCAL_ROOT) — catches drift where
+        a var is exported but pointed at the wrong subdirectory."""
+        for script_name in ("setup_local_windows.ps1", "activate_local_windows.ps1"):
+            content = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+            for var, expected_value in REQUIRED_ENV_VARS.items():
+                # Value is either a quoted "$LocalRoot\..." string, or (for
+                # FORECASTING_LOCAL_ROOT itself) the bare $LocalRoot variable.
+                m = re.search(rf'\$env:{re.escape(var)}\s*=\s*(?:"([^"]*)"|(\$LocalRoot))', content)
+                assert m, f"{script_name} does not set $env:{var}"
+                ps1_value = m.group(1) if m.group(1) is not None else "$LocalRoot"
+                expected_suffix = expected_value.replace("\\", "/")[len(LOCAL_ROOT.replace("\\", "/")):].lstrip("/")
+                ps1_suffix = ps1_value.replace("\\", "/").replace("$LocalRoot", "").lstrip("/")
+                assert ps1_suffix == expected_suffix, (
+                    f"{script_name}: $env:{var} = '{ps1_value}' does not match "
+                    f"REQUIRED_ENV_VARS['{var}'] suffix '{expected_suffix}'"
+                )
+
+    def test_python_path_outside_d_drive_rejected(self):
+        """WP-L: -PythonPath must be rejected when it resolves outside
+        D:\\Forecasting-Tool-Local, even though it's a valid existing path."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert "-PythonPath must be under" in content
+        assert "$LocalRoot\\*" in content or "notlike" in content
+
+    def test_bootstrap_c_drive_exception_is_documented(self):
+        """WP-L: the one unavoidable C-drive touchpoint (a bootstrap
+        interpreter used solely to create the D-drive venv) must be
+        explicitly documented in the script, not silently present."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert "bootstrap" in content.lower()
+        assert "never the project runtime" in content or "never again" in content
+
     def test_activation_script_exports_all_required_vars(self):
         """Activation script must set every REQUIRED_ENV_VAR."""
         activate_path = REPO_ROOT / "scripts" / "activate_local_windows.ps1"
@@ -162,3 +243,24 @@ class TestMCPToolPaths:
 
     def test_xdg_cache_on_d(self):
         assert REQUIRED_ENV_VARS.get("XDG_CACHE_HOME", "").startswith(LOCAL_ROOT)
+
+    def test_mcp_cache_on_d(self):
+        assert REQUIRED_ENV_VARS.get("MCP_CACHE_DIR", "").startswith(LOCAL_ROOT)
+        assert os.path.join(LOCAL_ROOT, "cache", "mcp") in REQUIRED_DIRS
+
+    def test_graphify_cache_on_d(self):
+        assert REQUIRED_ENV_VARS.get("GRAPHIFY_CACHE_DIR", "").startswith(LOCAL_ROOT)
+        assert os.path.join(LOCAL_ROOT, "cache", "graphify") in REQUIRED_DIRS
+
+    def test_graphify_output_on_d(self):
+        assert REQUIRED_ENV_VARS.get("GRAPHIFY_OUTPUT_DIR", "").startswith(LOCAL_ROOT)
+        assert os.path.join(LOCAL_ROOT, "graphify-output") in REQUIRED_DIRS
+
+    def test_mcp_and_graphify_paths_rejected_outside_d(self):
+        """A path claiming to be an MCP/Graphify output location must be
+        rejected by the same is_under_local_root() check as everything
+        else — there is no separate, weaker rule for these two."""
+        assert is_under_local_root(r"C:\Users\dev\.mcp\cache") is False
+        assert is_under_local_root(r"C:\Users\dev\graphify-output") is False
+        assert is_under_local_root(os.path.join(LOCAL_ROOT, "cache", "mcp")) is True
+        assert is_under_local_root(os.path.join(LOCAL_ROOT, "graphify-output")) is True

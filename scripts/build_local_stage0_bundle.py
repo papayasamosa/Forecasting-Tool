@@ -332,7 +332,11 @@ def _validate_receipt_binding(
 
     P0-3: For a passing bundle, receipts must be fully verified:
     - valid ExecutionReceipt schema
-    - non-empty valid component SHA-256 matching the actual file
+    - non-zero exit_code — a receipt for a failed command cannot bind a
+      component, even if a stale output file happens to exist on disk
+    - a content digest (either the legacy raw-file component_sha256, or
+      the canonical_content_sha256 the WP-E execution wrappers produce)
+      that matches the actual component
     - receipt commit equals component commit
     - model ID matches
     - configured and resolved revisions match
@@ -353,7 +357,7 @@ def _validate_receipt_binding(
 
     # Deserialize as ExecutionReceipt and run schema validation
     sys.path.insert(0, str(REPO_ROOT))
-    from src.evidence_schemas import ExecutionReceipt
+    from src.evidence_schemas import ExecutionReceipt, canonical_evidence_sha256
     try:
         receipt = ExecutionReceipt(**receipt_data)
     except Exception as exc:
@@ -364,10 +368,31 @@ def _validate_receipt_binding(
     for re in receipt_errors:
         errors.append(f"{component_label}_receipt: {re}")
 
-    # Component SHA-256 must be non-empty and match actual file
-    if not receipt.component_sha256:
-        errors.append(f"{component_label}_receipt: component_sha256 empty — required for binding")
-    else:
+    # WP-E: a receipt for a non-zero exit code describes a failed command
+    # and can never bind a component, regardless of what digests it carries
+    # — otherwise a stale output file from an earlier successful run could
+    # be bound to a receipt for a later, failed one.
+    if receipt.exit_code != 0:
+        errors.append(
+            f"{component_label}_receipt: exit_code {receipt.exit_code} != 0 — "
+            f"cannot bind a failed command's receipt to a component"
+        )
+        return errors
+
+    # Load component to cross-check
+    try:
+        comp_data = _load_json(component_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"{component_label}_receipt: could not load component '{component_path}': {exc}")
+        return errors
+
+    # WP-E: content digest must be non-empty and match the actual component.
+    # Two forms are accepted so both the legacy write_execution_receipt()
+    # (raw-file component_sha256) and the preferred run_with_receipt()/
+    # ReceiptContext (canonical_content_sha256 of the parsed JSON) wrappers
+    # produce bundle-compatible receipts — component_sha256 is no longer
+    # hard-required.
+    if receipt.component_sha256:
         try:
             actual_sha = _sha256_file(component_path)
         except OSError as exc:
@@ -378,13 +403,19 @@ def _validate_receipt_binding(
                 f"{component_label}_receipt: component_sha256 '{receipt.component_sha256}' "
                 f"!= actual '{actual_sha}'"
             )
-
-    # Load component to cross-check
-    try:
-        comp_data = _load_json(component_path)
-    except (json.JSONDecodeError, OSError) as exc:
-        errors.append(f"{component_label}_receipt: could not load component '{component_path}': {exc}")
-        return errors
+    elif receipt.canonical_content_sha256 and isinstance(comp_data, dict):
+        actual_canonical = canonical_evidence_sha256(comp_data)
+        if receipt.canonical_content_sha256 != actual_canonical:
+            errors.append(
+                f"{component_label}_receipt: canonical_content_sha256 "
+                f"'{receipt.canonical_content_sha256}' != actual "
+                f"'{actual_canonical}' — component content mutated"
+            )
+    else:
+        errors.append(
+            f"{component_label}_receipt: neither component_sha256 nor "
+            f"canonical_content_sha256 is set — required for binding"
+        )
 
     if isinstance(comp_data, dict):
         # Commit match
@@ -416,42 +447,15 @@ def _validate_receipt_binding(
                 f"!= component model/resolved_revision '{comp_mr}'"
             )
 
-    # WP10: Safe secret-redaction validation
-    # Allow redacted patterns and legitimate references; reject exposed values
-    import re as _re
-    cmd = receipt.sanitised_command
-
-    # Allowed patterns (redacted or legitimate references)
-    allowed_patterns = [
-        _re.compile(r'HF_TOKEN=\[REDACTED\]', _re.IGNORECASE),
-        _re.compile(r'HF_TOKEN=<redacted>', _re.IGNORECASE),
-        _re.compile(r'HF_TOKEN=\$\(.*\)', _re.IGNORECASE),  # script variable
-        _re.compile(r'--token-state\s+present', _re.IGNORECASE),
-        _re.compile(r'token-present-smoke\.json', _re.IGNORECASE),
-        _re.compile(r'token-absent-run', _re.IGNORECASE),
-        _re.compile(r'token-present-run', _re.IGNORECASE),
-    ]
-    # If the entire command matches an allowed pattern, skip exposed-value check
-    is_allowed = any(p.search(cmd) for p in allowed_patterns)
-
-    # Rejected patterns (exposed values)
-    rejected_patterns = [
-        (_re.compile(r'HF_TOKEN=[a-zA-Z0-9_]{10,}', _re.IGNORECASE), "exposed HF_TOKEN value"),
-        (_re.compile(r'Authorization:\s*Bearer\s+\S+', _re.IGNORECASE), "exposed Authorization header"),
-        (_re.compile(r'password=\S+', _re.IGNORECASE), "exposed password value"),
-        (_re.compile(r'secret=\S+', _re.IGNORECASE), "exposed secret value"),
-        (_re.compile(r'api[_-]?key[=:]\s*\S+', _re.IGNORECASE), "exposed API key"),
-        (_re.compile(r'token=\S+', _re.IGNORECASE) if not is_allowed else None, "exposed token value"),
-    ]
-
-    for pattern, description in rejected_patterns:
-        if pattern is None:
-            continue
-        if pattern.search(cmd):
-            errors.append(
-                f"{component_label}_receipt: sanitised_command contains "
-                f"{description}"
-            )
+    # WP5/WP10: Secret-redaction validation via the shared detector, so this
+    # script and ExecutionReceipt.validate() can never disagree about what
+    # counts as an exposed credential.
+    from src.redaction import contains_exposed_secret
+    exposure = contains_exposed_secret(receipt.sanitised_command)
+    if exposure:
+        errors.append(
+            f"{component_label}_receipt: sanitised_command contains {exposure}"
+        )
 
     return errors
 
@@ -579,9 +583,12 @@ def main() -> int:
     started_utc = datetime.now(timezone.utc).isoformat()
     # Only include non-None receipts
     bundle_receipts = {k: v for k, v in receipts.items() if v is not None}
+    sys.path.insert(0, str(REPO_ROOT))
+    from src.evidence_schemas import EVIDENCE_ORIGIN_REAL
     bundle = {
         "evidence_schema_version": "2",
         "evidence_type": "local_stage0_bundle",
+        "evidence_origin": EVIDENCE_ORIGIN_REAL,
         "bundle_passed": bundle_passed,
         "code_commit": expected_commit,
         "git_worktree_clean": dc_smoke.get("git_worktree_clean", False) if isinstance(dc_smoke, dict) else False,

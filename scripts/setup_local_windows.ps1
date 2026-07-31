@@ -74,6 +74,9 @@ $dirs = @(
     "$LocalRoot\cache\playwright",
     "$LocalRoot\cache\matplotlib",
     "$LocalRoot\cache\ruff",
+    "$LocalRoot\cache\mcp",
+    "$LocalRoot\cache\graphify",
+    "$LocalRoot\graphify-output",
     "$LocalRoot\temp",
     "$LocalRoot\temp\pytest",
     "$LocalRoot\test-output",
@@ -90,14 +93,35 @@ Write-Host "All required directories created under $LocalRoot"
 $pythonInstallDir = "$LocalRoot\python312"
 $installersDir = "$LocalRoot\installers"
 
-if ($PythonPath -and (Test-Path $PythonPath)) {
+# WP-L: -PythonPath is only accepted if it is itself under D:\Forecasting-
+# Tool-Local — a C-drive (or any other) interpreter can never be passed in
+# and treated as the project runtime, even explicitly.
+if ($PythonPath) {
+    $resolvedPythonPath = [System.IO.Path]::GetFullPath($PythonPath)
+    if ($resolvedPythonPath -ne $LocalRoot -and $resolvedPythonPath -notlike "$LocalRoot\*") {
+        Write-Error "-PythonPath must be under $LocalRoot. Got '$PythonPath' (resolved: '$resolvedPythonPath')."
+        exit 1
+    }
+    if (-not (Test-Path $PythonPath)) {
+        Write-Error "-PythonPath '$PythonPath' does not exist."
+        exit 1
+    }
     $pythonCmd = $PythonPath
 }
 elseif (Test-Path "$pythonInstallDir\python.exe") {
     $pythonCmd = "$pythonInstallDir\python.exe"
 }
 else {
-    # Try the Python launcher first
+    # WP-L: documented C-drive exception. This `py` launcher / PATH python
+    # is used ONLY as a bootstrap tool to run `-m venv` and create the
+    # D-drive venv below (Step 6) — it is never the project runtime.
+    # Every later step in this script (pip installs, dependency install,
+    # environment verification, and every command a developer runs after
+    # setup) uses $venvPython = "$LocalRoot\venv\Scripts\python.exe"
+    # exclusively. This is the one unavoidable Windows-managed C-drive
+    # touchpoint: there is no way to create a venv without an existing
+    # Python interpreter, and Windows does not ship one on D:.
+    Write-Host "No D-drive Python found — searching for a bootstrap interpreter to create the D-drive venv (used once, then never again)..."
     $pyExe = (Get-Command "py" -ErrorAction SilentlyContinue).Source
     if ($pyExe) {
         $verOutput = & $pyExe -3.12 --version 2>&1
@@ -214,6 +238,9 @@ $env:UV_PYTHON_INSTALL_DIR = "$LocalRoot\python312"
 $env:PLAYWRIGHT_BROWSERS_PATH = "$LocalRoot\cache\playwright"
 $env:MPLCONFIGDIR = "$LocalRoot\cache\matplotlib"
 $env:RUFF_CACHE_DIR = "$LocalRoot\cache\ruff"
+$env:MCP_CACHE_DIR = "$LocalRoot\cache\mcp"
+$env:GRAPHIFY_CACHE_DIR = "$LocalRoot\cache\graphify"
+$env:GRAPHIFY_OUTPUT_DIR = "$LocalRoot\graphify-output"
 
 Write-Host "All environment variables set to D: drive (matching storage_policy)"
 

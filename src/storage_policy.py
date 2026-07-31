@@ -38,6 +38,20 @@ REQUIRED_DIRS: list[str] = [
     os.path.join(LOCAL_ROOT, "cache", "huggingface", "xet"),
     os.path.join(LOCAL_ROOT, "cache", "transformers"),
     os.path.join(LOCAL_ROOT, "cache", "torch"),
+    os.path.join(LOCAL_ROOT, "cache", "pycache"),
+    os.path.join(LOCAL_ROOT, "cache", "npm"),
+    os.path.join(LOCAL_ROOT, "cache", "npm-prefix"),
+    os.path.join(LOCAL_ROOT, "cache", "uv"),
+    os.path.join(LOCAL_ROOT, "cache", "uv-tools"),
+    os.path.join(LOCAL_ROOT, "cache", "playwright"),
+    os.path.join(LOCAL_ROOT, "cache", "matplotlib"),
+    os.path.join(LOCAL_ROOT, "cache", "ruff"),
+    # WP-L: MCP/Graphify local storage — no MCP server is actually
+    # connected in this repo yet, but any that is added later must use
+    # these D-drive locations, never a default under the user profile.
+    os.path.join(LOCAL_ROOT, "cache", "mcp"),
+    os.path.join(LOCAL_ROOT, "cache", "graphify"),
+    os.path.join(LOCAL_ROOT, "graphify-output"),
     os.path.join(LOCAL_ROOT, "temp"),
     os.path.join(LOCAL_ROOT, "temp", "pytest"),
     os.path.join(LOCAL_ROOT, "test-output"),
@@ -67,6 +81,9 @@ REQUIRED_ENV_VARS: dict[str, str] = {
     "PLAYWRIGHT_BROWSERS_PATH": os.path.join(LOCAL_ROOT, "cache", "playwright"),
     "MPLCONFIGDIR": os.path.join(LOCAL_ROOT, "cache", "matplotlib"),
     "RUFF_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "ruff"),
+    "MCP_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "mcp"),
+    "GRAPHIFY_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "graphify"),
+    "GRAPHIFY_OUTPUT_DIR": os.path.join(LOCAL_ROOT, "graphify-output"),
 }
 
 # ---------------------------------------------------------------------------
