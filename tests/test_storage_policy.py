@@ -14,6 +14,7 @@ from src.storage_policy import (
     is_valid_storage_root,
     is_under_local_root,
     assert_d_drive_preflight,
+    verify_ddrive_runtime,
 )
 
 
@@ -64,7 +65,89 @@ class TestStoragePolicy:
     def test_is_under_local_root_rejects_d_other_path(self):
         assert is_under_local_root(r"D:\Other") is False
 
+    def test_is_under_local_root_case_insensitive_on_windows_paths(self):
+        """Windows paths are case-insensitive — Path.resolve() may return
+        lowercase while the constant is mixed-case; both must be accepted
+        (regression: a case-sensitive startswith comparison rejected the
+        real D:\\forecasting-tool-local\\repo during local verification)."""
+        assert is_under_local_root(r"D:\forecasting-tool-local\repo") is True
+        assert is_under_local_root(r"D:\FORECASTING-TOOL-LOCAL\cache") is True
+        assert is_under_local_root(r"D:\Forecasting-Tool-Local\repo") is True
+
     def test_assert_d_drive_preflight_returns_list(self):
         """Preflight should return a list (possibly empty on Windows with D:)."""
         result = assert_d_drive_preflight()
         assert isinstance(result, list)
+
+
+class TestVerifyDDdriveRuntime:
+    """WP3: the venv must be based on the D-drive project Python. These
+    tests monkeypatch the interpreter facts so they run on any platform
+    (CI is Linux; the D-drive policy does not apply there but the failure
+    branches are the same code paths)."""
+
+    def _patch(self, monkeypatch, base_prefix, prefix, executable):
+        import src.storage_policy as sp
+        monkeypatch.setattr(sp.sys, "platform", "win32")
+        monkeypatch.setattr(sp.sys, "base_prefix", base_prefix)
+        monkeypatch.setattr(sp.sys, "prefix", prefix)
+        monkeypatch.setattr(sp.sys, "executable", executable)
+        return sp
+
+    def _fake_cfg(self, monkeypatch, home):
+        import io
+        import src.storage_policy as sp
+        monkeypatch.setattr("builtins.open",
+                            lambda *a, **k: io.StringIO(f"home = {home}\nversion = 3.12.10\n"))
+        monkeypatch.setattr(sp.os.path, "exists", lambda p: str(p).endswith("pyvenv.cfg"))
+
+    def test_non_windows_returns_empty(self, monkeypatch):
+        import src.storage_policy as sp
+        monkeypatch.setattr(sp.sys, "platform", "linux")
+        assert verify_ddrive_runtime() == []
+
+    def test_d_drive_based_runtime_passes(self, monkeypatch):
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        errors = verify_ddrive_runtime()
+        assert errors == [], errors
+
+    def test_c_drive_base_prefix_rejected(self, monkeypatch):
+        self._patch(monkeypatch,
+                    base_prefix=r"C:\Users\dev\AppData\Local\Programs\Python\Python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._fake_cfg(monkeypatch, r"C:\Users\dev\AppData\Local\Programs\Python\Python312")
+        errors = verify_ddrive_runtime()
+        assert any("sys.base_prefix" in e for e in errors), errors
+        assert any("D:\\Forecasting-Tool-Local" in e for e in errors), errors
+
+    def test_wrong_executable_rejected(self, monkeypatch):
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"C:\Python312\python.exe")
+        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        errors = verify_ddrive_runtime()
+        assert any("Active interpreter" in e for e in errors), errors
+
+    def test_prefix_outside_local_root_rejected(self, monkeypatch):
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"C:\SomewhereElse\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        errors = verify_ddrive_runtime()
+        assert any("sys.prefix" in e for e in errors), errors
+
+    def test_pyvenv_cfg_home_outside_d_rejected(self, monkeypatch):
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._fake_cfg(monkeypatch, r"C:\Python312")
+        errors = verify_ddrive_runtime()
+        assert any("pyvenv.cfg home" in e for e in errors), errors

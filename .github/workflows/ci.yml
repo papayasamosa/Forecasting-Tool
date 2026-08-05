@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # WP4: explicit recovery and diagnostics. A manually dispatched run on
+  # another commit is NOT proof for a merge commit — the push-to-main run
+  # on the exact merge commit remains the authoritative gate.
+  workflow_dispatch:
 
 jobs:
   test:
@@ -58,17 +62,17 @@ jobs:
           flake8 app.py pages/ src/ scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 app.py pages/ src/ scripts/ tests/ --count --exit-zero --max-complexity=10 --statistics
 
-      - name: Lint critical Stage 0 modules (fail-closed correctness rules)
+      - name: Lint correctness rules fail-closed (src/ and scripts/)
         run: |
-          # F811 (redefinition), F541 (f-string missing placeholders), F841
-          # (unused local variable), W605 (invalid escape sequence) on the
-          # modules this closure PR is directly responsible for. Repo-wide
-          # F811/F541/F841/W605 debt exists elsewhere and is intentionally
-          # out of scope here — see README status matrix — so this gate is
-          # scoped to the files it can hold at zero, not the whole tree.
-          flake8 src/redaction.py src/evidence_schemas.py \
-            scripts/verify_stage0_evidence_readiness.py scripts/run_stage0_benchmark.py \
-            --count --select=F811,F541,F841,W605 --show-source --statistics
+          # WP7: fail-closed correctness lint across all production and
+          # evidence code — E9 (SyntaxError), F63/F7 (undefined names),
+          # F82 (undefined local), F402 (import shadowed), F541 (f-string
+          # missing placeholders), F811 (redefinition), F841 (unused local),
+          # W605 (invalid escape). E501 line length and broad formatting
+          # are deliberately NOT blockers.
+          flake8 src/ scripts/ \
+            --count --select=E9,F63,F7,F82,F402,F541,F811,F841,W605 \
+            --show-source --statistics
 
       - name: MCP static verification (no D-drive, no network, no credentials)
         run: |

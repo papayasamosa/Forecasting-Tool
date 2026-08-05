@@ -223,7 +223,7 @@ def prepare_dataframe(
 
     if original_rows == 0:
         raise ValueError(
-            f"The selected columns produced zero valid rows. "
+            "The selected columns produced zero valid rows. "
             "Check that the timestamp column contains parseable dates."
         )
 

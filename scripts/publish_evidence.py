@@ -292,9 +292,10 @@ def _validate_and_load(
         )
         return (None, errors)
 
-    # Deserialise via schema
+    # Deserialise via schema — strict mode: release evidence must never
+    # silently discard unknown fields at any depth.
     try:
-        evidence = evidence_from_dict(raw_data)
+        evidence = evidence_from_dict(raw_data, strict=True)
     except (ValueError, TypeError, KeyError) as exc:
         errors.append(f"deserialisation failed: {exc}")
         return (None, errors)
@@ -546,7 +547,7 @@ def main() -> int:
         return 1
 
     print(f"✅ Manifest updated: {MANIFEST_PATH}")
-    print(f"\nSummary:")
+    print("\nSummary:")
     print(f"  Type: {args.type}")
     print(f"  File: {dest_path.name}")
     print(f"  SHA-256: {sha256}")

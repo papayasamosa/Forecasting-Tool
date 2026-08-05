@@ -85,11 +85,12 @@ def _validate_referenced_json(fpath: Path, expected_type: str, expected_commit: 
             f"!= manifest code_commit '{expected_commit}'"
         )
 
-    # Run shared recursive validation (WP9)
+    # Run shared recursive validation (WP9) — strict by default: release
+    # evidence must never silently discard unknown fields.
     try:
         sys.path.insert(0, str(REPO_ROOT))
         from src.evidence_validation import validate_recursive
-        recursive_errors = validate_recursive(data, label=fpath.name)
+        recursive_errors = validate_recursive(data, label=fpath.name, strict=True)
         for re in recursive_errors:
             errors.append(f"{fpath.name}: {re}")
     except Exception as exc:

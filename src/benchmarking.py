@@ -797,8 +797,8 @@ def run_benchmarks(
                     pipeline_construction_count = max(pipeline_construction_count, s.pipeline_call_count)
                 peak_rss_mb = max(peak_rss_mb, s.peak_rss_mb)
 
-    # WP3: Post-run cache inspection (pre-run already captured at function start)
-    from src.telemetry import inspect_hf_cache, build_cache_preflight
+    # WP3: Post-run cache inspection (pre-run already captured at function
+    # start; inspect_hf_cache/build_cache_preflight imported at module scope)
     post_run_inspection = inspect_hf_cache(CONFIGURED_REVISION)
     cache_preflight = build_cache_preflight(
         pre_run_inspection, post_run_inspection, initial_cache_state,

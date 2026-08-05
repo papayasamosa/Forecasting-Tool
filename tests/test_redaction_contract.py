@@ -89,3 +89,134 @@ class TestSharedRedactionContractAcrossReceiptPaths:
             json.dump(safe_kwargs, f)
         errors = _validate_receipt_binding(str(receipt_path), str(component_path), "smoke")
         assert not any("sanitised_command contains" in e for e in errors), errors
+
+
+# PR #27 review finding P1: colon-delimited sensitive values were not
+# detected after the equals-only detector rewrite. Every release path that
+# delegates to the shared detector must reject a colon-delimited exposure,
+# and run_with_receipt must redact colon-delimited argv.
+COLON_UNSAFE_COMMAND = "HF_TOKEN:abcdef --token-state present"
+
+
+class TestColonDelimitedContractAcrossReceiptPaths:
+    """The same cross-path contract as above, but for the colon-delimited
+    form that PR #27's P1 finding said the equals-only rewrite dropped."""
+
+    def test_execution_receipt_validate_rejects_colon_secret(self):
+        receipt = ExecutionReceipt(**_valid_receipt_kwargs(sanitised_command=COLON_UNSAFE_COMMAND))
+        errors = receipt.validate()
+        assert any("sanitised_command contains" in e for e in errors), errors
+
+    def test_receipt_is_release_ready_rejects_colon_secret(self):
+        receipt = ExecutionReceipt(**_valid_receipt_kwargs(sanitised_command=COLON_UNSAFE_COMMAND))
+        errors = receipt_is_release_ready(receipt)
+        assert any("sanitised_command contains" in e for e in errors), errors
+
+    def test_local_bundle_binding_rejects_colon_secret(self, tmp_path):
+        from scripts.build_local_stage0_bundle import _validate_receipt_binding
+
+        component_path = tmp_path / "component.json"
+        with open(component_path, "w", encoding="utf-8") as f:
+            json.dump({"evidence_type": "smoke_test"}, f)
+        receipt_path = tmp_path / "receipt.json"
+        with open(receipt_path, "w", encoding="utf-8") as f:
+            json.dump(_valid_receipt_kwargs(sanitised_command=COLON_UNSAFE_COMMAND), f)
+
+        errors = _validate_receipt_binding(str(receipt_path), str(component_path), "smoke")
+        assert any("sanitised_command contains" in e for e in errors), errors
+
+    def test_publisher_validation_rejects_colon_secret(self):
+        from scripts.publish_evidence import _validate_and_load
+
+        raw = dict(_valid_receipt_kwargs(sanitised_command=COLON_UNSAFE_COMMAND))
+        raw["evidence_type"] = "execution_receipt"
+        raw["evidence_schema_version"] = "2"
+        _, errors = _validate_and_load(
+            raw,
+            expected_type="execution_receipt",
+            expected_token_state=None,
+            expected_initial_cache_state=None,
+            expected_code_commit=None,
+        )
+        assert any("sanitised_command contains" in e for e in errors), errors
+
+    def test_run_with_receipt_redacts_colon_delimited_argv(self, tmp_path):
+        import sys
+        from src.telemetry import run_with_receipt
+        from src.redaction import contains_exposed_secret
+
+        component_path = str(tmp_path / "out.json")
+        with open(component_path, "w", encoding="utf-8") as f:
+            json.dump({"x": 1}, f)
+
+        _, receipt = run_with_receipt(
+            command=["HF_TOKEN:hf_realsecretvalue123456", sys.executable, "-c", "pass"],
+            output_component_path=component_path,
+            evidence_origin="real_measurement",
+        )
+        assert "hf_realsecretvalue123456" not in receipt["sanitised_command"]
+        assert contains_exposed_secret(receipt["sanitised_command"]) is None
+
+    def test_receipt_context_redacts_colon_delimited_argv(self, tmp_path):
+        from src.telemetry import ReceiptContext
+        from src.redaction import sanitise_command, contains_exposed_secret
+
+        component_path = str(tmp_path / "out.json")
+        with open(component_path, "w", encoding="utf-8") as f:
+            json.dump({"x": 1}, f)
+
+        with open(component_path, encoding="utf-8") as f:
+            component = json.load(f)
+
+        with ReceiptContext() as ctx:
+            receipt = ctx.build_receipt(
+                output_component=component,
+                sanitised_command=sanitise_command(
+                    ["api_key:supersecretvalue123", "python", "x.py"]
+                ),
+                evidence_origin="real_measurement",
+            )
+        assert "supersecretvalue123" not in receipt["sanitised_command"]
+        assert contains_exposed_secret(receipt["sanitised_command"]) is None
+
+    def test_receipt_context_receipt_with_unsanitised_colon_secret_rejected(self, tmp_path):
+        from src.telemetry import ReceiptContext
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+
+        component_path = str(tmp_path / "out.json")
+        with open(component_path, "w", encoding="utf-8") as f:
+            json.dump({"x": 1}, f)
+        with open(component_path, encoding="utf-8") as f:
+            component = json.load(f)
+
+        with ReceiptContext() as ctx:
+            receipt_dict = ctx.build_receipt(
+                output_component=component,
+                sanitised_command="HF_TOKEN:abcdef --token-state present",
+                evidence_origin="real_measurement",
+            )
+        receipt = ExecutionReceipt(**receipt_dict)
+        errors = receipt.validate()
+        assert any("sanitised_command contains" in e for e in errors), errors
+        assert any("sanitised_command contains" in e for e in receipt_is_release_ready(receipt))
+
+    def test_cloud_evidence_validation_rejects_colon_secret_receipt(self):
+        from src.evidence_schemas import CloudEvidence, EVIDENCE_ORIGIN_REAL
+
+        ev = CloudEvidence(
+            evidence_schema_version="2",
+            evidence_type="cloud_stage0",
+            success=True,
+            code_commit="abc123",
+            evidence_origin=EVIDENCE_ORIGIN_REAL,
+            token_absent_receipt=_valid_receipt_kwargs(sanitised_command=COLON_UNSAFE_COMMAND),
+        )
+        errors = ev.validate()
+        assert any("sanitised_command contains" in e for e in errors), errors
+
+    def test_readiness_verifier_catches_colon_form(self):
+        from scripts.verify_stage0_evidence_readiness import _check_secret_redaction
+        from src.redaction import contains_exposed_secret
+
+        assert contains_exposed_secret(COLON_UNSAFE_COMMAND) is not None
+        assert _check_secret_redaction() == []

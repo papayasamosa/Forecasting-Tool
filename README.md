@@ -12,7 +12,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Schema invariant validation | ✅ Implemented, tested |
 | Unit tests (no model download) | ✅ Implemented |
 | Local setup (D: drive) | ✅ Documented, enforced |
-| CI (GitHub Actions) | ✅ Fail-closed: `--cov-precision=2` + independent `coverage report` gate + workflow-contract regression test, threshold 82% (actual ~86%), `src.storage_policy`/`src.redaction` included |
+| CI (GitHub Actions) | ✅ Fail-closed: `--cov-precision=2` + independent `coverage report` gate + workflow-contract regression test, threshold 82% (actual ~90%), `workflow_dispatch` recovery trigger, correctness lint (`E9,F63,F7,F82,F402,F541,F811,F841,W605`) enforced across `src/` and `scripts/` |
 | `st.cache_resource` process-level caching | ✅ Implemented |
 | Pipeline reuse (unit-tested with fake pipeline) | ✅ Implemented |
 | Context capping before record materialisation | ✅ Implemented |
@@ -57,7 +57,10 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Evidence finalisation order | ✅ Sanitisation before receipt binding; publication cannot mutate semantic content after receipt finalisation |
 | Evidence origin isolation | ✅ `evidence_origin` field (`real_measurement` / `synthetic_fixture`); publisher rejects `synthetic_fixture` |
 | Cloud execution receipts | ✅ Production mode requires typed receipts with canonical content binding; `--allow-synthetic-fixture` for testing only |
-| Safe secret redaction | ✅ Centralised in `src/redaction.py` (`sanitise_command()`/`contains_exposed_secret()`), used by every wrapper/builder/publisher; detects `--name=value`, `--name value`, `NAME=value`, and `Authorization: Bearer` forms |
+| Safe secret redaction | ✅ Centralised in `src/redaction.py` (`sanitise_command()`/`contains_exposed_secret()`), used by every wrapper/builder/publisher; detects `--name=value`, `--name value`, `NAME=value`, `name:value`, `Authorization: Bearer`, and raw HF-token literal forms — one shared `=`/`:` assignment grammar |
+| Strict release-evidence deserialisation | ✅ Release paths reject unknown fields at every depth (path-qualified); permissive parsing is migration-only and cannot publish |
+| D-drive base runtime | ✅ venv must be based on `D:\Forecasting-Tool-Local\python312`; `sys.executable`/`sys.base_prefix`/`pyvenv.cfg home` verified; no `py`/PATH bootstrap |
+| Canonical Cloud template parity | ✅ `cloud_stage0_template.json` carries the 19 canonical test names; parity test runs (no skip) |
 | Python installer verification | ✅ SHA-256 + Authenticode verification before execution |
 | Shared recursive evidence validation (WP9) | ✅ `src/evidence_validation.py` |
 | Shared D-drive storage policy (WP12) | ✅ `src/storage_policy.py`, `docs/development/storage_policy.md` |
@@ -71,7 +74,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
-| Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement — see "Stage 0 publication and CI integrity closure" below |
+| Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement, colon-delimited secret detection (PR #27 P1), strict release deserialisation, D-drive base runtime enforcement, `workflow_dispatch` recovery trigger, correctness lint across `src/`/`scripts/`, canonical Cloud template parity — see "PR #27 review closure and release-readiness closure" below |
 | MCP developer tooling | ✅ Optional, not functionally verified |
 
 ## Repository Structure
@@ -121,8 +124,13 @@ docs/
 
 ### Prerequisites
 
-- **Python 3.12** — [Download from python.org](https://www.python.org/downloads/)
 - **D: drive** with sufficient free space
+- The pinned Python 3.12.10 runtime installed directly into
+  `D:\Forecasting-Tool-Local\python312` (the setup script downloads,
+  SHA-256/Authenticode-verifies, and installs it there automatically). The
+  project venv **must** be based on that D-drive interpreter — a venv
+  created from a C-drive Python is not an approved runtime and is rejected
+  by `verify_environment.py`.
 
 ### Installation (automated)
 
@@ -132,11 +140,17 @@ docs/
 ```
 
 This script will:
-1. Verify Python 3.12 is available
-2. Create `D:\Forecasting-Tool-Local\` with venv, caches, temp, and benchmarks
+1. Install the pinned Python 3.12.10 directly into `D:\Forecasting-Tool-Local\python312`
+   (downloads, verifies SHA-256 and Authenticode, then installs — never
+   uses `py` or a PATH Python as a bootstrap)
+2. Create `D:\Forecasting-Tool-Local\` with venv, caches, temp, and benchmarks,
+   using `D:\Forecasting-Tool-Local\python312\python.exe` to create the venv
 3. Set all cache environment variables to D: drive
-4. Install PyTorch (CPU), runtime deps, and dev deps
-5. Run `scripts/verify_environment.py`
+4. Install PyTorch (CPU), runtime deps, and dev deps (every pip command via
+   the D-drive venv interpreter)
+5. Verify the venv base interpreter (`sys.executable`, `sys.base_prefix`,
+   `pyvenv.cfg home`) is the D-drive project Python
+6. Run `scripts/verify_environment.py`
 
 ### Manual installation
 
@@ -155,8 +169,8 @@ $env:TEMP = "D:\Forecasting-Tool-Local\temp"
 # Create directories
 New-Item -ItemType Directory -Force -Path D:\Forecasting-Tool-Local\venv, D:\Forecasting-Tool-Local\cache\pip, D:\Forecasting-Tool-Local\temp | Out-Null
 
-# Create virtual environment (adjust Python path if needed)
-py -3.12 -m venv D:\Forecasting-Tool-Local\venv
+# Create the virtual environment FROM THE D-DRIVE PYTHON (never `py`/PATH):
+D:\Forecasting-Tool-Local\python312\python.exe -m venv D:\Forecasting-Tool-Local\venv
 
 # Install dependencies (requirements.txt includes --extra-index-url for CPU-only PyTorch)
 D:\Forecasting-Tool-Local\venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -408,6 +422,59 @@ Fixes:
   fail-closed `flake8 --select=F811,F541,F841,W605` step scoped to the four
   modules this PR can hold at zero, alongside the existing fatal-only
   (`E9,F63,F7,F82`) gate over the whole tree.
+
+**This PR's own CI results:** _(to be filled in the pull request description
+after CI runs, per the same governance requirement above.)_
+
+## PR #27 review closure and release-readiness closure
+
+This corrective PR fixes the PR #27 P1 finding (colon-delimited secret
+detection) that was marked resolved on GitHub but never actually fixed, and
+closes the remaining Stage 0 release-readiness gaps. It does **not**
+collect any real Stage 0 evidence, deploy to Community Cloud, change the
+model ID or pinned revision, or resume Phase 1 — Gate B3 stays invalid,
+Cloud Gate C stays pending, ADR-001 stays provisional, and Phase 1 stays
+paused.
+
+Fixes:
+
+- **P1 (colon-delimited secret detection)**: `src/redaction.py` now unifies
+  detection and sanitisation around one assignment grammar (`=` or `:`,
+  optional surrounding whitespace), so `api_key:secret`, `api-key: secret`,
+  `APIKEY:secret`, `password:hunter2`, `HF_TOKEN:abcdef`, and
+  `--api-key:secret` are all detected and redacted. A safe marker exempts
+  only the matched value. `tests/test_redaction.py::TestColonDelimitedSecrets`
+  and `tests/test_redaction_contract.py::TestColonDelimitedContractAcrossReceiptPaths`
+  cover every production receipt path (`ExecutionReceipt.validate()`,
+  `receipt_is_release_ready()`, `ReceiptContext`, `run_with_receipt()`,
+  local bundle validation, Cloud evidence validation, publisher
+  validation, readiness verification).
+- **Strict release-evidence deserialisation**: `evidence_from_dict(..., strict=True)`
+  rejects unknown fields at every depth with a path-qualified error; the
+  publisher, bundle builder, Cloud builder, recursive validator, and
+  manifest verifier all use strict mode. Permissive parsing remains only as
+  an explicit migration mode that cannot publish or update the release
+  manifest.
+- **D-drive base runtime**: `verify_ddrive_runtime()` verifies
+  `sys.executable`, `sys.prefix`, `sys.base_prefix`, and `pyvenv.cfg home`;
+  the setup script no longer uses a `py`/PATH bootstrap and installs the
+  pinned Python directly into `D:\Forecasting-Tool-Local\python312`.
+- **Post-merge CI observability**: `workflow_dispatch` added for explicit
+  recovery/diagnostics; a workflow-contract test asserts the required
+  triggers. The push-to-main run on the exact merge commit remains the
+  authoritative gate.
+- **Correctness lint broadened**: fail-closed flake8 now enforces
+  `E9,F63,F7,F82,F402,F541,F811,F841,W605` across `src/` and `scripts/`
+  (all pre-existing violations fixed). `E501` line length and broad
+  formatting are not blockers.
+- **Canonical Cloud template parity**: `cloud_stage0_template.json` now
+  carries the 19 canonical test names and the parity test runs instead of
+  skipping; the readiness verifier checks template↔registry↔checklist
+  parity.
+- **Autonomous merge governance**: `docs/development/autonomous_merge.md`
+  (exact merge state machine) and
+  `docs/development/pr_review_completion_checklist.md` (per-finding
+  resolution evidence contract).
 
 **This PR's own CI results:** _(to be filled in the pull request description
 after CI runs, per the same governance requirement above.)_

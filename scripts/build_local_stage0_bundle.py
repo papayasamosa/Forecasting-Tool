@@ -140,7 +140,9 @@ def _validate_component_typed(
     try:
         sys.path.insert(0, str(REPO_ROOT))
         from src.evidence_schemas import evidence_from_dict
-        evidence_obj = evidence_from_dict(data)
+        # strict=True: release evidence must reject unknown fields at every
+        # depth — a wrong evidence_type or misspelled field must fail here.
+        evidence_obj = evidence_from_dict(data, strict=True)
     except Exception as exc:
         errors.append(f"{component_name}: deserialisation failed: {exc}")
         return errors
@@ -245,7 +247,7 @@ def _validate_model_artifact_typed(
     try:
         sys.path.insert(0, str(REPO_ROOT))
         from src.evidence_schemas import evidence_from_dict
-        art = evidence_from_dict(data)
+        art = evidence_from_dict(data, strict=True)
     except Exception as exc:
         errors.append(f"model_artifact: deserialisation failed: {exc}")
         return errors
@@ -490,10 +492,6 @@ def main() -> int:
 
     expected_commit = dc_smoke.get("code_commit", "") if isinstance(dc_smoke, dict) else ""
 
-    # Collect expected revisions from smoke data
-    expected_cr = dc_smoke.get("configured_revision", "") if isinstance(dc_smoke, dict) else ""
-    expected_mr = dc_smoke.get("model_revision", "") if isinstance(dc_smoke, dict) else ""
-
     # Recursive typed validation (WP9) — every component goes through
     # the shared recursive validator from src.evidence_validation.
     sys.path.insert(0, str(REPO_ROOT))
@@ -626,7 +624,7 @@ def main() -> int:
 
     print(f"\n[OK] Bundle validation passed — {len(all_errors)} errors")
     print(f"  Commit: {expected_commit}")
-    print(f"  Components: download_cold_smoke, process_cold_smoke, benchmark, token_present_smoke, model_artifact")
+    print("  Components: download_cold_smoke, process_cold_smoke, benchmark, token_present_smoke, model_artifact")
 
     return 0
 

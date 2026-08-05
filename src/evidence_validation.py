@@ -40,11 +40,16 @@ BUNDLE_RUN_KEYS = [
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-def _deserialise(data: dict[str, Any]) -> Any:
-    """Deserialise a raw dict through evidence_from_dict."""
+def _deserialise(data: dict[str, Any], *, strict: bool = True) -> Any:
+    """Deserialise a raw dict through evidence_from_dict.
+
+    ``strict=True`` (default) rejects unknown fields at every depth — this
+    module is only used by release paths (bundle builder, publisher,
+    manifest verifier), so permissive parsing is never appropriate here.
+    """
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.evidence_schemas import evidence_from_dict
-    return evidence_from_dict(data)
+    return evidence_from_dict(data, strict=strict)
 
 
 def _validate_obj(obj: Any, label: str) -> list[str]:
@@ -67,7 +72,7 @@ def _validate_obj(obj: Any, label: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def validate_recursive(data: Any, label: str = "root") -> list[str]:
+def validate_recursive(data: Any, label: str = "root", *, strict: bool = True) -> list[str]:
     """Recursively validate evidence data.
 
     Parameters
@@ -76,6 +81,9 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
         Parsed JSON data (dict) to validate. Must have an evidence_type field.
     label : str
         Human-readable label for error messages.
+    strict : bool
+        Reject unknown fields at every depth (default True — release paths
+        must never silently discard schema fields).
 
     Returns
     -------
@@ -92,7 +100,7 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
 
     # Deserialise through typed schema
     try:
-        obj = _deserialise(data)
+        obj = _deserialise(data, strict=strict)
     except Exception as exc:
         errors.append(f"{label}: deserialisation failed: {exc}")
         return errors
@@ -108,7 +116,7 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
             if isinstance(run_data, dict):
                 # Only recurse if the nested record has evidence_type
                 if "evidence_type" in run_data:
-                    errors.extend(validate_recursive(run_data, label=f"{label}.runs.{run_key}"))
+                    errors.extend(validate_recursive(run_data, label=f"{label}.runs.{run_key}", strict=strict))
                 # If no evidence_type, it's raw data stored inline; skip
                 # recursive validation but the parent bundle's validate()
                 # already checks basic consistency.
@@ -117,7 +125,7 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
         ma = data.get("model_artifact")
         if isinstance(ma, dict):
             if "evidence_type" in ma:
-                errors.extend(validate_recursive(ma, label=f"{label}.model_artifact"))
+                errors.extend(validate_recursive(ma, label=f"{label}.model_artifact", strict=strict))
         else:
             errors.append(f"{label}.model_artifact: missing or not a dict")
 
@@ -173,7 +181,7 @@ def validate_recursive(data: Any, label: str = "root") -> list[str]:
         for i, sc in enumerate(scenarios):
             if isinstance(sc, dict):
                 if "evidence_type" in sc:
-                    errors.extend(validate_recursive(sc, label=f"{label}.scenarios[{i}]"))
+                    errors.extend(validate_recursive(sc, label=f"{label}.scenarios[{i}]", strict=strict))
                 # Scenarios without evidence_type are validated by the
                 # parent BenchmarkSuiteEvidence.validate() method.
 

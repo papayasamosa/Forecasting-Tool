@@ -159,3 +159,46 @@ class TestCoverageGateImpossibleThreshold:
             cwd=tmp_path, capture_output=True, text=True, timeout=60,
         )
         assert result.returncode != 0
+
+
+class TestWorkflowTriggerContract:
+    """WP4: the CI workflow must declare the exact triggers the release
+    sequence depends on, and the correctness lint must be fail-closed
+    across src/ and scripts/ (WP7)."""
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+
+    def test_workflow_declares_required_triggers(self):
+        """push: main, pull_request: main, and workflow_dispatch must all
+        be declared so (a) every merge commit gets a push-to-main run and
+        (b) an explicit recovery/diagnostics run is always possible."""
+        ci = (self.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        # YAML block scalar: the triggers section follows "on:".
+        triggers = ci.split("on:")[1].split("jobs:")[0] if "on:" in ci else ""
+        assert triggers, "workflow has no 'on:' trigger section"
+        assert "push:" in triggers
+        assert "branches: [main]" in triggers or "branches:" in triggers
+        assert "pull_request:" in triggers
+        assert "workflow_dispatch:" in triggers
+
+    def test_workflow_runs_pull_request_on_main(self):
+        ci = (self.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        # The pull_request trigger must target main so PR CI is mandatory.
+        pr_section = ci.split("pull_request:")[1].split("jobs:")[0]
+        assert "main" in pr_section
+
+    def test_workflow_runs_push_on_main(self):
+        ci = (self.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        push_section = ci.split("push:")[1].split("pull_request:")[0]
+        assert "main" in push_section
+
+    def test_correctness_lint_covers_src_and_scripts(self):
+        """The fail-closed correctness lint step must run flake8 with the
+        E9,F63,F7,F82,F402,F541,F811,F841,W605 rule set across src/ and
+        scripts/ — not just a handful of selected files."""
+        ci = (self.REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "src" in ci
+        assert "scripts" in ci
+        for rule in ("E9", "F63", "F7", "F82", "F402", "F541", "F811", "F841", "W605"):
+            assert rule in ci, f"lint rule {rule} missing from ci.yml"
+        assert "flake8 src scripts" in ci or "flake8 src/ scripts/" in ci or "src/ scripts/" in ci

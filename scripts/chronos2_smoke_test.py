@@ -111,7 +111,7 @@ def run_smoke_test(
 
     if initial_cache_state == "download_cold" and pre_run_inspection.get("snapshot_present", False):
         print("  ERROR: --initial-cache-state=download_cold but snapshot is already cached.")
-        print(f"    Use a fresh cache directory or --initial-cache-state=process_cold_cached_weights")
+        print("    Use a fresh cache directory or --initial-cache-state=process_cold_cached_weights")
         evidence = {
             "evidence_schema_version": "2",
             "evidence_type": "smoke_test",
@@ -139,7 +139,7 @@ def run_smoke_test(
         return evidence
     if initial_cache_state == "process_cold_cached_weights" and not pre_run_inspection.get("snapshot_present", False):
         print("  ERROR: --initial-cache-state=process_cold_cached_weights but snapshot is not cached.")
-        print(f"    Run with --initial-cache-state=download_cold first.")
+        print("    Run with --initial-cache-state=download_cold first.")
         evidence = {
             "evidence_schema_version": "2",
             "evidence_type": "smoke_test",
@@ -348,7 +348,7 @@ def run_smoke_test(
         print(f"    {k}: {v}")
 
     # WP1: Post-run cache inspection and build complete CachePreflight
-    from src.telemetry import build_cache_preflight
+    # (build_cache_preflight imported at module scope)
     post_run_inspection = inspect_hf_cache(MODEL_REVISION)
     evidence["cache_preflight"] = build_cache_preflight(
         pre_run_inspection, post_run_inspection, initial_cache_state,

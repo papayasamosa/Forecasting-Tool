@@ -183,3 +183,117 @@ class TestQuotedAndCompoundValues:
     def test_multiple_sensitive_arguments_first_exposure_reported(self):
         exposure = contains_exposed_secret("--token=abc123456 --password=def")
         assert exposure is not None
+
+
+class TestColonDelimitedSecrets:
+    """PR #27 review finding P1: colon-delimited sensitive values were not
+    detected after the equals-only detector rewrite. Detection and
+    sanitisation must share the same ``=``/``:`` assignment grammar."""
+
+    UNSAFE_EXAMPLES = [
+        "api_key:secret",
+        "api-key: secret",
+        "APIKEY:secret",
+        "password:hunter2",
+        "secret: hunter2",
+        "token:abcdef",
+        "HF_TOKEN:abcdef",
+        "--api-key:secret",
+        "--password hunter2",
+        "Authorization: Bearer abcdef",
+    ]
+
+    SAFE_EXAMPLES = [
+        "api_key:***REDACTED***",
+        "api-key: [REDACTED]",
+        "APIKEY:<redacted>",
+        "HF_TOKEN=***REDACTED***",
+        "--token-state present",
+        "token-present-smoke.json",
+        "token-absent-smoke.json",
+        "Authorization: Bearer ***REDACTED***",
+        "HF_TOKEN=[REDACTED] --token-state present",
+    ]
+
+    def test_all_required_unsafe_examples_detected(self):
+        for text in self.UNSAFE_EXAMPLES:
+            assert contains_exposed_secret(text) is not None, text
+
+    def test_all_required_safe_examples_accepted(self):
+        for text in self.SAFE_EXAMPLES:
+            assert contains_exposed_secret(text) is None, text
+
+    def test_colon_assignment_redacted_by_sanitise(self):
+        out = sanitise_command(["api_key:secret"])
+        assert "secret" not in out
+        assert REDACTED_MARKER in out
+
+    def test_hyphenated_colon_assignment_redacted_by_sanitise(self):
+        out = sanitise_command(["api-key:secret"])
+        assert "secret" not in out
+        assert REDACTED_MARKER in out
+
+    def test_dashed_flag_colon_assignment_redacted(self):
+        out = sanitise_command(["--api-key:secret"])
+        assert "secret" not in out
+        assert REDACTED_MARKER in out
+
+    def test_hf_token_colon_assignment_redacted(self):
+        out = sanitise_command(["HF_TOKEN:abcdef"])
+        assert "abcdef" not in out
+        assert REDACTED_MARKER in out
+
+    def test_trailing_colon_token_redacts_following_value(self):
+        out = sanitise_command(["api-key:", "secret"])
+        assert "secret" not in out
+        assert REDACTED_MARKER in out
+
+    def test_trailing_equals_token_redacts_following_value(self):
+        out = sanitise_command(["HF_TOKEN=", "abcdef"])
+        assert "abcdef" not in out
+        assert REDACTED_MARKER in out
+
+    def test_sanitised_colon_output_is_not_an_exposure(self):
+        for argv in (
+            ["api_key:secret"],
+            ["api-key:secret"],
+            ["APIKEY:secret"],
+            ["password:hunter2"],
+            ["HF_TOKEN:abcdef"],
+            ["--api-key:secret"],
+            ["api-key:", "secret"],
+            ["secret:", "hunter2"],
+            ["--password", "hunter2"],
+            ["-H", "Authorization: Bearer hf_abcdef1234567890"],
+        ):
+            out = sanitise_command(argv)
+            assert contains_exposed_secret(out) is None, (argv, out)
+
+    def test_sanitise_is_idempotent_for_colon_forms(self):
+        for argv in (
+            ["api_key:secret"],
+            ["api-key:secret"],
+            ["--api-key:secret"],
+            ["HF_TOKEN:abcdef"],
+            ["api-key:", "secret"],
+            ["HF_TOKEN=", "abcdef"],
+        ):
+            once = sanitise_command(argv)
+            twice = sanitise_command(once.split(" "))
+            assert once == twice, (argv, once, twice)
+
+    def test_error_message_identifies_field_without_secret(self):
+        exposure = contains_exposed_secret("api_key:supersecretvalue123")
+        assert exposure is not None
+        assert "supersecretvalue123" not in exposure
+        assert "api_key" in exposure
+
+    def test_multiple_colon_credentials_first_reported(self):
+        exposure = contains_exposed_secret("api_key:abc123 --password hunter2")
+        assert exposure is not None
+
+    def test_colon_exposure_not_suppressed_by_nearby_marker(self):
+        # Regression for PR #26 P1-1: a safe marker elsewhere in the string
+        # must never suppress a real colon-delimited exposure.
+        assert contains_exposed_secret("HF_TOKEN:abcdef --token-state present") is not None
+        assert contains_exposed_secret("password:hunter2 ***REDACTED***") is not None

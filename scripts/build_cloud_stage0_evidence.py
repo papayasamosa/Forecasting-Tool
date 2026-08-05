@@ -293,8 +293,7 @@ def _build_cloud_evidence(data: dict[str, Any], allow_synthetic: bool = False) -
     trace = capture_traceability()
     started_utc = datetime.now(timezone.utc).isoformat()
 
-    # Determine evidence origin
-    from src.evidence_schemas import EVIDENCE_ORIGIN_REAL, EVIDENCE_ORIGIN_SYNTHETIC
+    # Determine evidence origin (constants imported at module scope)
     evidence_origin = EVIDENCE_ORIGIN_SYNTHETIC if allow_synthetic else EVIDENCE_ORIGIN_REAL
 
     evidence = CloudEvidence(
@@ -435,8 +434,7 @@ def main() -> int:
             print(f"  [FAIL] {err}")
         return 1
 
-    # Recursively validate
-    from src.evidence_validation import validate_recursive
+    # Recursively validate (imported at module scope)
     v_errors = validate_recursive(evidence_dict, label="cloud_stage0")
     if v_errors:
         print("Schema validation errors:")
@@ -454,7 +452,7 @@ def main() -> int:
         json.dump(evidence_dict, sys.stdout, indent=2, default=str)
         print()
 
-    print(f"[OK] Cloud evidence validation passed")
+    print("[OK] Cloud evidence validation passed")
     print(f"  Commit: {evidence.code_commit}")
     print(f"  Model revision: {evidence.model_revision}")
     print(f"  Tests: {len([t for t in evidence.acceptance_tests if t.passed])}/{len(CANONICAL_CLOUD_TESTS)} passed")

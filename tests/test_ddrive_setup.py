@@ -179,14 +179,46 @@ class TestDDriveSetupContract:
         assert "-PythonPath must be under" in content
         assert "$LocalRoot\\*" in content or "notlike" in content
 
-    def test_bootstrap_c_drive_exception_is_documented(self):
-        """WP-L: the one unavoidable C-drive touchpoint (a bootstrap
-        interpreter used solely to create the D-drive venv) must be
-        explicitly documented in the script, not silently present."""
+    def test_no_c_drive_bootstrap_fallback(self):
+        """WP3: the setup script must NEVER use the `py` launcher or a PATH
+        Python as a bootstrap to create the D-drive venv. A C-drive based
+        venv is not an approved project runtime, so the script must always
+        install the pinned Python directly into
+        D:\\Forecasting-Tool-Local\\python312 and create the venv from that
+        interpreter."""
         setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
         content = setup_path.read_text(encoding="utf-8")
-        assert "bootstrap" in content.lower()
-        assert "never the project runtime" in content or "never again" in content
+        # The old "bootstrap interpreter" search must be gone.
+        assert "bootstrap interpreter" not in content
+        assert "searching for a bootstrap" not in content
+        assert 'Get-Command "py"' not in content
+        assert 'Get-Command "python"' not in content
+        # The venv must be created from the D-drive python.
+        assert '-m venv "$LocalRoot\\venv"' in content
+        assert "$pythonInstallDir\\python.exe" in content
+        # The base interpreter must be verified against the D-drive tree.
+        assert "verify_ddrive_runtime" in content
+
+    def test_setup_rejects_existing_non_d_base_venv(self):
+        """WP3: the setup script must reject an existing venv whose base
+        interpreter is outside the approved runtime tree."""
+        setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
+        content = setup_path.read_text(encoding="utf-8")
+        assert "Delete the existing venv" in content
+        assert "based on the D-drive project Python" in content
+
+    def test_storage_policy_has_runtime_verifier(self):
+        """WP3: storage_policy must expose a runtime verifier checking
+        sys.executable, sys.prefix, sys.base_prefix and pyvenv.cfg home."""
+        from src.storage_policy import verify_ddrive_runtime
+        assert callable(verify_ddrive_runtime)
+
+    def test_verify_environment_calls_runtime_verifier(self):
+        """WP3: verify_environment.py must invoke the shared runtime
+        verifier so a C-based venv is reported as an error."""
+        verify_path = REPO_ROOT / "scripts" / "verify_environment.py"
+        content = verify_path.read_text(encoding="utf-8")
+        assert "verify_ddrive_runtime" in content
 
     def test_activation_script_exports_all_required_vars(self):
         """Activation script must set every REQUIRED_ENV_VAR."""

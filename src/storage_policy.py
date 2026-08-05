@@ -159,12 +159,82 @@ def is_under_local_root(path: str) -> bool:
     # for cross-platform comparison (os.sep differs: '\\' on Windows, '/' on Linux)
     norm_path = _normalise_windows_path(path).replace("\\", "/")
     norm_root = _normalise_windows_path(LOCAL_ROOT).replace("\\", "/")
-    return norm_path.startswith(norm_root + "/") or norm_path == norm_root
+    # Windows paths are case-insensitive: the on-disk case (e.g. as returned
+    # by Path.resolve()) may differ from the constant's case, so compare
+    # case-insensitively. (is_valid_storage_root already accepts either case.)
+    norm_path_l = norm_path.lower()
+    norm_root_l = norm_root.lower()
+    return norm_path_l.startswith(norm_root_l + "/") or norm_path_l == norm_root_l
 
 
 def is_windows_platform() -> bool:
     """Return True if running on Windows."""
     return sys.platform == "win32"
+
+
+def verify_ddrive_runtime() -> list[str]:
+    """Verify the active interpreter is the D-drive venv based on the
+    D-drive project Python.
+
+    The project runtime is:
+
+    - base interpreter: ``D:\\Forecasting-Tool-Local\\python312\\python.exe``
+    - virtual environment: ``D:\\Forecasting-Tool-Local\\venv``
+
+    Returns a list of error messages (empty = OK). Checks:
+    - ``sys.executable`` is the D-drive venv interpreter
+    - ``sys.prefix`` is under ``D:\\Forecasting-Tool-Local``
+    - ``sys.base_prefix`` is under ``D:\\Forecasting-Tool-Local`` (so the
+      venv is NOT based on a C-drive Python)
+    - the venv's ``pyvenv.cfg`` ``home`` points under the approved runtime
+      tree
+
+    On non-Windows platforms this returns an empty list (the D-drive
+    policy does not apply to GitHub runners or Cloud containers).
+    """
+    errors: list[str] = []
+
+    if sys.platform != "win32":
+        return errors
+
+    venv_python = os.path.join(LOCAL_ROOT, "venv", "Scripts", "python.exe")
+    actual_exec = os.path.normcase(os.path.abspath(sys.executable))
+    expected_exec = os.path.normcase(os.path.abspath(venv_python))
+    if actual_exec != expected_exec:
+        errors.append(
+            f"Active interpreter '{sys.executable}' is not the D-drive venv "
+            f"interpreter '{venv_python}'"
+        )
+
+    if not is_under_local_root(os.path.normpath(sys.prefix)):
+        errors.append(f"sys.prefix '{sys.prefix}' is not under {LOCAL_ROOT}")
+
+    if not is_under_local_root(os.path.normpath(sys.base_prefix)):
+        errors.append(
+            f"sys.base_prefix '{sys.base_prefix}' is not under {LOCAL_ROOT} — "
+            f"the D-drive venv must be based on the D-drive project Python "
+            f"at '{os.path.join(LOCAL_ROOT, 'python312')}', never a "
+            f"C-drive (or other) installation"
+        )
+
+    # pyvenv.cfg home must point under the approved runtime tree
+    pyvenv_cfg = os.path.join(sys.prefix, "pyvenv.cfg")
+    if os.path.exists(pyvenv_cfg):
+        home = ""
+        try:
+            with open(pyvenv_cfg, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().lower().startswith("home"):
+                        home = line.split("=", 1)[1].strip()
+        except OSError as exc:
+            errors.append(f"cannot read {pyvenv_cfg}: {exc}")
+        if home and not is_under_local_root(os.path.normpath(home)):
+            errors.append(
+                f"pyvenv.cfg home '{home}' is not under {LOCAL_ROOT} — the "
+                f"venv is based on a Python outside the approved runtime tree"
+            )
+
+    return errors
 
 
 def assert_d_drive_preflight() -> list[str]:
@@ -200,6 +270,10 @@ def assert_d_drive_preflight() -> list[str]:
             f"Active interpreter '{sys.executable}' is not the D-drive venv "
             f"interpreter '{venv_python}'"
         )
+
+    # Check the venv base interpreter is the D-drive project Python (WP3):
+    # a venv created from a C-drive Python is not an approved runtime.
+    errors.extend(verify_ddrive_runtime())
 
     # Check repo location
     repo_root = Path(__file__).resolve().parent.parent
