@@ -1,7 +1,14 @@
 # pragma: no cover
 """Streamlit page: Methodology — Documentation and references.
 """
+import os
+import sys
+
 import streamlit as st
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.telemetry import deployed_commit  # noqa: E402
 
 st.set_page_config(
     page_title="Methodology — Chronos-2",
@@ -89,3 +96,10 @@ The following packages are used by this application:
 | `pandas` | See `requirements.txt` |
 | `numpy` | See `requirements.txt` |
 """)
+
+st.markdown("""## Deployment
+
+Best-effort identity of the currently running deployment (resolved from the
+app's git checkout at runtime, no admin access needed):
+""")
+st.markdown(f"- **Deployed commit:** `{deployed_commit() or 'not available'}`")

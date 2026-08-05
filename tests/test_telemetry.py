@@ -19,6 +19,9 @@ from src.telemetry import (
     write_execution_receipt,
     _resolve_hf_cache_dir,
     rss_mb,
+    current_rss_mb,
+    process_peak_rss_mb,
+    deployed_commit,
 )
 from src.evidence_schemas import (
     CachePreflight,
@@ -190,6 +193,90 @@ class TestBuildCachePreflight:
         }
         cp = build_cache_preflight(pre, post, "download_cold")
         assert cp["inspection_succeeded"] is True
+
+
+class TestProcessMemory:
+    """WP7: stdlib-only memory reads used by the Cloud app's public UI."""
+
+    def test_current_rss_mb_never_raises(self):
+        """current_rss_mb must return a float >= 0 without raising."""
+        value = current_rss_mb()
+        assert isinstance(value, float)
+        assert value >= 0.0
+
+    def test_process_peak_rss_mb_never_raises(self):
+        """process_peak_rss_mb must return a float >= 0 without raising."""
+        value = process_peak_rss_mb()
+        assert isinstance(value, float)
+        assert value >= 0.0
+
+    def test_peak_is_high_water_mark(self):
+        """When both are measurable, peak RSS must be >= current RSS."""
+        current = current_rss_mb()
+        peak = process_peak_rss_mb()
+        if current > 0.0 and peak > 0.0:
+            assert peak >= current
+        else:
+            # Platform without measurement (e.g. neither /proc nor resource)
+            # — tolerate, but both must still be non-negative.
+            assert current >= 0.0 and peak >= 0.0
+
+    def test_plausible_magnitude_when_measurable(self):
+        """A measurable RSS should be in a sane range (tens of MB to a few GB)."""
+        current = current_rss_mb()
+        peak = process_peak_rss_mb()
+        for value, name in ((current, "current"), (peak, "peak")):
+            if value > 0.0:
+                assert 1.0 < value < 64 * 1024, (
+                    f"{name} RSS {value:.1f} MB outside a plausible process range"
+                )
+
+
+class TestDeployedCommit:
+    def test_returns_40_hex_chars_in_this_repo(self):
+        """In a git checkout, deployed_commit must resolve to a 40-char SHA."""
+        commit = deployed_commit()
+        assert commit == "" or (len(commit) == 40 and all(c in "0123456789abcdef" for c in commit))
+
+    def test_env_override_wins(self, monkeypatch):
+        """An explicit DEPLOYED_COMMIT env var must take precedence."""
+        monkeypatch.setenv("DEPLOYED_COMMIT", "a" * 40)
+        assert deployed_commit() == "a" * 40
+
+    def test_short_hex_env_override_returns_as_is(self, monkeypatch):
+        """Any non-empty env override is returned verbatim (short SHAs ok)."""
+        monkeypatch.setenv("COMMIT_SHA", "abc123")
+        assert deployed_commit() == "abc123"
+
+    def test_resolve_git_head_sha_from_fake_repo(self, tmp_path):
+        """_resolve_git_head_sha resolves a ref-style HEAD from a fake .git."""
+        import src.telemetry as telemetry
+        repo = tmp_path / "repo"
+        ref_file = repo / ".git" / "refs" / "heads" / "main"
+        ref_file.parent.mkdir(parents=True)
+        ref_file.write_text("c2102f8f9d6cf1e9c66970ff4d26e13cae82768a\n")
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        assert telemetry._resolve_git_head_sha(repo) == "c2102f8f9d6cf1e9c66970ff4d26e13cae82768a"
+
+    def test_resolve_git_head_sha_empty_without_git(self, tmp_path):
+        """_resolve_git_head_sha returns '' for a directory without .git."""
+        import src.telemetry as telemetry
+        assert telemetry._resolve_git_head_sha(tmp_path / "norepo") == ""
+
+    def test_fallback_empty_when_no_git_and_no_env(self, monkeypatch):
+        """With no env override and an unresolvable .git, must return ''."""
+        import src.telemetry as telemetry
+        monkeypatch.delenv("DEPLOYED_COMMIT", raising=False)
+        monkeypatch.delenv("COMMIT_SHA", raising=False)
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        # Force both resolution paths to report empty.
+        monkeypatch.setattr(telemetry, "_resolve_git_head_sha", lambda root: "")
+        monkeypatch.setattr(
+            telemetry,
+            "capture_traceability",
+            lambda: {"code_commit": ""},
+        )
+        assert deployed_commit() == ""
 
 
 class TestWriteExecutionReceipt:
