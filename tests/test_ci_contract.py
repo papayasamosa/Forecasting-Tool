@@ -202,3 +202,30 @@ class TestWorkflowTriggerContract:
         for rule in ("E9", "F63", "F7", "F82", "F402", "F541", "F811", "F841", "W605"):
             assert rule in ci, f"lint rule {rule} missing from ci.yml"
         assert "flake8 src scripts" in ci or "flake8 src/ scripts/" in ci or "src/ scripts/" in ci
+
+
+class TestCoverageVersionPin:
+    """Regression guard: coverage must be explicitly pinned to a version
+    known to work on GitHub-hosted runners. coverage 7.15.3 regressed
+    there (its _add_sysconfig_paths iterates every sysconfig scheme and
+    sysconfig.get_paths('posix_user') raises AttributeError: 'userbase' on
+    the runner's Python 3.12 toolchain, aborting pytest with INTERNALERROR).
+    A floating 'latest' resolve silently reintroduces that failure."""
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+
+    def test_coverage_is_explicitly_pinned(self):
+        req = (self.REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        coverage_lines = [ln.strip() for ln in req.splitlines()
+                          if ln.strip().startswith("coverage")]
+        assert coverage_lines, "requirements-dev.txt does not pin coverage"
+        assert any("==" in ln for ln in coverage_lines), (
+            f"coverage must be exact-pinned, got: {coverage_lines}"
+        )
+
+    def test_coverage_pin_references_runner_incompatibility(self):
+        req = (self.REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        assert "7.15.2" in req, "coverage pin no longer references the known-good 7.15.2"
+        assert "userbase" in req, (
+            "coverage pin comment no longer documents the runner incompatibility"
+        )

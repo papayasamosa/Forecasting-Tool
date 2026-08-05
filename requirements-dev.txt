@@ -3,6 +3,12 @@
 # =============================================================================
 pytest==9.1.1
 pytest-cov==7.1.0
+# coverage is pinned to 7.15.2: 7.15.3 regressed on GitHub-hosted runners —
+# its _add_sysconfig_paths iterates every sysconfig scheme and
+# sysconfig.get_paths('posix_user') raises AttributeError: 'userbase' on
+# the runner's Python 3.12 toolchain, aborting the whole pytest run with an
+# INTERNALERROR. 7.15.2 is the exact version PR #27's passing CI used.
+coverage==7.15.2
 matplotlib==3.11.1
 psutil==7.2.2
 flake8==7.2.0
