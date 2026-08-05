@@ -1,8 +1,14 @@
 # ADR-001: Inference Backend Architecture
 
 **Status:** ⏳ Provisionally accepted, pending Cloud Gate C  
-**Date:** 2026-07-30 (updated)  
-**Note:** This ADR reflects historical feasibility evidence. Do not treat invalidated PR #18 token record as proof. Valid current-head evidence requires a genuine token-present rerun and updated bundle.
+**Date:** 2026-08-05 (updated)  
+**Note:** A genuine current-head local evidence bundle (Gate B3) is now
+published on commit `7831cb4`:
+`docs/evidence/stage0/evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json`
+— it includes an independently executed token-present run (unique run ID and
+timestamps) and passes the hardened bundle checks. The invalidated PR #18
+bundle remains in place for audit only. Cloud Gate C evidence is still
+required for final ADR acceptance.
 
 ## Context
 

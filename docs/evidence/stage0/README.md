@@ -13,10 +13,34 @@ must **not** be treated as passing Stage 0 release evidence. Its
 `runs.process_cold_smoke` (identical `started_at_utc`/`completed_at_utc`,
 cold/warm timings, and RSS) with only `hf_token_present` and the token-result
 objects changed — it is not an independently executed token-present run. The
-file is retained unmodified for audit; a genuine token-present rerun,
-produced with the hardened `scripts/chronos2_smoke_test.py` and validated by
-`scripts/build_local_stage0_bundle.py`'s duplicate-evidence checks, will
-supersede it under a new filename.
+file is retained unmodified for audit.
+
+## Superseding genuine evidence (Gate B3, 2026-08-05)
+
+`evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json` is the
+genuine current-head local Stage 0 evidence bundle (commit `7831cb4`), which
+supersedes the invalidated PR #18 bundle. It was produced with the hardened
+`scripts/chronos2_smoke_test.py` and validated by
+`scripts/build_local_stage0_bundle.py`'s duplicate-evidence checks:
+
+- `download_cold_smoke` — genuine first-download run (fresh cache,
+  `hf_token_present: false`), distinct run ID
+- `process_cold_smoke` — genuine cached-weights run (`hf_token_present:
+  false`), distinct run ID
+- `token_present_smoke` — genuine independently executed run
+  (`hf_token_present: true`, unique `started_at_utc`/`completed_at_utc`,
+  unique `run_id`, exact pinned revision) — NOT a duplicate of
+  `process_cold_smoke`
+- `benchmark` — suite passed (4/4 scenarios, 10/10 rolling folds), strict
+  release validation OK
+- `model_artifact` — real snapshot inventory (config.json + model.safetensors,
+  SHA-256 hashes)
+- All five components are bound to typed execution receipts with canonical
+  content digests, and the bundle passed `build_local_stage0_bundle.py`
+  validation with 0 errors.
+
+The evidence manifest records this bundle and its receipts as the valid
+Gate B3 entry.
 
 ## Layout
 

@@ -255,7 +255,7 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 | A8 | Evidence and MCP-security closure | ✅ Merged (PR #10) | 1 |
 | A9 | Evidence publication hardening | ✅ Merged (PR #11) | 2 |
 | B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
-| B3 | Current-head local evidence bundle | ❌ Invalidated (PR #18) — fabricated token-present record; genuine rerun required | 4 |
+| B3 | Current-head local evidence bundle | ✅ Genuine bundle published 2026-08-05 (commit `7831cb4`) — independently executed token-present run; supersedes invalidated PR #18 | 4 |
 | C | Community Cloud technical spike | ⏳ Pending — needs completion | 5 |
 | D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 6 |
 | E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 7 |
@@ -267,20 +267,22 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 ## Current status
 
 - **Local evidence (Gate B2)**: Completed and committed. See `docs/evidence/stage0/`.
-- **Local evidence bundle (Gate B3, PR #18)**: **Invalidated.** The published
-  bundle's `runs.token_present_smoke` record is byte-for-byte identical to
-  `runs.process_cold_smoke` (same timestamps, timings, RSS) — only
-  `hf_token_present` and the token-result objects were changed. It is not an
-  independently executed token-present run; the PR #18 commit message itself
-  states `HF_TOKEN` was unavailable and token-present evidence was omitted,
-  which contradicts the bundle's `token_present_smoke.success=true`. The file
-  is kept for audit (see `docs/evidence/stage0/evidence_manifest.json`,
-  `status: "invalidated"`) but must not be treated as passing Gate B3.
-  `scripts/chronos2_smoke_test.py` and `scripts/build_local_stage0_bundle.py`
-  now emit and require independently-provenanced token-path evidence
-  (unique `run_id`, timestamps, matching revisions per attempted path) so a
-  duplicated record like this is mechanically rejected going forward. A
-  genuine token-present rerun and superseding bundle are still required.
+- **Local evidence bundle (Gate B3)**: **Valid — genuine bundle published
+  2026-08-05** on commit `7831cb4`
+  (`docs/evidence/stage0/evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json`).
+  It contains an independently executed token-present run (unique `run_id`
+  and timestamps, exact pinned revision) plus genuine download-cold,
+  process-cold, benchmark (4/4 scenarios, 10/10 rolling folds) and model
+  artifact components, all bound to typed execution receipts, and passed
+  `build_local_stage0_bundle.py` validation with 0 errors. This supersedes
+  the invalidated PR #18 bundle (kept for audit — see
+  `docs/evidence/stage0/evidence_manifest.json`), whose
+  `runs.token_present_smoke` record was byte-for-byte identical to
+  `runs.process_cold_smoke` with only `hf_token_present` and the token-result
+  objects changed. `scripts/chronos2_smoke_test.py` and
+  `scripts/build_local_stage0_bundle.py` require independently-provenanced
+  token-path evidence (unique `run_id`, timestamps, matching revisions per
+  attempted path) so a duplicated record is mechanically rejected.
 - **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
   is still empty. This is the current blocker, in addition to the Gate B3 rerun.
 - **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
