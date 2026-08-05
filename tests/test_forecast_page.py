@@ -197,6 +197,57 @@ class TestForecastPageAppTest:
         assert not at.exception
         assert fake_pipeline.call_count == 2
 
+    def test_forecast_timing_expander_reports_resource_telemetry(self):
+        """The timing expander must render memory and deployment telemetry."""
+        import re
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        from tests.test_adapter_contract import FakePipeline
+
+        fake_pipeline = FakePipeline()
+        adapter = Chronos2Adapter(pipeline_or_provider=fake_pipeline)
+
+        # Larger timeout: the forecast render path is slow under load and the
+        # default 3s AppTest timeout is a known flake source on this machine.
+        at = AppTest.from_file("pages/1_Forecast.py", default_timeout=60)
+        at.session_state["_test_backend_override"] = adapter
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+
+        # The expander content is written via st.write, which AppTest exposes
+        # as Markdown elements.
+        writes = [m.value for m in at.markdown if isinstance(m.value, str)]
+        joined = "\n".join(writes)
+        assert "Process peak RSS" in joined
+        assert "Current RSS" in joined
+        # The commit must render as a 40-char SHA or "not available".
+        match = re.search(r"Deployed commit:\*\* ([0-9a-f]{40}|not available)", joined)
+        assert match, f"unexpected deployed-commit rendering: {joined[-500:]}"
+
+
+@pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
+class TestMethodologyPageAppTest:
+    """The Methodology page must render and expose deployment identity."""
+
+    def test_default_page_renders(self):
+        """The Methodology page should render without an exception."""
+        at = AppTest.from_file("pages/2_Methodology.py")
+        at.run()
+        assert not at.exception
+
+    def test_deployment_section_shows_commit(self):
+        """The Deployment section must show the deployed commit or 'not available'."""
+        import re
+        at = AppTest.from_file("pages/2_Methodology.py")
+        at.run()
+        assert not at.exception
+        md = "\n".join(m.value for m in at.markdown)
+        assert "## Deployment" in md
+        assert "Deployed commit" in md
+        assert re.search(r"`[0-9a-f]{40}`|`not available`", md), md[-500:]
+
 
 @pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
 class TestForecastPageCoordinatorIntegration:

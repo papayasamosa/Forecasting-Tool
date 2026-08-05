@@ -97,10 +97,9 @@ The following packages are used by this application:
 | `numpy` | See `requirements.txt` |
 """)
 
-## Deployment
+st.markdown("""## Deployment
 
 Best-effort identity of the currently running deployment (resolved from the
 app's git checkout at runtime, no admin access needed):
-
 """)
 st.markdown(f"- **Deployed commit:** `{deployed_commit() or 'not available'}`")
