@@ -192,6 +192,24 @@ def _read_pyvenv_cfg_home(prefix: str) -> str:
     return home
 
 
+def _interpreter_facts() -> dict[str, str]:
+    """Return the interpreter facts the D-drive runtime check needs.
+
+    Isolated behind a module-level function so tests can stub it WITHOUT
+    mutating the real ``sys`` module. Patching ``sys.prefix``/``sys.base_prefix``
+    globally corrupts ``sysconfig``'s cached config vars on Linux runners,
+    which coverage.py reads via ``sysconfig.get_paths()`` — the next trace
+    then crashes with ``AttributeError: 'userbase'`` (a real CI INTERNALERROR
+    observed with coverage 7.15.x).
+    """
+    return {
+        "platform": sys.platform,
+        "executable": sys.executable,
+        "prefix": sys.prefix,
+        "base_prefix": sys.base_prefix,
+    }
+
+
 def verify_ddrive_runtime() -> list[str]:
     """Verify the active interpreter is the D-drive venv based on the
     D-drive project Python.
@@ -214,31 +232,32 @@ def verify_ddrive_runtime() -> list[str]:
     """
     errors: list[str] = []
 
-    if sys.platform != "win32":
+    facts = _interpreter_facts()
+    if facts["platform"] != "win32":
         return errors
 
     venv_python = os.path.join(LOCAL_ROOT, "venv", "Scripts", "python.exe")
-    actual_exec = os.path.normcase(os.path.abspath(sys.executable))
+    actual_exec = os.path.normcase(os.path.abspath(facts["executable"]))
     expected_exec = os.path.normcase(os.path.abspath(venv_python))
     if actual_exec != expected_exec:
         errors.append(
-            f"Active interpreter '{sys.executable}' is not the D-drive venv "
-            f"interpreter '{venv_python}'"
+            f"Active interpreter '{facts['executable']}' is not the D-drive "
+            f"venv interpreter '{venv_python}'"
         )
 
-    if not is_under_local_root(os.path.normpath(sys.prefix)):
-        errors.append(f"sys.prefix '{sys.prefix}' is not under {LOCAL_ROOT}")
+    if not is_under_local_root(os.path.normpath(facts["prefix"])):
+        errors.append(f"sys.prefix '{facts['prefix']}' is not under {LOCAL_ROOT}")
 
-    if not is_under_local_root(os.path.normpath(sys.base_prefix)):
+    if not is_under_local_root(os.path.normpath(facts["base_prefix"])):
         errors.append(
-            f"sys.base_prefix '{sys.base_prefix}' is not under {LOCAL_ROOT} — "
+            f"sys.base_prefix '{facts['base_prefix']}' is not under {LOCAL_ROOT} — "
             f"the D-drive venv must be based on the D-drive project Python "
             f"at '{os.path.join(LOCAL_ROOT, 'python312')}', never a "
             f"C-drive (or other) installation"
         )
 
     # pyvenv.cfg home must point under the approved runtime tree
-    home = _read_pyvenv_cfg_home(sys.prefix)
+    home = _read_pyvenv_cfg_home(facts["prefix"])
     if home and not is_under_local_root(os.path.normpath(home)):
         errors.append(
             f"pyvenv.cfg home '{home}' is not under {LOCAL_ROOT} — the "

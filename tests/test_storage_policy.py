@@ -87,23 +87,31 @@ class TestVerifyDDdriveRuntime:
     branches are the same code paths)."""
 
     def _patch(self, monkeypatch, base_prefix, prefix, executable):
+        """Stub _interpreter_facts so the real sys module is never mutated —
+        patching sys.prefix/sys.base_prefix globally corrupts sysconfig's
+        cached config vars on Linux runners (coverage crashes with
+        AttributeError: 'userbase' — a real CI INTERNALERROR)."""
         import src.storage_policy as sp
-        monkeypatch.setattr(sp.sys, "platform", "win32")
-        monkeypatch.setattr(sp.sys, "base_prefix", base_prefix)
-        monkeypatch.setattr(sp.sys, "prefix", prefix)
-        monkeypatch.setattr(sp.sys, "executable", executable)
+        monkeypatch.setattr(sp, "_interpreter_facts", lambda: {
+            "platform": "win32",
+            "executable": executable,
+            "prefix": prefix,
+            "base_prefix": base_prefix,
+        })
         return sp
 
     def _stub_cfg(self, monkeypatch, home):
         """Stub the module-level pyvenv.cfg reader — never patch the global
         builtins.open, which would corrupt coverage.py's own file reads on
-        Linux runners (a real CI INTERNALERROR observed with coverage 7.15.3)."""
+        Linux runners (a real CI INTERNALERROR observed with coverage 7.15.x)."""
         import src.storage_policy as sp
         monkeypatch.setattr(sp, "_read_pyvenv_cfg_home", lambda prefix: home)
 
     def test_non_windows_returns_empty(self, monkeypatch):
         import src.storage_policy as sp
-        monkeypatch.setattr(sp.sys, "platform", "linux")
+        monkeypatch.setattr(sp, "_interpreter_facts",
+                            lambda: {"platform": "linux", "executable": "x",
+                                     "prefix": "x", "base_prefix": "x"})
         assert verify_ddrive_runtime() == []
 
     def test_d_drive_based_runtime_passes(self, monkeypatch):

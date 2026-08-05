@@ -16,19 +16,25 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 
+class _FakeSys:
+    """A sys-like object with an overridden ``platform`` that delegates
+    every other attribute to the real ``sys`` module. Used instead of
+    mutating the real sys.platform, which poisons sysconfig's cached
+    config vars and breaks coverage on Linux runners."""
+
+    def __init__(self, platform: str):
+        self.platform = platform
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
 @pytest.fixture
 def no_psutil(monkeypatch):
-    """Make `import psutil` raise ImportError."""
-    import builtins
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "psutil":
-            raise ImportError("psutil disabled for test")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    monkeypatch.delitem(sys.modules, "psutil", raising=False)
+    """Make `import psutil` raise ImportError by blocking it in
+    sys.modules (never patch builtins.__import__ — a global patch that can
+    interfere with coverage's own imports on Linux runners)."""
+    monkeypatch.setitem(sys.modules, "psutil", None)
 
 
 class TestRssMemoryWithoutPsutil:
@@ -51,15 +57,9 @@ class TestRssMemoryWithoutPsutil:
 
 class TestCapturePackageVersionsFailures:
     def test_all_imports_failing_returns_unknown(self, monkeypatch):
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name in ("chronos", "torch", "pandas", "numpy", "streamlit"):
-                raise ImportError(f"no {name}")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        # Block the packages in sys.modules (never patch __import__).
+        for mod in ("chronos", "torch", "pandas", "numpy", "streamlit"):
+            monkeypatch.setitem(sys.modules, mod, None)
         from src.telemetry import capture_package_versions
         versions = capture_package_versions()
         for key in ("chronos-forecasting", "torch", "pandas", "numpy", "streamlit"):
@@ -185,9 +185,11 @@ class TestMachineSummaryFailures:
     def test_darwin_platform_uses_platform_processor(self, monkeypatch, no_psutil):
         from src.telemetry import machine_summary
         import platform as _platform
-        import sys as _sys
         monkeypatch.setattr(_platform, "processor", lambda: "Apple M1")
-        monkeypatch.setattr(_sys, "platform", "darwin")
+        # Replace src.telemetry.sys with a delegating fake so the REAL sys
+        # module is never mutated (patching sys.platform poisons sysconfig's
+        # cached vars, breaking coverage on Linux runners).
+        monkeypatch.setattr("src.telemetry.sys", _FakeSys(platform="darwin"))
         result = machine_summary()
         assert result.get("cpu_model") == "Apple M1"
 
@@ -240,59 +242,35 @@ class TestResolveHfCacheDir:
 
     def test_hf_home_fallback(self, monkeypatch):
         from src.telemetry import _resolve_hf_cache_dir
-        import sys as _sys
         monkeypatch.delenv("HF_HUB_CACHE", raising=False)
         monkeypatch.setenv("HF_HOME", "D:/hfhome")
-        monkeypatch.setattr(_sys, "platform", "linux")
-        # Force huggingface_hub imports (incl. submodules) to fail
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "huggingface_hub" or name.startswith("huggingface_hub."):
-                raise ImportError("no hf hub")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setattr("src.telemetry.sys", _FakeSys(platform="linux"))
+        # Block huggingface_hub in sys.modules (never patch __import__).
+        monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+        monkeypatch.setitem(sys.modules, "huggingface_hub.constants", None)
         path, source = _resolve_hf_cache_dir()
         assert source == "env_HF_HOME"
         assert path == os.path.join("D:/hfhome", "hub")
 
     def test_platform_fallback_linux(self, monkeypatch):
         from src.telemetry import _resolve_hf_cache_dir
-        import sys as _sys
         monkeypatch.delenv("HF_HUB_CACHE", raising=False)
         monkeypatch.delenv("HF_HOME", raising=False)
-        monkeypatch.setattr(_sys, "platform", "linux")
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "huggingface_hub" or name.startswith("huggingface_hub."):
-                raise ImportError("no hf hub")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setattr("src.telemetry.sys", _FakeSys(platform="linux"))
+        monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+        monkeypatch.setitem(sys.modules, "huggingface_hub.constants", None)
         path, source = _resolve_hf_cache_dir()
         assert source == "fallback"
         assert path.endswith(os.path.join(".cache", "huggingface", "hub"))
 
     def test_platform_fallback_windows(self, monkeypatch):
         from src.telemetry import _resolve_hf_cache_dir
-        import sys as _sys
         monkeypatch.delenv("HF_HUB_CACHE", raising=False)
         monkeypatch.delenv("HF_HOME", raising=False)
-        monkeypatch.setattr(_sys, "platform", "win32")
+        monkeypatch.setattr("src.telemetry.sys", _FakeSys(platform="win32"))
         monkeypatch.setenv("USERPROFILE", "C:/Users/test")
-        import builtins
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "huggingface_hub" or name.startswith("huggingface_hub."):
-                raise ImportError("no hf hub")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+        monkeypatch.setitem(sys.modules, "huggingface_hub.constants", None)
         path, source = _resolve_hf_cache_dir()
         assert source == "fallback"
         assert path.startswith("C:/Users/test")
