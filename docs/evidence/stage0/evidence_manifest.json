@@ -71,6 +71,14 @@
       "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
       "evidence_type": "execution_receipt",
       "notes": "Receipt for model_artifact, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "local_stage0_bundle_invalidated": {
+      "filename": "evidence_local_stage0_bundle_20260729_162933_791384_10def382.json",
+      "sha256": "76b43ef014ce8ebc21406116b4522e72c0936379a0ce239cf880324aa8f308ea",
+      "code_commit": "3710e6b3051262ac19e4dcaef17cf58b71540cae",
+      "evidence_type": "local_stage0_bundle",
+      "status": "invalidated",
+      "notes": "INVALIDATED - do not treat as passing Stage 0 release evidence. The runs.token_present_smoke record in this file is byte-for-byte identical to runs.process_cold_smoke (same started_at_utc/completed_at_utc, same cold/warm timings and RSS); only hf_token_present and the token_*_result objects were changed. It is not an independently executed token-present run. Retained unmodified for audit; superseded by evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json (genuine Gate B3, commit 7831cb4)."
     }
   },
   "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand. Cloud evidence is built via scripts/build_cloud_stage0_evidence.py."
