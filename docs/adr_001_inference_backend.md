@@ -27,9 +27,9 @@ run inference via:
 > Cloud Gate C evidence is collected and evaluated.
 >
 > **Note:** The PR #18 evidence bundle has been explicitly invalidated and
-> preserved for audit. Do not cite invalidated evidence as proof. A
-> superseding evidence link will be added only after a valid local bundle
-> is published.
+> preserved for audit. Do not cite invalidated evidence as proof. A valid
+> genuine local bundle is now published (see Linked evidence below) and
+> supersedes it.
 
 ### Local evidence (not Cloud proof)
 

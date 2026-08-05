@@ -69,7 +69,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #18 evidence bundle | ✅ Invalidated, preserved for audit |
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
-| Gate B3 valid superseding evidence | ❌ Invalid — pending genuine rerun |
+| Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
 | Community Cloud deployment (Gate C) | ⏳ Pending — checklist remains blank |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
@@ -312,11 +312,12 @@ commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
 PR #26 closed the receipt/evidence-integrity and CI gaps found in PR #25's
 review (see PR #25 threads on `build_cloud_stage0_evidence.py`,
 `evidence_schemas.py`, `publish_evidence.py`, and `telemetry.py`) and the
-false-green coverage gate found in PR #25's own CI run. It did **not**
-collect any real Stage 0 evidence — Gate B3 stayed invalid, Cloud Gate C
+false-green coverage gate found in PR #25's own CI run. At the time it did
+**not** collect real Stage 0 evidence — Gate B3 was invalid, Cloud Gate C
 stayed pending, ADR-001 stayed provisional, and Phase 1 stayed paused; only
-the mechanisms that will validate a future real evidence collection were
-built and offline-contract-tested there.
+the mechanisms that would validate a future real evidence collection were
+built and offline-contract-tested there. A genuine Gate B3 bundle was later
+published on 2026-08-05 (see the Stage 0 gates table).
 
 **Authoritative PR #26 CI results** (workflow run `30587158601`; the PR
 description's "86.70%" coverage figure is stale — this is the verified log):
@@ -368,10 +369,11 @@ out of scope for it.
 
 This corrective PR fixes the two P1 findings that were live when PR #26
 merged (see above), adds behavioral readiness checks for both, and closes
-several related gaps found while doing that work. It does **not** collect
-any real Stage 0 evidence, deploy to Community Cloud, change the model ID
-or pinned revision, or resume Phase 1 — Gate B3 stays invalid, Cloud Gate C
-stays pending, ADR-001 stays provisional, and Phase 1 stays paused.
+several related gaps found while doing that work. At the time it did **not**
+collect any real Stage 0 evidence, deploy to Community Cloud, change the
+model ID or pinned revision, or resume Phase 1 — Gate B3 was invalid, Cloud
+Gate C stayed pending, ADR-001 stayed provisional, and Phase 1 stayed
+paused. (A genuine Gate B3 bundle was later published on 2026-08-05.)
 
 Fixes:
 
@@ -434,11 +436,12 @@ after CI runs, per the same governance requirement above.)_
 
 This corrective PR fixes the PR #27 P1 finding (colon-delimited secret
 detection) that was marked resolved on GitHub but never actually fixed, and
-closes the remaining Stage 0 release-readiness gaps. It does **not**
-collect any real Stage 0 evidence, deploy to Community Cloud, change the
-model ID or pinned revision, or resume Phase 1 — Gate B3 stays invalid,
-Cloud Gate C stays pending, ADR-001 stays provisional, and Phase 1 stays
-paused.
+closes the remaining Stage 0 release-readiness gaps. At the time it did
+**not** collect any real Stage 0 evidence, deploy to Community Cloud,
+change the model ID or pinned revision, or resume Phase 1 — Gate B3 was
+invalid, Cloud Gate C stayed pending, ADR-001 stayed provisional, and Phase
+1 stayed paused. (A genuine Gate B3 bundle was later published on
+2026-08-05.)
 
 Fixes:
 
