@@ -41,6 +41,9 @@ _INLINE_ASSIGNMENT_RE = re.compile(
     r"^(--?[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_-]*)(\s*[:=]\s*)(.*)$"
 )
 _BEARER_INLINE_RE = re.compile(r"^(authorization:\s*bearer\s+)(\S+)$", re.IGNORECASE)
+# "Authorization:Bearer" (with optional whitespace after the colon) as a
+# standalone prefix token, with the credential in the FOLLOWING argv token.
+_SPLIT_BEARER_PREFIX_RE = re.compile(r"^(authorization:\s*bearer)\s*$", re.IGNORECASE)
 
 
 def _name_is_sensitive(name: str) -> bool:
@@ -73,6 +76,20 @@ def sanitise_command(command: Sequence[str]) -> str:
         if m:
             out.append(m.group(1) + REDACTED_MARKER)
             i += 1
+            continue
+
+        # "Authorization:Bearer" (zero whitespace after the colon) with the
+        # credential in the FOLLOWING token. The generic assignment branch
+        # below would redact only "Bearer" and leave the actual credential
+        # in the output (PR #28 review finding P1: split bearer tokens).
+        m = _SPLIT_BEARER_PREFIX_RE.match(tok)
+        if m:
+            if i + 1 < n:
+                out.append(m.group(1) + " " + REDACTED_MARKER)
+                i += 2
+            else:
+                out.append(m.group(1))
+                i += 1
             continue
 
         # "--name=value", "NAME=value", "--name:value" or "NAME:value"

@@ -297,3 +297,38 @@ class TestColonDelimitedSecrets:
         # must never suppress a real colon-delimited exposure.
         assert contains_exposed_secret("HF_TOKEN:abcdef --token-state present") is not None
         assert contains_exposed_secret("password:hunter2 ***REDACTED***") is not None
+
+
+class TestSplitBearerTokenRedaction:
+    """PR #28 review finding P1: a split Authorization header supplied as
+    ['Authorization:Bearer', '<token>'] (zero whitespace after the colon)
+    must redact the actual credential token, not just the word 'Bearer'."""
+
+    def test_split_bearer_token_credential_redacted(self):
+        out = sanitise_command(["-H", "Authorization:Bearer", "supersecretvalue123"])
+        assert "supersecretvalue123" not in out
+        assert REDACTED_MARKER in out
+
+    def test_split_bearer_token_detection_finds_no_exposure(self):
+        out = sanitise_command(["-H", "Authorization:Bearer", "supersecretvalue123"])
+        assert contains_exposed_secret(out) is None
+
+    def test_split_bearer_token_with_space_after_colon(self):
+        out = sanitise_command(["-H", "Authorization: Bearer", "supersecretvalue123"])
+        assert "supersecretvalue123" not in out
+        assert contains_exposed_secret(out) is None
+
+    def test_split_bearer_token_idempotent(self):
+        once = sanitise_command(["-H", "Authorization:Bearer", "supersecretvalue123"])
+        twice = sanitise_command(once.split(" "))
+        assert once == twice, (once, twice)
+
+    def test_unredacted_split_bearer_token_is_detected(self):
+        # The raw (unsanitised) stored form must be flagged as exposed.
+        assert contains_exposed_secret("Authorization:Bearer supersecretvalue123") is not None
+        assert contains_exposed_secret("Authorization:Bearer ***REDACTED***") is None
+
+    def test_split_bearer_prefix_alone_is_not_an_exposure(self):
+        out = sanitise_command(["-H", "Authorization:Bearer"])
+        assert "Authorization:Bearer" in out or REDACTED_MARKER in out
+        assert contains_exposed_secret(out) is None
