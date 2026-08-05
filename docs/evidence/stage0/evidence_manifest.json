@@ -1,6 +1,6 @@
 {
   "evidence_schema_version": "2",
-  "last_updated": "2026-07-29T15:29:33.821042+00:00",
+  "last_updated": "2026-08-05T16:17:33.587672+00:00",
   "files": {
     "smoke_test": {
       "filename": null,
@@ -24,12 +24,11 @@
       "notes": "Populate after current-head local evidence rerun (Gate B2)."
     },
     "local_stage0_bundle": {
-      "filename": "evidence_local_stage0_bundle_20260729_162933_791384_10def382.json",
-      "sha256": "76b43ef014ce8ebc21406116b4522e72c0936379a0ce239cf880324aa8f308ea",
-      "code_commit": "3710e6b3051262ac19e4dcaef17cf58b71540cae",
+      "filename": "evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json",
+      "sha256": "50d87c1f4d294816eff00c502b86a834e2dce9cfb06acd16a2cc4e61c35015a7",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
       "evidence_type": "local_stage0_bundle",
-      "status": "invalidated",
-      "notes": "INVALIDATED — do not treat as passing Stage 0 release evidence. The runs.token_present_smoke record in this file is byte-for-byte identical to runs.process_cold_smoke (same started_at_utc/completed_at_utc, same cold/warm timings and RSS); only hf_token_present and the token_*_result objects were changed. It is not an independently executed token-present run. The PR #18 commit message that produced this file states HF_TOKEN was unavailable and token-present evidence was omitted, which contradicts token_present_smoke.success=true here. The file is retained unmodified for audit; it is superseded once a genuine token-present rerun (using the hardened chronos2_smoke_test.py producer and build_local_stage0_bundle.py duplicate-evidence checks) is published under a new filename."
+      "notes": "Published 20260805_171733"
     },
     "cloud_summary": {
       "filename": null,
@@ -37,6 +36,49 @@
       "code_commit": null,
       "evidence_type": "cloud_stage0",
       "notes": "Populate after Community Cloud deployment (Gate C)."
+    },
+    "receipt_download_cold_smoke": {
+      "filename": "evidence_receipt_download_cold_smoke_20260805_171733_588671_805a382a.json",
+      "sha256": "b19c85cc5b533e5d2c1840fff1612b03d1fe9679d97c90eb4be2bda42ace5f5f",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for download_cold_smoke, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "receipt_process_cold_smoke": {
+      "filename": "evidence_receipt_process_cold_smoke_20260805_171733_609104_c3403966.json",
+      "sha256": "f7c773c0c099f738396ea139e746a954dc3f62e3f653f0534b1fccfd40b741dd",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for process_cold_smoke, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "receipt_benchmark": {
+      "filename": "evidence_receipt_benchmark_20260805_171733_628778_321f67c6.json",
+      "sha256": "d4894db5d561b91e04efe37259c55659a17f5d58e31f66b4cc3de7850bf15bb1",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for benchmark, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "receipt_token_present_smoke": {
+      "filename": "evidence_receipt_token_present_smoke_20260805_171733_657655_c68fa950.json",
+      "sha256": "4036b2382cbe59fe4220bc41d6e9e3ea88613513e604868acc81e6af86f2ab0c",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for token_present_smoke, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "receipt_model_artifact": {
+      "filename": "evidence_receipt_model_artifact_20260805_171733_677742_38d7c349.json",
+      "sha256": "ac4b1404321da85f29af517adfaa2ba7dc898a850b420bb5e996d559d512f8bc",
+      "code_commit": "7831cb478bcd6beb9fcf356576f7d5096fa38c63",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for model_artifact, bound to evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json"
+    },
+    "local_stage0_bundle_invalidated": {
+      "filename": "evidence_local_stage0_bundle_20260729_162933_791384_10def382.json",
+      "sha256": "76b43ef014ce8ebc21406116b4522e72c0936379a0ce239cf880324aa8f308ea",
+      "code_commit": "3710e6b3051262ac19e4dcaef17cf58b71540cae",
+      "evidence_type": "local_stage0_bundle",
+      "status": "invalidated",
+      "notes": "INVALIDATED - do not treat as passing Stage 0 release evidence. The runs.token_present_smoke record in this file is byte-for-byte identical to runs.process_cold_smoke (same started_at_utc/completed_at_utc, same cold/warm timings and RSS); only hf_token_present and the token_*_result objects were changed. It is not an independently executed token-present run. Retained unmodified for audit; superseded by evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json (genuine Gate B3, commit 7831cb4)."
     }
   },
   "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand. Cloud evidence is built via scripts/build_cloud_stage0_evidence.py."

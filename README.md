@@ -69,7 +69,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #18 evidence bundle | ✅ Invalidated, preserved for audit |
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
-| Gate B3 valid superseding evidence | ❌ Invalid — pending genuine rerun |
+| Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
 | Community Cloud deployment (Gate C) | ⏳ Pending — checklist remains blank |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
@@ -246,7 +246,8 @@ Push-to-main CI is configured but no post-merge commit had been verified on
 `main` as of PR #26's merge — this is confirmed after each subsequent merge
 (see below for this corrective PR's own record).
 
-Real-model evidence (Gates B2–D) has not yet been collected on the current head.
+Genuine current-head local model evidence (Gates B2–B3) is published on
+commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
 
 ## Remaining Stage 0 gates
 
@@ -255,7 +256,7 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 | A8 | Evidence and MCP-security closure | ✅ Merged (PR #10) | 1 |
 | A9 | Evidence publication hardening | ✅ Merged (PR #11) | 2 |
 | B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
-| B3 | Current-head local evidence bundle | ❌ Invalidated (PR #18) — fabricated token-present record; genuine rerun required | 4 |
+| B3 | Current-head local evidence bundle | ✅ Genuine bundle published 2026-08-05 (commit `7831cb4`) — independently executed token-present run; supersedes invalidated PR #18 | 4 |
 | C | Community Cloud technical spike | ⏳ Pending — needs completion | 5 |
 | D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 6 |
 | E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 7 |
@@ -267,22 +268,25 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 ## Current status
 
 - **Local evidence (Gate B2)**: Completed and committed. See `docs/evidence/stage0/`.
-- **Local evidence bundle (Gate B3, PR #18)**: **Invalidated.** The published
-  bundle's `runs.token_present_smoke` record is byte-for-byte identical to
-  `runs.process_cold_smoke` (same timestamps, timings, RSS) — only
-  `hf_token_present` and the token-result objects were changed. It is not an
-  independently executed token-present run; the PR #18 commit message itself
-  states `HF_TOKEN` was unavailable and token-present evidence was omitted,
-  which contradicts the bundle's `token_present_smoke.success=true`. The file
-  is kept for audit (see `docs/evidence/stage0/evidence_manifest.json`,
-  `status: "invalidated"`) but must not be treated as passing Gate B3.
-  `scripts/chronos2_smoke_test.py` and `scripts/build_local_stage0_bundle.py`
-  now emit and require independently-provenanced token-path evidence
-  (unique `run_id`, timestamps, matching revisions per attempted path) so a
-  duplicated record like this is mechanically rejected going forward. A
-  genuine token-present rerun and superseding bundle are still required.
+- **Local evidence bundle (Gate B3)**: **Valid — genuine bundle published
+  2026-08-05** on commit `7831cb4`
+  (`docs/evidence/stage0/evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json`).
+  It contains an independently executed token-present run (unique `run_id`
+  and timestamps, exact pinned revision) plus genuine download-cold,
+  process-cold, benchmark (4/4 scenarios, 10/10 rolling folds) and model
+  artifact components, all bound to typed execution receipts, and passed
+  `build_local_stage0_bundle.py` validation with 0 errors. This supersedes
+  the invalidated PR #18 bundle (kept for audit — see
+  `docs/evidence/stage0/evidence_manifest.json`), whose
+  `runs.token_present_smoke` record was byte-for-byte identical to
+  `runs.process_cold_smoke` with only `hf_token_present` and the token-result
+  objects changed. `scripts/chronos2_smoke_test.py` and
+  `scripts/build_local_stage0_bundle.py` require independently-provenanced
+  token-path evidence (unique `run_id`, timestamps, matching revisions per
+  attempted path) so a duplicated record is mechanically rejected.
 - **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
-  is still empty. This is the current blocker, in addition to the Gate B3 rerun.
+  is still empty. This is now the sole remaining Stage 0 evidence blocker
+  (the Gate B3 local bundle is published and valid).
 - **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
@@ -308,11 +312,12 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
 PR #26 closed the receipt/evidence-integrity and CI gaps found in PR #25's
 review (see PR #25 threads on `build_cloud_stage0_evidence.py`,
 `evidence_schemas.py`, `publish_evidence.py`, and `telemetry.py`) and the
-false-green coverage gate found in PR #25's own CI run. It did **not**
-collect any real Stage 0 evidence — Gate B3 stayed invalid, Cloud Gate C
+false-green coverage gate found in PR #25's own CI run. At the time it did
+**not** collect real Stage 0 evidence — Gate B3 was invalid, Cloud Gate C
 stayed pending, ADR-001 stayed provisional, and Phase 1 stayed paused; only
-the mechanisms that will validate a future real evidence collection were
-built and offline-contract-tested there.
+the mechanisms that would validate a future real evidence collection were
+built and offline-contract-tested there. A genuine Gate B3 bundle was later
+published on 2026-08-05 (see the Stage 0 gates table).
 
 **Authoritative PR #26 CI results** (workflow run `30587158601`; the PR
 description's "86.70%" coverage figure is stale — this is the verified log):
@@ -364,10 +369,11 @@ out of scope for it.
 
 This corrective PR fixes the two P1 findings that were live when PR #26
 merged (see above), adds behavioral readiness checks for both, and closes
-several related gaps found while doing that work. It does **not** collect
-any real Stage 0 evidence, deploy to Community Cloud, change the model ID
-or pinned revision, or resume Phase 1 — Gate B3 stays invalid, Cloud Gate C
-stays pending, ADR-001 stays provisional, and Phase 1 stays paused.
+several related gaps found while doing that work. At the time it did **not**
+collect any real Stage 0 evidence, deploy to Community Cloud, change the
+model ID or pinned revision, or resume Phase 1 — Gate B3 was invalid, Cloud
+Gate C stayed pending, ADR-001 stayed provisional, and Phase 1 stayed
+paused. (A genuine Gate B3 bundle was later published on 2026-08-05.)
 
 Fixes:
 
@@ -430,11 +436,12 @@ after CI runs, per the same governance requirement above.)_
 
 This corrective PR fixes the PR #27 P1 finding (colon-delimited secret
 detection) that was marked resolved on GitHub but never actually fixed, and
-closes the remaining Stage 0 release-readiness gaps. It does **not**
-collect any real Stage 0 evidence, deploy to Community Cloud, change the
-model ID or pinned revision, or resume Phase 1 — Gate B3 stays invalid,
-Cloud Gate C stays pending, ADR-001 stays provisional, and Phase 1 stays
-paused.
+closes the remaining Stage 0 release-readiness gaps. At the time it did
+**not** collect any real Stage 0 evidence, deploy to Community Cloud,
+change the model ID or pinned revision, or resume Phase 1 — Gate B3 was
+invalid, Cloud Gate C stayed pending, ADR-001 stayed provisional, and Phase
+1 stayed paused. (A genuine Gate B3 bundle was later published on
+2026-08-05.)
 
 Fixes:
 
