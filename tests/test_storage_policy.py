@@ -160,6 +160,43 @@ class TestVerifyDDdriveRuntime:
         errors = verify_ddrive_runtime()
         assert any("pyvenv.cfg home" in e for e in errors), errors
 
+    # ── Pinned runtime contract: base/home must be the python312 dir ────
+
+    def test_d_local_base_prefix_outside_python312_rejected(self, monkeypatch):
+        """A venv based on D:\\Forecasting-Tool-Local\\oldpython is under
+        LOCAL_ROOT but NOT the pinned runtime — must be rejected (regression
+        for P2 finding: previously only is_under_local_root was checked)."""
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\oldpython",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\oldpython")
+        errors = verify_ddrive_runtime()
+        assert any("sys.base_prefix" in e for e in errors), errors
+        assert any("python312" in e for e in errors), errors
+
+    def test_d_local_pyvenv_cfg_home_outside_python312_rejected(self, monkeypatch):
+        """pyvenv.cfg home pointing at D:\\Forecasting-Tool-Local\\oldpython
+        is under LOCAL_ROOT but not the pinned runtime — must be rejected."""
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\oldpython")
+        errors = verify_ddrive_runtime()
+        assert any("pyvenv.cfg home" in e for e in errors), errors
+        assert any("python312" in e for e in errors), errors
+
+    def test_d_local_base_prefix_under_python312_accepted(self, monkeypatch):
+        """A base_prefix nested under the pinned runtime dir is accepted."""
+        self._patch(monkeypatch,
+                    base_prefix=r"D:\Forecasting-Tool-Local\python312",
+                    prefix=r"D:\Forecasting-Tool-Local\venv",
+                    executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        errors = verify_ddrive_runtime()
+        assert errors == [], errors
+
     def test_pyvenv_cfg_reader_reads_home_line(self, tmp_path):
         """The real _read_pyvenv_cfg_home helper parses the home line and
         tolerates missing/unreadable files without raising."""

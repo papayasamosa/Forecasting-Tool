@@ -167,6 +167,29 @@ def is_under_local_root(path: str) -> bool:
     return norm_path_l.startswith(norm_root_l + "/") or norm_path_l == norm_root_l
 
 
+# Pinned project runtime interpreter directory. The venv MUST be based on this
+# exact directory — being merely under LOCAL_ROOT is not enough (a venv based
+# on e.g. D:\\Forecasting-Tool-Local\\oldpython must be rejected).
+RUNTIME_PYTHON = os.path.join(LOCAL_ROOT, "python312")
+
+
+def is_under_runtime_python(path: str) -> bool:
+    """Return True if *path* is the pinned runtime Python directory
+    (``D:\\Forecasting-Tool-Local\\python312``) or one of its descendants.
+
+    This is stricter than :func:`is_under_local_root`: only the pinned
+    runtime directory satisfies the WP3 contract, never a sibling such as
+    ``D:\\Forecasting-Tool-Local\\oldpython``.
+    """
+    if not path:
+        return False
+    norm_path = _normalise_windows_path(path).replace("\\", "/")
+    norm_runtime = _normalise_windows_path(RUNTIME_PYTHON).replace("\\", "/")
+    norm_path_l = norm_path.lower()
+    norm_runtime_l = norm_runtime.lower()
+    return norm_path_l.startswith(norm_runtime_l + "/") or norm_path_l == norm_runtime_l
+
+
 def is_windows_platform() -> bool:
     """Return True if running on Windows."""
     return sys.platform == "win32"
@@ -222,10 +245,12 @@ def verify_ddrive_runtime() -> list[str]:
     Returns a list of error messages (empty = OK). Checks:
     - ``sys.executable`` is the D-drive venv interpreter
     - ``sys.prefix`` is under ``D:\\Forecasting-Tool-Local``
-    - ``sys.base_prefix`` is under ``D:\\Forecasting-Tool-Local`` (so the
-      venv is NOT based on a C-drive Python)
-    - the venv's ``pyvenv.cfg`` ``home`` points under the approved runtime
-      tree
+    - ``sys.base_prefix`` is the pinned runtime directory
+      ``D:\\Forecasting-Tool-Local\\python312`` (so the venv is based on
+      the pinned project Python — being merely under ``LOCAL_ROOT`` is NOT
+      enough, e.g. ``D:\\Forecasting-Tool-Local\\oldpython`` is rejected)
+    - the venv's ``pyvenv.cfg`` ``home`` points at the pinned runtime
+      directory
 
     On non-Windows platforms this returns an empty list (the D-drive
     policy does not apply to GitHub runners or Cloud containers).
@@ -251,20 +276,25 @@ def verify_ddrive_runtime() -> list[str]:
     if not is_under_local_root(os.path.normpath(facts["prefix"])):
         errors.append(f"sys.prefix '{facts['prefix']}' is not under {LOCAL_ROOT}")
 
-    if not is_under_local_root(os.path.normpath(facts["base_prefix"])):
+    # base_prefix must be the PINNED runtime directory, not merely any
+    # descendant of LOCAL_ROOT (a venv based on
+    # D:\\Forecasting-Tool-Local\\oldpython would otherwise pass).
+    if not is_under_runtime_python(os.path.normpath(facts["base_prefix"])):
         errors.append(
-            f"sys.base_prefix '{facts['base_prefix']}' is not under {LOCAL_ROOT} — "
-            f"the D-drive venv must be based on the D-drive project Python "
-            f"at '{os.path.join(LOCAL_ROOT, 'python312')}', never a "
-            f"C-drive (or other) installation"
+            f"sys.base_prefix '{facts['base_prefix']}' is not under the "
+            f"pinned runtime Python '{RUNTIME_PYTHON}' — the D-drive venv "
+            f"must be based on the D-drive project Python at "
+            f"'{RUNTIME_PYTHON}', never a C-drive (or other) installation "
+            f"or a different directory under {LOCAL_ROOT}"
         )
 
-    # pyvenv.cfg home must point under the approved runtime tree
+    # pyvenv.cfg home must point at the pinned runtime directory
     home = _read_pyvenv_cfg_home(facts["prefix"])
-    if home and not is_under_local_root(os.path.normpath(home)):
+    if home and not is_under_runtime_python(os.path.normpath(home)):
         errors.append(
-            f"pyvenv.cfg home '{home}' is not under {LOCAL_ROOT} — the "
-            f"venv is based on a Python outside the approved runtime tree"
+            f"pyvenv.cfg home '{home}' is not under the pinned runtime "
+            f"Python '{RUNTIME_PYTHON}' — the venv is based on a Python "
+            f"outside the approved runtime tree"
         )
 
     return errors
