@@ -628,7 +628,12 @@ def run_benchmarks(
         _record_sample(result2, "panel_forecast_direct", **meta,
                        pipeline_call_count=adapter.pipeline_call_count,
                        cache_state="same_process_warm")
-        result2.model_revision = getattr(pipeline, "model_revision", "")
+        # The real Chronos2Pipeline exposes NO model_revision attribute, so
+        # fall back to the configured (resolved-in-practice) revision exactly
+        # like Chronos2Adapter.forecast() does — otherwise the panel scenario
+        # records an empty revision and the suite envelope fails strict
+        # release validation.
+        result2.model_revision = getattr(pipeline, "model_revision", "") or CONFIGURED_REVISION
         result2.sample_passed = True
     except Exception as e:
         meta = m2.finish()
@@ -674,6 +679,13 @@ def run_benchmarks(
                                pipeline_call_count=adapter.pipeline_call_count,
                                cache_state="same_process_warm")
                 successful_folds += 1
+                # Capture the resolved revision from the forecast result so
+                # the rolling scenario carries a non-empty model_revision
+                # (matches the suite revision — required by strict release
+                # validation; the real Chronos2Pipeline exposes no
+                # model_revision attribute).
+                if not result3.model_revision:
+                    result3.model_revision = fr3.model_revision or CONFIGURED_REVISION
             except Exception as e:
                 meta = fold_m.finish()
                 _record_sample(result3, f"fold_{fold}", success=False,

@@ -157,6 +157,63 @@ class TestRunBenchmarks:
             assert len(json_files) >= 1
             assert len(md_files) >= 1
 
+    def test_model_revision_populated_without_pipeline_attribute(self):
+        """Regression: the real Chronos2Pipeline exposes NO model_revision
+        attribute, so the producer must fall back to the configured revision
+        for panel and rolling scenarios. Previously these recorded an empty
+        model_revision and the suite envelope failed strict release
+        validation (the old invalidated bundle had these fields hand-edited,
+        which this test's producer-based check prevents)."""
+        from tests.test_adapter_contract import FakePipeline
+
+        class NoRevisionPipeline(FakePipeline):
+            """Simulates Chronos2Pipeline: no model_revision attribute."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                # The real pipeline has no model_revision attribute; emulate
+                # that by removing it from the instance.
+                self.__dict__.pop("model_revision", None)
+
+        # FakePipeline defines model_revision as a CLASS attribute, so we
+        # must also prevent attribute lookup from reaching the class level.
+        delattr(FakePipeline, "model_revision")
+
+        def factory() -> Chronos2Adapter:
+            return Chronos2Adapter(pipeline_or_provider=NoRevisionPipeline())
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                results = run_benchmarks(
+                    output_dir=tmp,
+                    adapter_factory=factory,
+                    initial_cache_state="process_cold_cached_weights",
+                )
+                # Every scenario must carry a non-empty model_revision.
+                for r in results:
+                    assert r.model_revision, f"{r.scenario}: model_revision empty"
+                # Panel and rolling must equal the configured revision
+                # (the fallback used by the real adapter).
+                from src.config import MODEL_REVISION
+                panel = [r for r in results if r.scenario == "panel_5_series"][0]
+                rolling = [r for r in results if r.scenario == "10_rolling_calls"][0]
+                assert panel.model_revision == MODEL_REVISION
+                assert rolling.model_revision == MODEL_REVISION
+                # And the written envelope must carry the revision in every
+                # scenario (this is what strict release validation checks
+                # for the panel/rolling scenarios).
+                import glob
+                envelope_path = sorted(glob.glob(os.path.join(tmp, "benchmark_*.json")))[-1]
+                with open(envelope_path, encoding="utf-8") as f:
+                    envelope = json.load(f)
+                for sc in envelope["scenarios"]:
+                    assert sc["model_revision"], (
+                        f"envelope scenario '{sc['scenario']}': model_revision empty"
+                    )
+        finally:
+            # Restore the class attribute for other tests.
+            FakePipeline.model_revision = "fake-revision-001"
+
     def test_weekly_scenario_successful(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = run_benchmarks(
