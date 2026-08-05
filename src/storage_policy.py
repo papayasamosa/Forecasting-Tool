@@ -237,9 +237,12 @@ def verify_ddrive_runtime() -> list[str]:
         return errors
 
     venv_python = os.path.join(LOCAL_ROOT, "venv", "Scripts", "python.exe")
-    actual_exec = os.path.normcase(os.path.abspath(facts["executable"]))
-    expected_exec = os.path.normcase(os.path.abspath(venv_python))
-    if actual_exec != expected_exec:
+    # Normalise both sides to the canonical Windows form so the check is
+    # correct cross-platform (on POSIX, os.path.join mixes separators from
+    # the backslash LOCAL_ROOT constant).
+    actual_exec = _normalise_windows_path(facts["executable"])
+    expected_exec = _normalise_windows_path(venv_python)
+    if os.path.normcase(actual_exec) != os.path.normcase(expected_exec):
         errors.append(
             f"Active interpreter '{facts['executable']}' is not the D-drive "
             f"venv interpreter '{venv_python}'"
