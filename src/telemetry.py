@@ -32,6 +32,84 @@ def rss_mb() -> float:
         return 0.0
 
 
+def current_rss_mb() -> float:
+    """Current resident set size of this process in MB (stdlib first).
+
+    Reads ``VmRSS`` from ``/proc/self/status`` (available on Linux — the
+    Streamlit Community Cloud runtime), falling back to the psutil-based
+    ``rss_mb()`` when ``/proc`` is unavailable. Never raises; returns 0.0
+    when the value cannot be determined.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return rss_mb()
+
+
+def process_peak_rss_mb() -> float:
+    """Peak resident set size of this process in MB (stdlib only).
+
+    Uses ``resource.getrusage(RUSAGE_SELF).ru_maxrss`` — the process
+    high-water mark — which needs no third-party dependency and works on
+    the Linux Cloud runtime. Units differ by platform (KiB on Linux, bytes
+    on macOS). Never raises; returns 0.0 when unavailable (e.g. Windows).
+    """
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return peak / (1024.0 * 1024.0)
+        return peak / 1024.0
+    except Exception:
+        return 0.0
+
+
+def _resolve_git_head_sha(repo_root: Path) -> str:
+    """Resolve the commit SHA at ``repo_root/.git/HEAD`` via file reads only.
+
+    Fast and dependency-free (no subprocess), so it is safe to call on
+    every render. Returns "" when the checkout has no resolvable HEAD.
+    """
+    try:
+        head_file = repo_root / ".git" / "HEAD"
+        if head_file.exists():
+            ref = head_file.read_text(encoding="utf-8").strip()
+            if ref.startswith("ref:"):
+                ref_path = repo_root / ".git" / ref[len("ref:"):].strip()
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()[:40]
+                return ref
+            return ref[:40]
+    except Exception:
+        pass
+    return ""
+
+
+def deployed_commit() -> str:
+    """Best-effort SHA of the checkout the running code was deployed from.
+
+    Resolution order (never raises; returns "" when undetermined):
+    1. Explicit env override: ``DEPLOYED_COMMIT``, ``COMMIT_SHA``, ``GIT_SHA``.
+    2. ``.git/HEAD`` ref resolution relative to this module — pure file
+       reads, fast, and works on runtimes (e.g. Streamlit Community Cloud)
+       that ship the git checkout, so it is safe to call on every render.
+    3. ``capture_traceability()`` git subprocess as a last resort.
+    """
+    for key in ("DEPLOYED_COMMIT", "COMMIT_SHA", "GIT_SHA"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    module_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    resolved = _resolve_git_head_sha(module_dir.parent)
+    if resolved:
+        return resolved
+    return capture_traceability().get("code_commit", "")
+
+
 class MemorySampler:
     """Samples process RSS in a background thread to approximate peak memory."""
 

@@ -50,6 +50,11 @@ from src.coordinator import (  # noqa: E402
     InferenceCoordinator,
     CoordinatorTimeoutError,
 )
+from src.telemetry import (  # noqa: E402
+    current_rss_mb,
+    deployed_commit,
+    process_peak_rss_mb,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +438,14 @@ if st.session_state.forecast_result:
         st.write(f"- **Pipeline reused:** {meta.pipeline_reused}")
         st.write(f"- **Model revision:** {result.model_revision}")
         st.write(f"- **Context rows used:** {meta.context_rows_used}")
+        # WP7: resource evidence — memory must be measurable from the public
+        # app (stdlib-only reads so the Cloud runtime needs no extra deps).
+        st.write(f"- **Process peak RSS:** {process_peak_rss_mb():.1f} MB")
+        st.write(f"- **Current RSS:** {current_rss_mb():.1f} MB")
+        # WP6: deployment identity — best-effort git commit of the running
+        # checkout (file-based resolution; resolvable when the runtime
+        # ships .git metadata).
+        st.write(f"- **Deployed commit:** {deployed_commit() or 'not available'}")
 
     st.subheader("📋 Forecast Table")
     rows_df = pd.DataFrame(result.forecast_rows)

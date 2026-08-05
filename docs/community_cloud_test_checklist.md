@@ -57,6 +57,16 @@ Use this checklist when deploying to Streamlit Community Cloud.
 > `src/evidence_schemas.py` and shared by schema validation, tests, and the Cloud
 > evidence builder.
 
+> **Measurement source:** The deployed app exposes per-run resource and
+> deployment telemetry in the "⏱ Timing & model details" expander on the
+> Forecast page (`Process peak RSS`, `Current RSS`, `Deployed commit`), and
+> the Methodology page shows the resolved `Deployed commit` / worktree
+> status without requiring a forecast run. These are stdlib-only reads
+> (no Cloud admin access needed). RSS values are read from the app UI;
+> `cold.rss_mb` / `warm.rss_mb` / `cold_peak_rss_mb` /
+> `process_peak_rss_mb` come from the cold / warm / repeated forecast runs'
+> displayed values.
+
 ## Recorded measurements
 
 | Field | Value |
