@@ -22,6 +22,8 @@ from src.telemetry import (
     current_rss_mb,
     process_peak_rss_mb,
     deployed_commit,
+    machine_summary,
+    package_versions_metadata,
 )
 from src.evidence_schemas import (
     CachePreflight,
@@ -277,6 +279,38 @@ class TestDeployedCommit:
             lambda: {"code_commit": ""},
         )
         assert deployed_commit() == ""
+
+
+class TestMachineSummary:
+    def test_includes_os_name(self):
+        """machine_summary must report an os_name without raising."""
+        summary = machine_summary()
+        assert "os_name" in summary
+        assert isinstance(summary["os_name"], str)
+        assert summary["os_name"]  # non-empty (win32/linux/...)
+
+    def test_never_raises_and_typed_fields(self):
+        """machine_summary must return typed fields without raising."""
+        summary = machine_summary()
+        assert isinstance(summary.get("cpu_logical_cores"), int)
+        assert isinstance(summary.get("ram_total_gb"), float)
+        assert isinstance(summary.get("cpu_model"), str)
+
+
+class TestPackageVersionsMetadata:
+    def test_returns_expected_keys(self):
+        """package_versions_metadata must report all pinned packages + python."""
+        versions = package_versions_metadata()
+        for name in ("chronos-forecasting", "torch", "streamlit", "pandas", "numpy", "python"):
+            assert name in versions
+        assert versions["python"]  # non-empty dotted version
+
+    def test_never_raises_and_string_values(self):
+        """Every reported value must be a non-empty-or-unknown string."""
+        versions = package_versions_metadata()
+        for value in versions.values():
+            assert isinstance(value, str)
+            assert value  # non-empty (either real or "unknown")
 
 
 class TestWriteExecutionReceipt:

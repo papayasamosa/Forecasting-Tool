@@ -248,6 +248,20 @@ class TestMethodologyPageAppTest:
         assert "Deployed commit" in md
         assert re.search(r"`[0-9a-f]{40}`|`not available`", md), md[-500:]
 
+    def test_runtime_environment_section_renders(self):
+        """The Runtime Environment section must expose python + machine data."""
+        at = AppTest.from_file("pages/2_Methodology.py")
+        at.run()
+        assert not at.exception
+        md = "\n".join(m.value for m in at.markdown)
+        assert "## Runtime Environment" in md
+        assert "Python" in md
+        assert "OS" in md
+        assert "CPU model" in md
+        # The python version must be a plausible dotted version.
+        import re
+        assert re.search(r"Python \| `\d+\.\d+", md), md[-800:]
+
 
 @pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
 class TestForecastPageCoordinatorIntegration:

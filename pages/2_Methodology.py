@@ -8,7 +8,11 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.telemetry import deployed_commit  # noqa: E402
+from src.telemetry import (  # noqa: E402
+    deployed_commit,
+    machine_summary,
+    package_versions_metadata,
+)
 
 st.set_page_config(
     page_title="Methodology — Chronos-2",
@@ -103,3 +107,25 @@ Best-effort identity of the currently running deployment (resolved from the
 app's git checkout at runtime, no admin access needed):
 """)
 st.markdown(f"- **Deployed commit:** `{deployed_commit() or 'not available'}`")
+
+st.markdown("""## Runtime Environment
+
+Versions and machine summary of the process serving this app (read at
+runtime, no admin access needed):
+""")
+_env_versions = package_versions_metadata()
+_env_machine = machine_summary()
+st.markdown(
+    "| Attribute | Value |\n"
+    "|---|---|\n"
+    f"| Python | `{_env_versions.get('python', 'unknown')}` |\n"
+    f"| chronos-forecasting | `{_env_versions.get('chronos-forecasting', 'unknown')}` |\n"
+    f"| torch | `{_env_versions.get('torch', 'unknown')}` |\n"
+    f"| streamlit | `{_env_versions.get('streamlit', 'unknown')}` |\n"
+    f"| pandas | `{_env_versions.get('pandas', 'unknown')}` |\n"
+    f"| numpy | `{_env_versions.get('numpy', 'unknown')}` |\n"
+    f"| OS | `{_env_machine.get('os_name', 'unknown')}` |\n"
+    f"| CPU model | `{_env_machine.get('cpu_model', 'unknown') or 'unknown'}` |\n"
+    f"| CPU logical cores | `{_env_machine.get('cpu_logical_cores', 0)}` |\n"
+    f"| RAM total (GB) | `{_env_machine.get('ram_total_gb', 0.0)}` |\n"
+)
