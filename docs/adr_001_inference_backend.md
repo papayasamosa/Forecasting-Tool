@@ -108,7 +108,7 @@ acceptance and must be completed before public sharing.
 ## Linked evidence
 
 - ~~[Local Stage 0 evidence bundle](../docs/evidence/stage0/evidence_local_stage0_bundle_20260729_130534_342298_71036f6f.json)~~ (invalidated — PR #18)
-- Superseding evidence link: ⏳ Pending valid local bundle publication
+- ✅ [Genuine local Stage 0 evidence bundle (Gate B3)](../docs/evidence/stage0/evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json) — published 2026-08-05, commit `7831cb4`, independently executed token-present run
 - [Stage 0 benchmark report](stage_0_benchmark_report.md)
 - Community Cloud deployment URL: `https://forecasting-tool-bjhchtg9t6xhyxshidineu.streamlit.app/`
 - Community Cloud test checklist: [community_cloud_test_checklist.md](community_cloud_test_checklist.md)

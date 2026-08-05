@@ -246,7 +246,8 @@ Push-to-main CI is configured but no post-merge commit had been verified on
 `main` as of PR #26's merge — this is confirmed after each subsequent merge
 (see below for this corrective PR's own record).
 
-Real-model evidence (Gates B2–D) has not yet been collected on the current head.
+Genuine current-head local model evidence (Gates B2–B3) is published on
+commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
 
 ## Remaining Stage 0 gates
 
@@ -284,7 +285,8 @@ Real-model evidence (Gates B2–D) has not yet been collected on the current hea
   token-path evidence (unique `run_id`, timestamps, matching revisions per
   attempted path) so a duplicated record is mechanically rejected.
 - **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
-  is still empty. This is the current blocker, in addition to the Gate B3 rerun.
+  is still empty. This is now the sole remaining Stage 0 evidence blocker
+  (the Gate B3 local bundle is published and valid).
 - **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
