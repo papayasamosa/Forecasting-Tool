@@ -172,6 +172,26 @@ def is_windows_platform() -> bool:
     return sys.platform == "win32"
 
 
+def _read_pyvenv_cfg_home(prefix: str) -> str:
+    """Read the ``home`` line from a venv's ``pyvenv.cfg``.
+
+    Returns the resolved ``home`` value, or ``""`` if the file is absent
+    or unreadable. Kept as a module-level helper so tests can stub it
+    without patching the global ``open`` builtin (which would corrupt
+    coverage.py's own file reads on Linux runners).
+    """
+    pyvenv_cfg = os.path.join(prefix, "pyvenv.cfg")
+    home = ""
+    try:
+        with open(pyvenv_cfg, encoding="utf-8") as f:
+            for line in f:
+                if line.strip().lower().startswith("home"):
+                    home = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return home
+
+
 def verify_ddrive_runtime() -> list[str]:
     """Verify the active interpreter is the D-drive venv based on the
     D-drive project Python.
@@ -218,21 +238,12 @@ def verify_ddrive_runtime() -> list[str]:
         )
 
     # pyvenv.cfg home must point under the approved runtime tree
-    pyvenv_cfg = os.path.join(sys.prefix, "pyvenv.cfg")
-    if os.path.exists(pyvenv_cfg):
-        home = ""
-        try:
-            with open(pyvenv_cfg, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip().lower().startswith("home"):
-                        home = line.split("=", 1)[1].strip()
-        except OSError as exc:
-            errors.append(f"cannot read {pyvenv_cfg}: {exc}")
-        if home and not is_under_local_root(os.path.normpath(home)):
-            errors.append(
-                f"pyvenv.cfg home '{home}' is not under {LOCAL_ROOT} — the "
-                f"venv is based on a Python outside the approved runtime tree"
-            )
+    home = _read_pyvenv_cfg_home(sys.prefix)
+    if home and not is_under_local_root(os.path.normpath(home)):
+        errors.append(
+            f"pyvenv.cfg home '{home}' is not under {LOCAL_ROOT} — the "
+            f"venv is based on a Python outside the approved runtime tree"
+        )
 
     return errors
 

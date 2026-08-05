@@ -94,12 +94,12 @@ class TestVerifyDDdriveRuntime:
         monkeypatch.setattr(sp.sys, "executable", executable)
         return sp
 
-    def _fake_cfg(self, monkeypatch, home):
-        import io
+    def _stub_cfg(self, monkeypatch, home):
+        """Stub the module-level pyvenv.cfg reader — never patch the global
+        builtins.open, which would corrupt coverage.py's own file reads on
+        Linux runners (a real CI INTERNALERROR observed with coverage 7.15.3)."""
         import src.storage_policy as sp
-        monkeypatch.setattr("builtins.open",
-                            lambda *a, **k: io.StringIO(f"home = {home}\nversion = 3.12.10\n"))
-        monkeypatch.setattr(sp.os.path, "exists", lambda p: str(p).endswith("pyvenv.cfg"))
+        monkeypatch.setattr(sp, "_read_pyvenv_cfg_home", lambda prefix: home)
 
     def test_non_windows_returns_empty(self, monkeypatch):
         import src.storage_policy as sp
@@ -111,7 +111,7 @@ class TestVerifyDDdriveRuntime:
                     base_prefix=r"D:\Forecasting-Tool-Local\python312",
                     prefix=r"D:\Forecasting-Tool-Local\venv",
                     executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
-        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
         errors = verify_ddrive_runtime()
         assert errors == [], errors
 
@@ -120,7 +120,7 @@ class TestVerifyDDdriveRuntime:
                     base_prefix=r"C:\Users\dev\AppData\Local\Programs\Python\Python312",
                     prefix=r"D:\Forecasting-Tool-Local\venv",
                     executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
-        self._fake_cfg(monkeypatch, r"C:\Users\dev\AppData\Local\Programs\Python\Python312")
+        self._stub_cfg(monkeypatch, r"C:\Users\dev\AppData\Local\Programs\Python\Python312")
         errors = verify_ddrive_runtime()
         assert any("sys.base_prefix" in e for e in errors), errors
         assert any("D:\\Forecasting-Tool-Local" in e for e in errors), errors
@@ -130,7 +130,7 @@ class TestVerifyDDdriveRuntime:
                     base_prefix=r"D:\Forecasting-Tool-Local\python312",
                     prefix=r"D:\Forecasting-Tool-Local\venv",
                     executable=r"C:\Python312\python.exe")
-        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
         errors = verify_ddrive_runtime()
         assert any("Active interpreter" in e for e in errors), errors
 
@@ -139,7 +139,7 @@ class TestVerifyDDdriveRuntime:
                     base_prefix=r"D:\Forecasting-Tool-Local\python312",
                     prefix=r"C:\SomewhereElse\venv",
                     executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
-        self._fake_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
+        self._stub_cfg(monkeypatch, r"D:\Forecasting-Tool-Local\python312")
         errors = verify_ddrive_runtime()
         assert any("sys.prefix" in e for e in errors), errors
 
@@ -148,6 +148,21 @@ class TestVerifyDDdriveRuntime:
                     base_prefix=r"D:\Forecasting-Tool-Local\python312",
                     prefix=r"D:\Forecasting-Tool-Local\venv",
                     executable=r"D:\Forecasting-Tool-Local\venv\Scripts\python.exe")
-        self._fake_cfg(monkeypatch, r"C:\Python312")
+        self._stub_cfg(monkeypatch, r"C:\Python312")
         errors = verify_ddrive_runtime()
         assert any("pyvenv.cfg home" in e for e in errors), errors
+
+    def test_pyvenv_cfg_reader_reads_home_line(self, tmp_path):
+        """The real _read_pyvenv_cfg_home helper parses the home line and
+        tolerates missing/unreadable files without raising."""
+        from src.storage_policy import _read_pyvenv_cfg_home
+        venv = tmp_path / "venv"
+        venv.mkdir()
+        (venv / "pyvenv.cfg").write_text(
+            "home = D:\\Forecasting-Tool-Local\\python312\n"
+            "version = 3.12.10\n",
+            encoding="utf-8",
+        )
+        assert _read_pyvenv_cfg_home(str(venv)) == r"D:\Forecasting-Tool-Local\python312"
+        # Missing pyvenv.cfg -> ""
+        assert _read_pyvenv_cfg_home(str(tmp_path / "nope")) == ""
