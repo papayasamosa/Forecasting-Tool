@@ -37,8 +37,13 @@ _SENSITIVE_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
-_INLINE_ASSIGNMENT_RE = re.compile(r"^(--?[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_INLINE_ASSIGNMENT_RE = re.compile(
+    r"^(--?[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_-]*)(\s*[:=]\s*)(.*)$"
+)
 _BEARER_INLINE_RE = re.compile(r"^(authorization:\s*bearer\s+)(\S+)$", re.IGNORECASE)
+# "Authorization:Bearer" (with optional whitespace after the colon) as a
+# standalone prefix token, with the credential in the FOLLOWING argv token.
+_SPLIT_BEARER_PREFIX_RE = re.compile(r"^(authorization:\s*bearer)\s*$", re.IGNORECASE)
 
 
 def _name_is_sensitive(name: str) -> bool:
@@ -51,6 +56,13 @@ def sanitise_command(command: Sequence[str]) -> str:
     Returns a single space-joined string safe to store as
     ``ExecutionReceipt.sanitised_command``. Never leaves an ``HF_TOKEN``,
     password, secret, API key, or Authorization-header value in the output.
+
+    The assignment grammar here is the *same* grammar
+    ``contains_exposed_secret()`` scans (``=`` or ``:``, with optional
+    surrounding whitespace), so detection and sanitisation cannot drift:
+    every value this function redacts is recognised as safe by the
+    detector, and every exposure the detector flags has a matching
+    argv form handled here.
     """
     tokens = list(command)
     out: list[str] = []
@@ -66,12 +78,31 @@ def sanitise_command(command: Sequence[str]) -> str:
             i += 1
             continue
 
-        # "--name=value" or "NAME=value".
+        # "Authorization:Bearer" (zero whitespace after the colon) with the
+        # credential in the FOLLOWING token. The generic assignment branch
+        # below would redact only "Bearer" and leave the actual credential
+        # in the output (PR #28 review finding P1: split bearer tokens).
+        m = _SPLIT_BEARER_PREFIX_RE.match(tok)
+        if m:
+            if i + 1 < n:
+                out.append(m.group(1) + " " + REDACTED_MARKER)
+                i += 2
+            else:
+                out.append(m.group(1))
+                i += 1
+            continue
+
+        # "--name=value", "NAME=value", "--name:value" or "NAME:value"
+        # (value present in the same token).
         m = _INLINE_ASSIGNMENT_RE.match(tok)
         if m and _name_is_sensitive(m.group(1)):
-            out.append(f"{m.group(1)}={REDACTED_MARKER}")
-            i += 1
-            continue
+            if m.group(3):
+                out.append(f"{m.group(1)}{m.group(2)}{REDACTED_MARKER}")
+                i += 1
+                continue
+            # Name with an empty value (e.g. "api-key:" or "HF_TOKEN=") —
+            # fall through so a following token that supplies the value is
+            # redacted by the trailing-delimiter branch below.
 
         # "--name value" (two tokens).
         if tok.startswith("-") and _name_is_sensitive(tok) and i + 1 < n:
@@ -92,6 +123,18 @@ def sanitise_command(command: Sequence[str]) -> str:
             i += 3
             continue
 
+        # "name:" or "name=" followed by the value as a separate token —
+        # e.g. argv ["api-key:", "secret"] or ["HF_TOKEN=", "abc"].
+        if (
+            tok.endswith((":", "="))
+            and _name_is_sensitive(tok.rstrip(":="))
+            and i + 1 < n
+        ):
+            out.append(tok)
+            out.append(REDACTED_MARKER)
+            i += 2
+            continue
+
         out.append(tok)
         i += 1
 
@@ -110,9 +153,12 @@ _RAW_HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9]{16,}\b")
 
 _BEARER_RE = re.compile(r"authorization:\s*bearer\s+(\S+)", re.IGNORECASE)
 
-# "--name=value" or "NAME=value" (contiguous, no surrounding whitespace).
+# "--name=value", "NAME=value", "--name:value", "NAME:value" (with
+# optional whitespace around the delimiter). This is the SAME assignment
+# grammar sanitise_command() redacts, so the two can never drift.
 _INLINE_NAME_VALUE_RE = re.compile(
-    r"(?<![\w-])(--?[A-Za-z][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_]*)=(\S*)"
+    r"(?<![\w-])(--?[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*(\S+)",
+    re.IGNORECASE,
 )
 
 # "--name value" (space-separated, not "--name=value"). Reuses
@@ -139,6 +185,12 @@ def contains_exposed_secret(text: str) -> str | None:
     surrounding window of text — so a safe marker elsewhere in the command
     (e.g. ``--token-state present`` appearing near an unredacted
     ``HF_TOKEN=...``) can never suppress a real, separate exposure.
+
+    Detection and ``sanitise_command()`` share the same assignment grammar
+    (``=`` and ``:`` delimiters, optional surrounding whitespace), so a
+    stored colon-delimited command such as ``api_key:secret``,
+    ``api-key: secret``, ``HF_TOKEN:abcdef`` or ``password:hunter2`` is
+    flagged exactly like its equals-delimited equivalent.
     """
     if not text:
         return None
@@ -154,7 +206,12 @@ def contains_exposed_secret(text: str) -> str | None:
         name, value = match.group(1), match.group(2)
         if not _name_is_sensitive(name):
             continue
-        if not value or _is_safe_value(value):
+        # "authorization: bearer ..." is owned by _BEARER_RE above, which
+        # applies its own safe-value exemption to the real token. A bare
+        # "authorization:bearer" (no token) is not an exposure either.
+        if name.lower() == "authorization" and value.lower() == "bearer":
+            continue
+        if _is_safe_value(value):
             continue
         return f"exposed {name.lstrip('-')} value"
 

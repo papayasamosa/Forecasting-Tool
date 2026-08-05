@@ -71,6 +71,12 @@ D:\Forecasting-Tool-Local\logs
 - Every required local cache variable points to D:.
 - Pytest base temp points to D:.
 - Python installer and runtime instructions use D:.
+- The project runtime is `D:\Forecasting-Tool-Local\python312\python.exe` and
+  the project venv is `D:\Forecasting-Tool-Local\venv`, created FROM that
+  D-drive interpreter. `verify_ddrive_runtime()` checks `sys.executable`,
+  `sys.prefix`, `sys.base_prefix`, and `pyvenv.cfg home`; a venv based on a
+  C-drive (or other) Python is rejected. `py`/PATH pythons are never used
+  to create the venv.
 - No silent fallback to system Python.
 - No model download before preflight passes.
 

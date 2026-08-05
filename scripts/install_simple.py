@@ -80,7 +80,7 @@ def main():
         )
         print(f"  {mod}: {r.stdout.strip() or 'FAILED'}")
 
-    print(f"\n✅ Done!")
+    print("\n✅ Done!")
     print(f"   Venv: {VENV_PYTHON}")
 
 

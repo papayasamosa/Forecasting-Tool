@@ -47,7 +47,10 @@ def _check_schema_module() -> list[str]:
 
 
 def _check_canonical_registry_parity() -> list[str]:
-    """Verify the canonical Cloud test registry matches the checklist."""
+    """Verify the canonical Cloud test registry matches the checklist AND
+    the Cloud evidence template (WP8): no canonical acceptance-test
+    representation required for Cloud collection may remain unverified
+    before Gate C."""
     errors: list[str] = []
     try:
         from src.evidence_schemas import CANONICAL_CLOUD_TESTS
@@ -80,6 +83,40 @@ def _check_canonical_registry_parity() -> list[str]:
     if extra_in_checklist:
         errors.append(
             f"checklist has extra tests not in registry: {sorted(extra_in_checklist)}"
+        )
+
+    # WP8: the Cloud evidence template must carry the same canonical names —
+    # an empty (or drifted) template means Gate C has no canonical
+    # acceptance-test representation to verify against.
+    template_path = REPO_ROOT / "docs" / "evidence" / "stage0" / "cloud_stage0_template.json"
+    if not template_path.exists():
+        errors.append(f"cloud template not found: {template_path}")
+        return errors
+    import json
+    try:
+        with open(template_path, encoding="utf-8") as f:
+            template = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"cannot parse cloud template: {exc}")
+        return errors
+    template_names = {
+        t.get("test_name", "") for t in template.get("acceptance_tests", [])
+        if isinstance(t, dict)
+    }
+    if not template_names:
+        errors.append(
+            "cloud_stage0_template.json acceptance_tests is empty — "
+            "populate it with the canonical Cloud test names"
+        )
+    missing_in_template = registry_names - template_names
+    extra_in_template = template_names - registry_names
+    if missing_in_template:
+        errors.append(
+            f"cloud template missing canonical tests: {sorted(missing_in_template)}"
+        )
+    if extra_in_template:
+        errors.append(
+            f"cloud template has extra tests not in registry: {sorted(extra_in_template)}"
         )
 
     return errors
@@ -586,7 +623,9 @@ def _check_evidence_origin_required() -> list[str]:
         "code_commit": "abc123",
         "git_worktree_clean": True,
     }
-    obj = evidence_from_dict(dict(base))
+    # strict=True: readiness checks are release checks — permissive
+    # (migration-only) parsing must never be used on a release path.
+    obj = evidence_from_dict(dict(base), strict=True)
     if obj.evidence_origin not in ("", None):
         errors.append(
             f"SmokeEvidence with no evidence_origin key defaulted to "

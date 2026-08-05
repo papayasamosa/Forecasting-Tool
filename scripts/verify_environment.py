@@ -54,16 +54,30 @@ PINNED_VERSIONS = _load_pinned_versions()
 
 
 def main() -> int:
+    # Make the emoji status output safe on consoles whose codepage cannot
+    # encode them (e.g. cp1252): reconfigure stdout so a failure report can
+    # never crash with UnicodeEncodeError and mask the real error list.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     errors = []
 
     # --- WP12: D-drive storage policy enforcement ---
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     try:
-        from src.storage_policy import assert_d_drive_preflight
+        from src.storage_policy import assert_d_drive_preflight, verify_ddrive_runtime
         d_errors = assert_d_drive_preflight()
         errors.extend(d_errors)
         if not d_errors:
             print("✅ D-drive storage policy: OK")
+        # WP3: verify the venv base interpreter is the D-drive project Python
+        runtime_errors = verify_ddrive_runtime()
+        errors.extend(runtime_errors)
+        if runtime_errors:
+            for re_ in runtime_errors:
+                print(f"  ❌ D-drive runtime: {re_}")
+        else:
+            print("✅ D-drive runtime base interpreter: OK (based on D-drive project Python)")
     except ImportError as exc:
         errors.append(f"Could not import storage_policy module: {exc}")
     except Exception as exc:

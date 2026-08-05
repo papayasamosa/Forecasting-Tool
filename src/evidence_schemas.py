@@ -1249,8 +1249,8 @@ class LocalStage0Bundle:
                 r_errors = receipt_is_release_ready(receipt)
             else:
                 r_errors = receipt.validate()
-            for re in r_errors:
-                errors.append(f"receipts.{key}: {re}")
+            for r_err in r_errors:
+                errors.append(f"receipts.{key}: {r_err}")
 
             # WP4: Compute canonical digest of embedded component
             comp_data = None
@@ -1575,8 +1575,8 @@ class CloudEvidence:
                         rec_errors = receipt_is_release_ready(receipt_obj)
                     else:
                         rec_errors = receipt_obj.validate()
-                    for re in rec_errors:
-                        errors.append(f"{rec_field}: {re}")
+                    for r_err in rec_errors:
+                        errors.append(f"{rec_field}: {r_err}")
                     # WP-H: a synthetic receipt can never bind real Cloud
                     # evidence, regardless of the top-level CLI flag used to
                     # build this record — production mode is defined by
@@ -1940,18 +1940,41 @@ _EVIDENCE_TYPE_MAP: dict[str, type] = {
 }
 
 
-def _filter_known_fields(data: dict[str, Any], cls: type) -> dict[str, Any]:
+def _filter_known_fields(
+    data: dict[str, Any],
+    cls: type,
+    *,
+    strict: bool = False,
+    path: str = "",
+) -> dict[str, Any]:
     """Filter a dict to only include fields that exist in the dataclass.
 
-    Silently drops producer-only fields to allow round-trip compatibility
-    without mutating the input (deep copy is handled by caller).
-    Unknown fields that are not in the dataclass are logged via a warning.
+    Two modes:
+
+    - ``strict=False`` (migration-only, permissive): unknown fields are
+      dropped with a ``UserWarning``. This mode must never be used to
+      publish release evidence, mark evidence release-ready, or update the
+      release manifest — the publisher, bundle builder, Cloud builder,
+      recursive validator, and manifest verifier all call strict mode.
+    - ``strict=True`` (release): any unknown field is a hard ``ValueError``
+      with a path-qualified message, so schema drift, a wrong
+      ``evidence_type``, a misspelled field, or a nested record attached to
+      the wrong type can never be silently discarded.
+
+    ``path`` is the human-readable location of *data* (e.g.
+    ``scenarios[2].samples``) used to qualify error messages.
     """
     if not hasattr(cls, "__dataclass_fields__"):
         return data
     known = set(cls.__dataclass_fields__.keys())
     unknown = set(data.keys()) - known
     if unknown:
+        label = f"{path}.{cls.__name__}" if path else cls.__name__
+        if strict:
+            raise ValueError(
+                f"{label}: unknown field(s) {sorted(unknown)} — strict "
+                f"release deserialisation rejects unknown fields"
+            )
         import warnings
         warnings.warn(
             f"evidence_from_dict: dropping unknown fields from {cls.__name__}: "
@@ -1960,14 +1983,25 @@ def _filter_known_fields(data: dict[str, Any], cls: type) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k in known}
 
 
-def evidence_from_dict(data: dict[str, Any]) -> Any:
+def evidence_from_dict(data: dict[str, Any], *, strict: bool = False) -> Any:
     """Deserialise a dict into the appropriate evidence type based on
     ``evidence_type`` field.
 
     Operates on a deep copy — does NOT mutate the caller's data (WP3).
-    Unknown producer-only fields are silently dropped with a warning.
 
-    Raises ``ValueError`` for unknown types or missing evidence_type.
+    ``strict=False`` (default) is the migration-only permissive mode:
+    unknown producer-only fields are silently dropped with a warning. It
+    is NOT a release path — it cannot publish evidence, cannot mark
+    evidence release-ready, and cannot update the release manifest (all
+    release callers pass ``strict=True``).
+
+    ``strict=True`` rejects unknown fields at every depth with a
+    path-qualified ``ValueError``, so a wrong ``evidence_type`` can never
+    silently discard fields and construct another type, and a misspelled
+    field or a nested record attached to the wrong type fails loudly.
+
+    Raises ``ValueError`` for unknown types, missing evidence_type, or (in
+    strict mode) unknown fields.
     """
     import copy
     d = copy.deepcopy(data)
@@ -1978,71 +2012,86 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
     if cls is None:
         raise ValueError(f"Unknown evidence_type: '{etype}'")
 
+    def _strict_filter(nested: dict[str, Any], nested_cls: type, nested_path: str) -> dict[str, Any]:
+        return _filter_known_fields(nested, nested_cls, strict=strict, path=nested_path)
+
     # Recursively convert nested dicts into typed objects
     if etype == "smoke_test":
         if "cold" in d and isinstance(d["cold"], dict):
-            d["cold"] = SmokePhase(**_filter_known_fields(d["cold"], SmokePhase))
+            d["cold"] = SmokePhase(**_strict_filter(d["cold"], SmokePhase, "cold"))
         if "warm" in d and isinstance(d["warm"], dict):
-            d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
+            d["warm"] = SmokePhase(**_strict_filter(d["warm"], SmokePhase, "warm"))
         if "machine" in d and isinstance(d["machine"], dict):
-            d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
+            d["machine"] = MachineSummary(**_strict_filter(d["machine"], MachineSummary, "machine"))
         if "cache_preflight" in d and isinstance(d["cache_preflight"], dict):
-            d["cache_preflight"] = CachePreflight(**_filter_known_fields(d["cache_preflight"], CachePreflight))
+            d["cache_preflight"] = CachePreflight(**_strict_filter(d["cache_preflight"], CachePreflight, "cache_preflight"))
         if "token_absent_result" in d and isinstance(d["token_absent_result"], dict):
-            d["token_absent_result"] = TokenPathResult(**_filter_known_fields(d["token_absent_result"], TokenPathResult))
+            d["token_absent_result"] = TokenPathResult(**_strict_filter(d["token_absent_result"], TokenPathResult, "token_absent_result"))
         if "token_present_result" in d and isinstance(d["token_present_result"], dict):
-            d["token_present_result"] = TokenPathResult(**_filter_known_fields(d["token_present_result"], TokenPathResult))
+            d["token_present_result"] = TokenPathResult(**_strict_filter(d["token_present_result"], TokenPathResult, "token_present_result"))
     elif etype == "benchmark_suite":
         if "cache_preflight" in d and isinstance(d["cache_preflight"], dict):
-            d["cache_preflight"] = CachePreflight(**_filter_known_fields(d["cache_preflight"], CachePreflight))
+            d["cache_preflight"] = CachePreflight(**_strict_filter(d["cache_preflight"], CachePreflight, "cache_preflight"))
         if "scenarios" in d:
             scenarios = []
-            for sc in d["scenarios"]:
+            for i, sc in enumerate(d["scenarios"]):
                 scr = copy.deepcopy(sc)
                 if "samples" in scr:
                     scr["samples"] = [
-                        BenchmarkSampleRecord(**_filter_known_fields(s, BenchmarkSampleRecord))
+                        BenchmarkSampleRecord(
+                            **_strict_filter(s, BenchmarkSampleRecord, f"scenarios[{i}].samples")
+                        )
                         for s in scr["samples"]
                     ]
                 scenarios.append(
-                    BenchmarkScenarioRecord(**_filter_known_fields(scr, BenchmarkScenarioRecord))
+                    BenchmarkScenarioRecord(
+                        **_strict_filter(scr, BenchmarkScenarioRecord, f"scenarios[{i}]")
+                    )
                 )
             d["scenarios"] = scenarios
     elif etype == "model_artifact":
         if "files" in d:
             d["files"] = [
-                ModelArtifactFile(**_filter_known_fields(f, ModelArtifactFile))
-                for f in d["files"]
+                ModelArtifactFile(
+                    **_strict_filter(f, ModelArtifactFile, f"files[{i}]")
+                )
+                for i, f in enumerate(d["files"])
             ]
     elif etype == "cloud_stage0":
         if "cold" in d and isinstance(d["cold"], dict):
-            d["cold"] = SmokePhase(**_filter_known_fields(d["cold"], SmokePhase))
+            d["cold"] = SmokePhase(**_strict_filter(d["cold"], SmokePhase, "cold"))
         if "warm" in d and isinstance(d["warm"], dict):
-            d["warm"] = SmokePhase(**_filter_known_fields(d["warm"], SmokePhase))
+            d["warm"] = SmokePhase(**_strict_filter(d["warm"], SmokePhase, "warm"))
         if "machine" in d and isinstance(d["machine"], dict):
-            d["machine"] = MachineSummary(**_filter_known_fields(d["machine"], MachineSummary))
+            d["machine"] = MachineSummary(**_strict_filter(d["machine"], MachineSummary, "machine"))
         if "token_absent_result" in d and isinstance(d["token_absent_result"], dict):
-            d["token_absent_result"] = TokenPathResult(**_filter_known_fields(d["token_absent_result"], TokenPathResult))
+            d["token_absent_result"] = TokenPathResult(**_strict_filter(d["token_absent_result"], TokenPathResult, "token_absent_result"))
         if "token_present_result" in d and isinstance(d["token_present_result"], dict):
-            d["token_present_result"] = TokenPathResult(**_filter_known_fields(d["token_present_result"], TokenPathResult))
+            d["token_present_result"] = TokenPathResult(**_strict_filter(d["token_present_result"], TokenPathResult, "token_present_result"))
         # WP4: Receipt fields — preserve as dicts for construction
         # These are stored as dict[str, Any] in CloudEvidence and validated
         # inline rather than deserialized to typed objects here (the validate
         # method constructs ExecutionReceipt from the raw dict).
         if "repeated_runs" in d and isinstance(d["repeated_runs"], list):
             d["repeated_runs"] = [
-                RepeatedRun(**_filter_known_fields(r, RepeatedRun))
-                for r in d["repeated_runs"]
+                RepeatedRun(
+                    **_strict_filter(r, RepeatedRun, f"repeated_runs[{i}]")
+                )
+                for i, r in enumerate(d["repeated_runs"])
             ]
         if "concurrency_requests" in d and isinstance(d["concurrency_requests"], list):
             d["concurrency_requests"] = [
-                ConcurrencyRequest(**_filter_known_fields(r, ConcurrencyRequest))
-                for r in d["concurrency_requests"]
+                ConcurrencyRequest(
+                    **_strict_filter(r, ConcurrencyRequest, f"concurrency_requests[{i}]")
+                )
+                for i, r in enumerate(d["concurrency_requests"])
             ]
         if "acceptance_tests" in d and isinstance(d["acceptance_tests"], list):
             d["acceptance_tests"] = [
-                AcceptanceTestResult(**_filter_known_fields(t, AcceptanceTestResult))
-                for t in d["acceptance_tests"]
+                AcceptanceTestResult(
+                    **_strict_filter(t, AcceptanceTestResult, f"acceptance_tests[{i}]")
+                )
+                for i, t in enumerate(d["acceptance_tests"])
             ]
 
     elif etype == "local_stage0_bundle":
@@ -2051,10 +2100,10 @@ def evidence_from_dict(data: dict[str, Any]) -> Any:
             for rec_key, rec_data in d["receipts"].items():
                 if isinstance(rec_data, dict):
                     receipts[rec_key] = ExecutionReceipt(
-                        **_filter_known_fields(rec_data, ExecutionReceipt)
+                        **_strict_filter(rec_data, ExecutionReceipt, f"receipts.{rec_key}")
                     )
                 else:
                     receipts[rec_key] = rec_data
             d["receipts"] = receipts
 
-    return cls(**_filter_known_fields(d, cls))
+    return cls(**_filter_known_fields(d, cls, strict=strict, path=""))

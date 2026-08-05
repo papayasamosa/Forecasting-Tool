@@ -286,12 +286,122 @@ class TestSmokeEvidenceValidation:
 
     def test_wrong_evidence_type_rejected(self):
         data = _valid_smoke_dict({"evidence_type": "benchmark_suite"})
-        # evidence_from_dict uses _filter_known_fields to drop unknown producer fields.
-        # The evidence_type in the data is "benchmark_suite", so it deserialises
-        # as BenchmarkSuiteEvidence and drops smoke-specific fields.
-        ev = evidence_from_dict(data)
+        # Strict release deserialisation must reject a wrong evidence_type
+        # instead of silently discarding smoke-specific fields and
+        # constructing a BenchmarkSuiteEvidence from the leftovers — a
+        # wrong evidence_type can never silently discard fields.
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        message = str(excinfo.value)
+        assert "unknown field" in message
+        assert "BenchmarkSuiteEvidence" in message
+
+    def test_permissive_mode_drops_unknown_fields_with_warning(self):
+        data = _valid_smoke_dict({"evidence_type": "benchmark_suite"})
+        # Migration-only mode: drops unknown fields with a warning. This is
+        # NOT a release path — it cannot publish, mark evidence
+        # release-ready, or update the release manifest.
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ev = evidence_from_dict(data)
         assert ev.evidence_type == "benchmark_suite"
-        # The smoke-specific fields (cold, warm, etc.) are dropped gracefully
+        assert any(issubclass(w.category, UserWarning) for w in caught)
+
+    def test_strict_rejects_unknown_top_level_field(self):
+        data = _valid_smoke_dict({"typo_field": "oops"})
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        assert "unknown field" in str(excinfo.value)
+        assert "typo_field" in str(excinfo.value)
+        assert "SmokeEvidence" in str(excinfo.value)
+
+    def test_strict_rejects_unknown_nested_field_with_path(self):
+        data = _valid_smoke_dict({"warm": {"cache_state": "same_process_warm", "typo": 1}})
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        message = str(excinfo.value)
+        assert "unknown field" in message
+        assert "typo" in message
+        assert "warm" in message
+
+    def test_strict_rejects_unknown_scenario_field_with_index(self):
+        data = _valid_benchmark_suite_dict({
+            "scenarios": [
+                {
+                    "scenario": "weekly_260_13",
+                    "scenario_passed": True,
+                    "model_revision": "rev1",
+                    "samples": [
+                        {"label": "cold", "cache_state": "download_cold", "success": True, "badfield": 1},
+                    ],
+                },
+            ],
+        })
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        message = str(excinfo.value)
+        assert "unknown field" in message
+        assert "badfield" in message
+        assert "scenarios[0]" in message
+
+    def test_strict_rejects_unknown_cloud_nested_field_with_index(self):
+        data = {
+            "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+            "evidence_type": "cloud_stage0",
+            "repeated_runs": [
+                {"run_number": 1, "success": True, "total_seconds": 1.0,
+                 "inference_seconds": 1.0,
+                 "started_at_utc": "2026-07-29T00:00:00",
+                 "completed_at_utc": "2026-07-29T00:00:01",
+                 "resolved_revision": "rev1", "cache_state": "same_process_warm",
+                 "pipeline_reused": True, "pipeline_construction_count": 1,
+                 "rss_mb": 100.0, "error_code": "", "extra": True},
+            ],
+        }
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        message = str(excinfo.value)
+        assert "unknown field" in message
+        assert "extra" in message
+        assert "repeated_runs[0]" in message
+
+    def test_strict_rejects_unknown_bundle_receipt_field(self):
+        data = {
+            "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+            "evidence_type": "local_stage0_bundle",
+            "evidence_origin": "real_measurement",
+            "bundle_passed": False,
+            "code_commit": "abc123",
+            "git_worktree_clean": True,
+            "runs": {},
+            "model_artifact": {},
+            "receipts": {
+                "download_cold_smoke": {
+                    "execution_id": "e1",
+                    "attestation_type": "operator_attested",
+                    "code_commit": "abc123",
+                    "producer_name": "producer",
+                    "producer_version": "1.0",
+                    "sanitised_command": "python x.py",
+                    "started_at_utc": "2026-01-01T00:00:00",
+                    "completed_at_utc": "2026-01-01T00:01:00",
+                    "exit_code": 0,
+                    "component_sha256": "a" * 64,
+                    "model_id": "amazon/chronos-2",
+                    "configured_revision": "rev1",
+                    "resolved_revision": "rev1",
+                    "evidence_origin": "real_measurement",
+                    "bogus": "x",
+                },
+            },
+        }
+        with pytest.raises(ValueError) as excinfo:
+            evidence_from_dict(data, strict=True)
+        message = str(excinfo.value)
+        assert "unknown field" in message
+        assert "bogus" in message
+        assert "receipts.download_cold_smoke" in message
 
     def test_warm_cache_state_missing(self):
         data = _valid_smoke_dict({"warm": {"cache_state": ""}})
@@ -897,7 +1007,7 @@ class TestCloudEvidenceValidation:
         assert any("concurrency_requests" in e for e in errors)
 
     def test_requires_at_least_3_repeated_runs(self):
-        data = self._valid_cloud_dict({"repeated_runs": [{"run": 1}]})
+        data = self._valid_cloud_dict({"repeated_runs": [{"run_number": 1}]})
         ev = evidence_from_dict(data)
         errors = ev.validate()
         assert any("repeated_runs" in e for e in errors)
@@ -2845,9 +2955,10 @@ class TestCanonicalRegistryParity:
         assert not extra, f"Checklist has extra names not in registry: {extra}"
 
     def test_template_matches_registry(self):
-        """The Cloud template acceptance_tests, once populated, must contain
-        all canonical names. Currently empty — documents the known gap
-        explicitly via skip rather than computing an unused comparison."""
+        """The Cloud template acceptance_tests must contain exactly the
+        canonical registry names. This is a hard assertion — no canonical
+        acceptance-test representation for Cloud collection may remain
+        unverified before Gate C (WP8)."""
         template_path = Path(__file__).resolve().parent.parent / "docs" / "evidence" / "stage0" / "cloud_stage0_template.json"
         import json
         with open(template_path) as f:
@@ -2855,9 +2966,16 @@ class TestCanonicalRegistryParity:
         template_names = {t["test_name"] for t in template.get("acceptance_tests", [])}
         from src.evidence_schemas import CANONICAL_CLOUD_TESTS
         registry_names = set(CANONICAL_CLOUD_TESTS)
-        if not template_names:
-            pytest.skip("cloud_stage0_template.json acceptance_tests is still empty — known gap")
-        assert template_names == registry_names
+        assert template_names, (
+            "cloud_stage0_template.json acceptance_tests must be populated "
+            "with the canonical Cloud test names — an empty template cannot "
+            "be verified for Gate C"
+        )
+        assert template_names == registry_names, (
+            f"template acceptance_tests must exactly match the canonical "
+            f"registry: missing={registry_names - template_names}, "
+            f"extra={template_names - registry_names}"
+        )
 
 
 class TestReceiptContext:

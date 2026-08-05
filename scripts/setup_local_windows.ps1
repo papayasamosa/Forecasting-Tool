@@ -112,40 +112,16 @@ elseif (Test-Path "$pythonInstallDir\python.exe") {
     $pythonCmd = "$pythonInstallDir\python.exe"
 }
 else {
-    # WP-L: documented C-drive exception. This `py` launcher / PATH python
-    # is used ONLY as a bootstrap tool to run `-m venv` and create the
-    # D-drive venv below (Step 6) — it is never the project runtime.
-    # Every later step in this script (pip installs, dependency install,
-    # environment verification, and every command a developer runs after
-    # setup) uses $venvPython = "$LocalRoot\venv\Scripts\python.exe"
-    # exclusively. This is the one unavoidable Windows-managed C-drive
-    # touchpoint: there is no way to create a venv without an existing
-    # Python interpreter, and Windows does not ship one on D:.
-    Write-Host "No D-drive Python found — searching for a bootstrap interpreter to create the D-drive venv (used once, then never again)..."
-    $pyExe = (Get-Command "py" -ErrorAction SilentlyContinue).Source
-    if ($pyExe) {
-        $verOutput = & $pyExe -3.12 --version 2>&1
-        if ($LASTEXITCODE -eq 0 -and $verOutput -match "3\.12") {
-            $pythonCmd = $pyExe
-        }
-    }
-    # Fall back to searching PATH
-    if (-not $pythonCmd) {
-        $pathPython = (Get-Command "python" -ErrorAction SilentlyContinue).Source
-        if ($pathPython) {
-            $ver = & $pathPython --version 2>&1
-            if ($ver -match "3\.12") {
-                $pythonCmd = $pathPython
-            }
-        }
-    }
-}
-
-if (-not $pythonCmd) {
-    Write-Host "Python 3.12 not found. Downloading to D: drive installer cache..."
+    # WP3: NO C-drive bootstrap. The `py` launcher and any PATH Python are
+    # never used to create the project venv — doing so would make the venv's
+    # base interpreter live outside the approved D-drive runtime tree. The
+    # pinned Python is always downloaded, verified (SHA-256 + Authenticode)
+    # and installed directly into D:\Forecasting-Tool-Local\python312, and
+    # that interpreter alone creates the venv below.
+    Write-Host "No D-drive Python found — downloading the pinned 3.12.10 installer to the D: drive cache..."
     $installerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
     $installerPath = "$installersDir\python-3.12.10-amd64.exe"
-    
+
     # WP13: Pinned installer version and expected SHA-256.
     # Verified against the official python.org release: matches the
     # published MD5 (5eddb0b6f12c852725de071ae681dde4) for
@@ -155,14 +131,14 @@ if (-not $pythonCmd) {
     # failed this check for every run.
     $expectedSha256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
     $expectedPublisher = "Python Software Foundation"
-    
+
     if (-not (Test-Path $installerPath)) {
         # Use a download approach that works without external tools
         $webClient = New-Object System.Net.WebClient
         Write-Host "  Downloading from $installerUrl ..."
         $webClient.DownloadFile($installerUrl, $installerPath)
     }
-    
+
     # WP13: Verify SHA-256 of downloaded installer
     Write-Host "  Verifying SHA-256 of installer..."
     $actualSha256 = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLower()
@@ -175,7 +151,7 @@ if (-not $pythonCmd) {
         exit 1
     }
     Write-Host "  SHA-256 verified: $actualSha256"
-    
+
     # WP13: Verify Authenticode signature
     Write-Host "  Verifying Authenticode signature..."
     $sig = Get-AuthenticodeSignature -FilePath $installerPath
@@ -195,7 +171,7 @@ if (-not $pythonCmd) {
         exit 1
     }
     Write-Host "  Authenticode signature verified: $($sig.SignerCertificate.Subject)"
-    
+
     Write-Host "Installing Python 3.12 to $pythonInstallDir (D: drive)..."
     $installArgs = "/quiet InstallAllUsers=0 TargetDir=`"$pythonInstallDir`" Include_launcher=0 Include_test=0"
     $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
@@ -213,14 +189,8 @@ if (-not $pythonCmd) {
 }
 
 # Report the resolved Python version
-if ($pythonCmd -match "py(\.exe)?$") {
-    Write-Host "Using Python: $pythonCmd -3.12"
-    $pyVer = & $pythonCmd -3.12 --version 2>&1
-}
-else {
-    Write-Host "Using Python: $pythonCmd"
-    $pyVer = & $pythonCmd --version 2>&1
-}
+Write-Host "Using Python: $pythonCmd"
+$pyVer = & $pythonCmd --version 2>&1
 Write-Host "Version: $pyVer"
 
 # ---- Step 5: Set ALL required environment variables (match storage_policy) ----
@@ -252,19 +222,28 @@ Write-Host "All environment variables set to D: drive (matching storage_policy)"
 
 # ---- Step 6: Create virtual environment -------------------------------------
 if (-not (Test-Path "$LocalRoot\venv\Scripts\python.exe")) {
-    Write-Host "Creating virtual environment..."
-    if ($pythonCmd -match "py(\.exe)?$") {
-        & $pythonCmd -3.12 -m venv "$LocalRoot\venv"
-    }
-    else {
-        & $pythonCmd -m venv "$LocalRoot\venv"
-    }
+    Write-Host "Creating virtual environment from the D-drive Python..."
+    & $pythonCmd -m venv "$LocalRoot\venv"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Host "Virtual environment already exists."
 }
 
 $venvPython = "$LocalRoot\venv\Scripts\python.exe"
+
+# WP3: The venv MUST be based on the D-drive project Python. Verify
+# sys.executable, sys.prefix, sys.base_prefix and pyvenv.cfg home through
+# the shared storage_policy module; reject an existing venv based on a
+# Python installation outside the approved runtime tree.
+Write-Host "Verifying the D-drive venv base interpreter..."
+$runtimeErrors = & $venvPython -c "import sys; sys.path.insert(0, r'$repoRoot'); from src.storage_policy import verify_ddrive_runtime; errs = verify_ddrive_runtime(); print('; '.join(errs) if errs else 'OK'); sys.exit(0 if not errs else 1)" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "D-drive venv runtime check FAILED: $runtimeErrors"
+    Write-Error "The venv must be based on the D-drive project Python at D:\Forecasting-Tool-Local\python312."
+    Write-Error "Delete the existing venv (Remove-Item -Recurse -Force D:\Forecasting-Tool-Local\venv) and re-run this script."
+    exit 1
+}
+Write-Host "D-drive venv base interpreter verified: $runtimeErrors"
 
 # ---- Step 7: Upgrade pip ----------------------------------------------------
 Write-Host "Upgrading pip..."

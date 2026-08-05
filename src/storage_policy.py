@@ -159,12 +159,145 @@ def is_under_local_root(path: str) -> bool:
     # for cross-platform comparison (os.sep differs: '\\' on Windows, '/' on Linux)
     norm_path = _normalise_windows_path(path).replace("\\", "/")
     norm_root = _normalise_windows_path(LOCAL_ROOT).replace("\\", "/")
-    return norm_path.startswith(norm_root + "/") or norm_path == norm_root
+    # Windows paths are case-insensitive: the on-disk case (e.g. as returned
+    # by Path.resolve()) may differ from the constant's case, so compare
+    # case-insensitively. (is_valid_storage_root already accepts either case.)
+    norm_path_l = norm_path.lower()
+    norm_root_l = norm_root.lower()
+    return norm_path_l.startswith(norm_root_l + "/") or norm_path_l == norm_root_l
+
+
+# Pinned project runtime interpreter directory. The venv MUST be based on this
+# exact directory — being merely under LOCAL_ROOT is not enough (a venv based
+# on e.g. D:\\Forecasting-Tool-Local\\oldpython must be rejected).
+RUNTIME_PYTHON = os.path.join(LOCAL_ROOT, "python312")
+
+
+def is_under_runtime_python(path: str) -> bool:
+    """Return True if *path* is the pinned runtime Python directory
+    (``D:\\Forecasting-Tool-Local\\python312``) or one of its descendants.
+
+    This is stricter than :func:`is_under_local_root`: only the pinned
+    runtime directory satisfies the WP3 contract, never a sibling such as
+    ``D:\\Forecasting-Tool-Local\\oldpython``.
+    """
+    if not path:
+        return False
+    norm_path = _normalise_windows_path(path).replace("\\", "/")
+    norm_runtime = _normalise_windows_path(RUNTIME_PYTHON).replace("\\", "/")
+    norm_path_l = norm_path.lower()
+    norm_runtime_l = norm_runtime.lower()
+    return norm_path_l.startswith(norm_runtime_l + "/") or norm_path_l == norm_runtime_l
 
 
 def is_windows_platform() -> bool:
     """Return True if running on Windows."""
     return sys.platform == "win32"
+
+
+def _read_pyvenv_cfg_home(prefix: str) -> str:
+    """Read the ``home`` line from a venv's ``pyvenv.cfg``.
+
+    Returns the resolved ``home`` value, or ``""`` if the file is absent
+    or unreadable. Kept as a module-level helper so tests can stub it
+    without patching the global ``open`` builtin (which would corrupt
+    coverage.py's own file reads on Linux runners).
+    """
+    pyvenv_cfg = os.path.join(prefix, "pyvenv.cfg")
+    home = ""
+    try:
+        with open(pyvenv_cfg, encoding="utf-8") as f:
+            for line in f:
+                if line.strip().lower().startswith("home"):
+                    home = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return home
+
+
+def _interpreter_facts() -> dict[str, str]:
+    """Return the interpreter facts the D-drive runtime check needs.
+
+    Isolated behind a module-level function so tests can stub it WITHOUT
+    mutating the real ``sys`` module. Patching ``sys.prefix``/``sys.base_prefix``
+    globally corrupts ``sysconfig``'s cached config vars on Linux runners,
+    which coverage.py reads via ``sysconfig.get_paths()`` — the next trace
+    then crashes with ``AttributeError: 'userbase'`` (a real CI INTERNALERROR
+    observed with coverage 7.15.x).
+    """
+    return {
+        "platform": sys.platform,
+        "executable": sys.executable,
+        "prefix": sys.prefix,
+        "base_prefix": sys.base_prefix,
+    }
+
+
+def verify_ddrive_runtime() -> list[str]:
+    """Verify the active interpreter is the D-drive venv based on the
+    D-drive project Python.
+
+    The project runtime is:
+
+    - base interpreter: ``D:\\Forecasting-Tool-Local\\python312\\python.exe``
+    - virtual environment: ``D:\\Forecasting-Tool-Local\\venv``
+
+    Returns a list of error messages (empty = OK). Checks:
+    - ``sys.executable`` is the D-drive venv interpreter
+    - ``sys.prefix`` is under ``D:\\Forecasting-Tool-Local``
+    - ``sys.base_prefix`` is the pinned runtime directory
+      ``D:\\Forecasting-Tool-Local\\python312`` (so the venv is based on
+      the pinned project Python — being merely under ``LOCAL_ROOT`` is NOT
+      enough, e.g. ``D:\\Forecasting-Tool-Local\\oldpython`` is rejected)
+    - the venv's ``pyvenv.cfg`` ``home`` points at the pinned runtime
+      directory
+
+    On non-Windows platforms this returns an empty list (the D-drive
+    policy does not apply to GitHub runners or Cloud containers).
+    """
+    errors: list[str] = []
+
+    facts = _interpreter_facts()
+    if facts["platform"] != "win32":
+        return errors
+
+    venv_python = os.path.join(LOCAL_ROOT, "venv", "Scripts", "python.exe")
+    # Normalise both sides to the canonical Windows form so the check is
+    # correct cross-platform (on POSIX, os.path.join mixes separators from
+    # the backslash LOCAL_ROOT constant).
+    actual_exec = _normalise_windows_path(facts["executable"])
+    expected_exec = _normalise_windows_path(venv_python)
+    if os.path.normcase(actual_exec) != os.path.normcase(expected_exec):
+        errors.append(
+            f"Active interpreter '{facts['executable']}' is not the D-drive "
+            f"venv interpreter '{venv_python}'"
+        )
+
+    if not is_under_local_root(os.path.normpath(facts["prefix"])):
+        errors.append(f"sys.prefix '{facts['prefix']}' is not under {LOCAL_ROOT}")
+
+    # base_prefix must be the PINNED runtime directory, not merely any
+    # descendant of LOCAL_ROOT (a venv based on
+    # D:\\Forecasting-Tool-Local\\oldpython would otherwise pass).
+    if not is_under_runtime_python(os.path.normpath(facts["base_prefix"])):
+        errors.append(
+            f"sys.base_prefix '{facts['base_prefix']}' is not under the "
+            f"pinned runtime Python '{RUNTIME_PYTHON}' — the D-drive venv "
+            f"must be based on the D-drive project Python at "
+            f"'{RUNTIME_PYTHON}', never a C-drive (or other) installation "
+            f"or a different directory under {LOCAL_ROOT}"
+        )
+
+    # pyvenv.cfg home must point at the pinned runtime directory
+    home = _read_pyvenv_cfg_home(facts["prefix"])
+    if home and not is_under_runtime_python(os.path.normpath(home)):
+        errors.append(
+            f"pyvenv.cfg home '{home}' is not under the pinned runtime "
+            f"Python '{RUNTIME_PYTHON}' — the venv is based on a Python "
+            f"outside the approved runtime tree"
+        )
+
+    return errors
 
 
 def assert_d_drive_preflight() -> list[str]:
@@ -200,6 +333,10 @@ def assert_d_drive_preflight() -> list[str]:
             f"Active interpreter '{sys.executable}' is not the D-drive venv "
             f"interpreter '{venv_python}'"
         )
+
+    # Check the venv base interpreter is the D-drive project Python (WP3):
+    # a venv created from a C-drive Python is not an approved runtime.
+    errors.extend(verify_ddrive_runtime())
 
     # Check repo location
     repo_root = Path(__file__).resolve().parent.parent
