@@ -203,6 +203,27 @@ def capture_package_versions() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def package_versions_metadata() -> dict[str, str]:
+    """Fast package-version lookup via installed-distribution metadata.
+
+    Unlike ``capture_package_versions()`` (which imports each package and is
+    therefore slow/heavy), this reads distribution metadata with
+    ``importlib.metadata`` — safe to call on every page render. Never
+    raises; unknown packages report "unknown".
+    """
+    from importlib.metadata import version as _meta_version
+
+    names = ("chronos-forecasting", "torch", "streamlit", "pandas", "numpy")
+    versions: dict[str, str] = {}
+    for name in names:
+        try:
+            versions[name] = _meta_version(name)
+        except Exception:
+            versions[name] = "unknown"
+    versions["python"] = sys.version.split()[0]
+    return versions
+
+
 def cpu_info() -> str:
     try:
         import psutil
@@ -693,13 +714,15 @@ def _cpu_model_linux() -> str:
 
 
 def machine_summary() -> dict[str, Any]:
-    """Return CPU model, logical core count, and total RAM.
+    """Return OS name, CPU model, logical core count, and total RAM.
 
     Platform-aware CPU model detection. Never raises; returns empty
     strings on failure. Does not include hostnames, usernames, or
     serial numbers.
     """
-    result: dict[str, Any] = {}
+    result: dict[str, Any] = {
+        "os_name": sys.platform,
+    }
     try:
         import psutil
         result["cpu_logical_cores"] = psutil.cpu_count(logical=True)
