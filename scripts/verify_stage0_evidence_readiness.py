@@ -1565,6 +1565,59 @@ def _check_concurrency_interval_overlap() -> list[str]:
         errors.append("overlapping pair not detected among records")
     if any_overlapping_pair([recs[0]]):
         errors.append("single record reported as overlapping")
+
+    # With COORDINATOR_CAPACITY=1 genuine concurrency is visible across the
+    # FULL request windows (queue wait included), not the serialised
+    # inference windows — the full-window semantics must match
+    # CloudEvidence.validate()'s start_time_utc/completion_time_utc.
+    serialised = [
+        {"request_id": "a", "success": True,
+         "started_at_utc": "2026-08-06T00:00:00+00:00",
+         "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+         "completed_at_utc": "2026-08-06T00:00:06+00:00"},
+        {"request_id": "b", "success": True,
+         "started_at_utc": "2026-08-06T00:00:00+00:00",
+         "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+         "completed_at_utc": "2026-08-06T00:00:05+00:00"},
+    ]
+    if not any_overlapping_pair(serialised):
+        errors.append(
+            "concurrency not detected across full request windows (queue "
+            "wait included) with capacity=1"
+        )
+    sequential = [
+        {"request_id": "a", "success": True,
+         "started_at_utc": "2026-08-06T00:00:00+00:00",
+         "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+        {"request_id": "b", "success": True,
+         "started_at_utc": "2026-08-06T00:00:02+00:00",
+         "completed_at_utc": "2026-08-06T00:00:04+00:00"},
+    ]
+    if any_overlapping_pair(sequential):
+        errors.append("sequential full windows incorrectly reported as overlapping")
+    return errors
+
+
+def _check_machine_resources_stdlib_first() -> list[str]:
+    """P1-1: machine resources (cores, RAM) must be measurable without
+    psutil so the Cloud runtime (which installs only requirements.txt) can
+    produce release-ready diagnostics."""
+    errors: list[str] = []
+    import sys as _sys
+    original = _sys.modules.get("psutil")
+    _sys.modules["psutil"] = None
+    try:
+        from src.cloud_diagnostics import machine_resource_summary
+        res = machine_resource_summary()
+        if not isinstance(res.get("cpu_logical_cores"), int) or res.get("cpu_logical_cores", 0) <= 0:
+            errors.append(f"cpu_logical_cores not measurable without psutil: {res}")
+        if not isinstance(res.get("ram_total_gb"), (int, float)) or res.get("ram_total_gb", 0.0) <= 0:
+            errors.append(f"ram_total_gb not measurable without psutil: {res}")
+    finally:
+        if original is None:
+            _sys.modules.pop("psutil", None)
+        else:
+            _sys.modules["psutil"] = original
     return errors
 
 
@@ -1687,6 +1740,7 @@ def run_cloud_instrumentation_checks() -> list[str]:
         ("No raw payload retained", _check_no_raw_payload),
         ("Repeated-run uniqueness", _check_repeated_run_uniqueness),
         ("Concurrency interval overlap", _check_concurrency_interval_overlap),
+        ("Machine resources stdlib-first (no psutil)", _check_machine_resources_stdlib_first),
         ("Collection-session digest binding", _check_collection_session_digest_binding),
         ("Safe deterministic diagnostics JSON", _check_safe_diagnostics_json),
         ("Diagnostics schema mutation rejection", _check_diagnostics_schema_mutation_rejection),

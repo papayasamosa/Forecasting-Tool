@@ -153,6 +153,21 @@ def _resolve_telemetry_store() -> RequestTelemetryStore:
     return _get_telemetry_store()
 
 
+def _resolve_collection_session_id() -> str:
+    """Return the per-browser collection-session ID.
+
+    Stored in ``st.session_state`` so one visitor's collection window is
+    isolated from every other visitor's (review finding: a public reset must
+    never mutate another session's evidence window).  The process-wide store
+    remains shared and bounded; records are tagged with this ID.
+    """
+    session_id = st.session_state.get("collection_session_id", "")
+    if not session_id:
+        session_id = f"session_{uuid.uuid4().hex[:12]}"
+        st.session_state["collection_session_id"] = session_id
+    return session_id
+
+
 def _record_cloud_request(
     store: RequestTelemetryStore,
     request_id: str,
@@ -167,10 +182,14 @@ def _record_cloud_request(
     """Build and store a typed ``CloudRequestRecord`` for a completed run.
 
     Combines the coordinator's sanitised timing, the adapter's runtime
-    metadata, and the request-scoped memory sample.  On error paths
-    ``result``/``exec_record`` may be None — the record is still typed,
-    bounded, and truthful (success=False, error_category set).
+    metadata, and the request-scoped memory sample.  The sampler is stopped
+    FIRST so the stored sample is complete (stopped_at_utc, rss_after_mb,
+    process_peak_rss_mb) — stopping later cannot mutate the copied dict.
+    On error paths ``result``/``exec_record`` may be None — the record is
+    still typed, bounded, and truthful (success=False, error_category set).
     """
+    if sampler is not None:
+        sampler.stop(session_id=session_id)
     rr = exec_record.request_record if exec_record is not None else {}
     meta = result.runtime_metadata if result is not None else None
     sample = sampler.to_sample(session_id=session_id) if sampler is not None else None
@@ -437,7 +456,7 @@ if run_button and df is not None and not st.session_state.is_running:
     # is also recorded as a typed, bounded CloudRequestRecord with its own
     # request-scoped memory sample (WP4/WP5).
     store = _resolve_telemetry_store()
-    session_id = store.session_id
+    session_id = _resolve_collection_session_id()
     request_id = str(uuid.uuid4())
     sampler = RequestMemorySampler(request_id=request_id)
     # Sampler starts before queue wait / model loading so the request-scoped
@@ -471,10 +490,37 @@ if run_button and df is not None and not st.session_state.is_running:
             _record_cloud_request(
                 store, request_id, exec_record, result, sampler, session_id,
             )
+            # Record which canonical acceptance test genuinely ran (cold /
+            # first warm / repeated warm) so the collection session reports
+            # only tests that actually executed (review finding P1-4).
+            warm_so_far = len([
+                r for r in store.snapshot(session_id=session_id)
+                if r.get("success") and r.get("pipeline_reused")
+                and not r.get("pipeline_constructed")
+            ])
+            meta = result.runtime_metadata
+            if meta.model_was_loaded_this_run:
+                event_name = "cold_forecast"
+            elif warm_so_far <= 1:
+                event_name = "warm_forecast"
+            else:
+                event_name = "repeated_forecasts"
+            store.record_acceptance_event(
+                event_name, True,
+                details=f"request {request_id}",
+                session_id=session_id,
+            )
     except CoordinatorTimeoutError:
         _record_cloud_request(
             store, request_id, None, None, sampler, session_id,
             error_category="CoordinatorTimeoutError", success=False,
+        )
+        # The timeout surfaced as a recoverable, configuration-preserving
+        # error — the coordinator_timeout_recovery test genuinely ran.
+        store.record_acceptance_event(
+            "coordinator_timeout_recovery", True,
+            details=f"timeout request {request_id}",
+            session_id=session_id,
         )
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "
@@ -486,6 +532,11 @@ if run_button and df is not None and not st.session_state.is_running:
             store, request_id, None, None, sampler, session_id,
             error_category=type(e).__name__, success=False,
         )
+        store.record_acceptance_event(
+            "configuration_preserved", True,
+            details=f"recoverable error {request_id}",
+            session_id=session_id,
+        )
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
     except Exception:
@@ -493,10 +544,16 @@ if run_button and df is not None and not st.session_state.is_running:
             store, request_id, None, None, sampler, session_id,
             error_category="UnexpectedError", success=False,
         )
+        store.record_acceptance_event(
+            "configuration_preserved", True,
+            details=f"unexpected error {request_id}",
+            session_id=session_id,
+        )
         st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
         logger.error("Unexpected forecast error", exc_info=True)
     finally:
-        # Always stop the request-scoped sampler, even on failure.
+        # Always stop the request-scoped sampler, even on failure
+        # (idempotent — _record_cloud_request already stopped it).
         sampler.stop(session_id=session_id)
 
     st.session_state.is_running = False

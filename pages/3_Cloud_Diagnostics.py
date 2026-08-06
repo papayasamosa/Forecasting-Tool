@@ -94,12 +94,29 @@ backend = get_forecast_backend()
 coordinator = get_coordinator()
 store = get_telemetry_store()
 
+# Per-browser collection session ID (review finding P1-5): the collection
+# window is scoped to THIS browser session via st.session_state, so one
+# visitor's "Begin new collection session" can never reset or split another
+# visitor's evidence window.  The process-wide store is shared and bounded,
+# but records are tagged with the browser session ID.
+def _browser_collection_session_id() -> str:
+    import uuid as _uuid
+    session_id = st.session_state.get("collection_session_id", "")
+    if not session_id:
+        session_id = f"session_{_uuid.uuid4().hex[:12]}"
+        st.session_state["collection_session_id"] = session_id
+    return session_id
+
+
+collection_session_id = _browser_collection_session_id()
+
 try:
     export = build_public_diagnostics_export(
         expected_commit,
         adapter=backend,
         coordinator=coordinator,
         store=store,
+        session_id=collection_session_id,
     )
     diag = export.get("diagnostics")
 except Exception as exc:  # pragma: no cover - defensive
@@ -191,7 +208,7 @@ if diag is not None:
     records = export.get("request_records", [])
     st.markdown(
         f"{export.get('request_count', len(records))} typed request record(s) "
-        f"retained for collection session `{store.session_id}` (bounded at "
+        f"retained for collection session `{collection_session_id}` (bounded at "
         f"{store.max_records})."
     )
     if records:
@@ -248,16 +265,21 @@ if diag is not None:
 # ---------------------------------------------------------------------------
 st.subheader("Collection session")
 st.caption(
-    "**Begin** starts a fresh collection window (new session ID, clears "
-    "request history). **Finalise** binds the session record — every "
-    "request ID, the runtime-diagnostics digest, and the deployment "
-    "identity — to a canonical digest receipt. No secret input is required."
+    "**Begin** starts a fresh collection window for **this browser session** "
+    "(new session ID; other visitors' windows are untouched). **Finalise** "
+    "binds the session record — every request ID recorded in this window, "
+    "the acceptance tests that actually ran, the runtime-diagnostics digest, "
+    "and the deployment identity — to a canonical digest receipt. No secret "
+    "input is required."
 )
 
 if st.button("Begin new collection session"):
-    new_id = store.begin_collection_session()
-    st.session_state["collection_started_at_utc"] = datetime.now(timezone.utc).isoformat()
+    import uuid as _uuid
+    new_id = f"session_{_uuid.uuid4().hex[:12]}"
+    # Per-browser only: never clears the process-wide store or another
+    # visitor's session window (review finding P1-5).
     st.session_state["collection_session_id"] = new_id
+    st.session_state["collection_started_at_utc"] = datetime.now(timezone.utc).isoformat()
     st.success(f"New collection session started: `{new_id}`")
 
 if st.button("Finalise collection session"):
@@ -267,24 +289,19 @@ if st.button("Finalise collection session"):
         else:
             deployment_url = _deployment_url()
             started_at = st.session_state.get("collection_started_at_utc", "")
+            # Only acceptance tests that genuinely ran in this browser
+            # session are recorded (review finding P1-4).
+            ran_events = store.acceptance_events(session_id=collection_session_id)
+            test_names = [e["test_name"] for e in ran_events if e.get("passed")]
             session_record = build_collection_session_record(
-                session_id=store.session_id,
+                session_id=collection_session_id,
                 deployed_commit=diag.get("deployed_commit", ""),
                 commit_resolution_source=diag.get("commit_resolution_source", ""),
                 deployment_url=deployment_url,
                 diagnostics=_diagnostics_from_dict(diag),
-                acceptance_test_names=[
-                    "dependency_install", "pip_check", "cpu_only_torch",
-                    "no_nvidia_packages", "token_absent_load", "token_present_load",
-                    "cold_forecast", "warm_forecast", "repeated_forecasts",
-                    "valid_csv_forecast", "oversized_csv_rejected",
-                    "blank_timestamp_rejected", "invalid_timestamp_rejected",
-                    "same_column_rejected", "context_truncation_visible",
-                    "recoverable_failure", "configuration_preserved",
-                    "two_session_concurrency", "coordinator_timeout_recovery",
-                ],
-                request_records=store.snapshot(),
-                started_at_utc=started_at or st.session_state.get("collection_started_at_utc", "") or diag.get("generated_at_utc", ""),
+                acceptance_test_names=test_names,
+                request_records=store.snapshot(session_id=collection_session_id),
+                started_at_utc=started_at or diag.get("generated_at_utc", ""),
                 completed_at_utc=datetime.now(timezone.utc).isoformat(),
             )
             session_errors = session_record.validate()

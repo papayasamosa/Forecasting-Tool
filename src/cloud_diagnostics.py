@@ -478,6 +478,9 @@ class RequestTelemetryStore:
     def __init__(self, max_records: int = DEFAULT_MAX_REQUEST_RECORDS, session_id: str = ""):
         self._max_records = max(1, int(max_records))
         self._records: collections.deque[dict[str, Any]] = collections.deque(maxlen=self._max_records)
+        self._acceptance_events: collections.deque[dict[str, Any]] = collections.deque(
+            maxlen=self._max_records
+        )
         self._lock = threading.Lock()
         self._session_id = session_id or f"session_{uuid.uuid4().hex[:12]}"
 
@@ -490,10 +493,18 @@ class RequestTelemetryStore:
         return self._max_records
 
     def begin_collection_session(self) -> str:
-        """Start a new collection session: new ID, empty history."""
+        """Start a new collection session: new ID, empty history.
+
+        This is an *operator/programmatic* control.  The public Cloud
+        Diagnostics page must NOT call it (any visitor could otherwise
+        reset another session's collection window) — it starts a fresh
+        per-browser collection session in ``st.session_state`` instead
+        (see pages/3_Cloud_Diagnostics.py).
+        """
         with self._lock:
             self._session_id = f"session_{uuid.uuid4().hex[:12]}"
             self._records.clear()
+            self._acceptance_events.clear()
             return self._session_id
 
     def record(self, record: CloudRequestRecord) -> None:
@@ -504,9 +515,43 @@ class RequestTelemetryStore:
     def record_dict(self, data: dict[str, Any]) -> None:
         self.record(CloudRequestRecord(**data))
 
-    def snapshot(self) -> list[dict[str, Any]]:
+    def record_acceptance_event(
+        self,
+        test_name: str,
+        passed: bool,
+        details: str = "",
+        session_id: str = "",
+    ) -> None:
+        """Record that a canonical acceptance test genuinely ran in this
+        process.  Tagged with the browser-session id so one visitor's
+        collection window never absorbs another's events."""
+        from src.evidence_schemas import CANONICAL_CLOUD_TESTS
+        if test_name not in CANONICAL_CLOUD_TESTS:
+            raise ValueError(f"unknown canonical acceptance test '{test_name}'")
         with self._lock:
-            return list(self._records)
+            self._acceptance_events.append({
+                "test_name": test_name,
+                "passed": bool(passed),
+                "details": details[:500],
+                "session_id": session_id or self._session_id,
+                "recorded_at_utc": _utcnow(),
+            })
+
+    def acceptance_events(self, session_id: str = "") -> list[dict[str, Any]]:
+        """Acceptance-test events, optionally filtered to one collection
+        session."""
+        with self._lock:
+            events = list(self._acceptance_events)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        return events
+
+    def snapshot(self, session_id: str = "") -> list[dict[str, Any]]:
+        with self._lock:
+            records = list(self._records)
+        if session_id:
+            records = [r for r in records if r.get("session_id") == session_id]
+        return records
 
     def get(self, request_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -518,6 +563,7 @@ class RequestTelemetryStore:
     def clear(self) -> None:
         with self._lock:
             self._records.clear()
+            self._acceptance_events.clear()
 
     def request_ids(self) -> list[str]:
         return [r.get("request_id", "") for r in self.snapshot() if r.get("request_id")]
@@ -828,6 +874,87 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Machine resource measurement — stdlib-first (WP1 / review P1-1)
+#
+# ``psutil`` is a development-only dependency (requirements-dev.txt); the
+# Community Cloud runtime installs only requirements.txt, so machine
+# resources must be measurable without psutil or the deployed diagnostics
+# could never become release-ready.
+# ---------------------------------------------------------------------------
+
+
+def _cpu_logical_cores_stdlib() -> int:
+    """Logical CPU count via stdlib only (``os.cpu_count()``)."""
+    try:
+        count = os.cpu_count()
+        return int(count) if count and count > 0 else 0
+    except Exception:
+        return 0
+
+
+def _ram_total_gb_stdlib() -> float:
+    """Total RAM in GB via stdlib only.
+
+    Linux: ``os.sysconf('SC_PHYS_PAGES') * SC_PAGE_SIZE``.
+    Windows: ``ctypes`` ``GlobalMemoryStatusEx``.
+    Returns 0.0 when the platform cannot be measured with stdlib.
+    """
+    try:
+        if hasattr(os, "sysconf"):
+            pages = os.sysconf("SC_PHYS_PAGES")  # type: ignore[attr-defined]
+            page_size = os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
+            if pages and page_size and pages > 0 and page_size > 0:
+                return round((pages * page_size) / (1024**3), 1)
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return round(status.ullTotalPhys / (1024**3), 1)
+        except Exception:
+            pass
+    return 0.0
+
+
+def machine_resource_summary() -> dict[str, Any]:
+    """Return ``cpu_logical_cores`` and ``ram_total_gb``.
+
+    Stdlib-first (works on the Community Cloud runtime where psutil is not
+    installed); falls back to psutil values when available for accuracy.
+    """
+    cores = _cpu_logical_cores_stdlib()
+    ram = _ram_total_gb_stdlib()
+    try:
+        import psutil
+        psutil_cores = psutil.cpu_count(logical=True)
+        if psutil_cores:
+            cores = int(psutil_cores)
+        psutil_ram = psutil.virtual_memory().total / (1024**3)
+        if psutil_ram:
+            ram = round(psutil_ram, 1)
+    except Exception:
+        pass
+    return {"cpu_logical_cores": cores, "ram_total_gb": ram}
+
+
 def _coordinator_state_string(coordinator: Any | None) -> str:
     if coordinator is None:
         return "unavailable"
@@ -860,6 +987,7 @@ def build_runtime_diagnostics(
     identity = resolve_deployed_commit_strict(expected_commit)
     versions = package_versions_metadata()
     machine = machine_summary()
+    resources = machine_resource_summary()
     dep = measure_dependency_diagnostics()
 
     pipeline_construction_count = 0
@@ -887,8 +1015,8 @@ def build_runtime_diagnostics(
         },
         os_name=machine.get("os_name", ""),
         cpu_model=machine.get("cpu_model", ""),
-        cpu_logical_cores=int(machine.get("cpu_logical_cores", 0) or 0),
-        ram_total_gb=float(machine.get("ram_total_gb", 0.0) or 0.0),
+        cpu_logical_cores=int(resources.get("cpu_logical_cores", 0) or 0),
+        ram_total_gb=float(resources.get("ram_total_gb", 0.0) or 0.0),
         torch_cpu_only=dep.torch_cpu_only,
         torch_cuda_version=dep.torch_cuda_version,
         nvidia_packages=list(dep.nvidia_packages),
@@ -947,19 +1075,34 @@ def intervals_overlap(
     return min(a_e, b_e) > max(a_s, b_s)  # type: ignore[operator]
 
 
+def _request_window(record: dict[str, Any]) -> tuple[str, str]:
+    """Full request window ``[started_at_utc, completed_at_utc]`` (including
+    any queue wait), falling back to the inference window for records that
+    predate the queue-start field."""
+    start = record.get("started_at_utc") or record.get("inference_started_at_utc") or ""
+    end = record.get("completed_at_utc") or ""
+    return start, end
+
+
 def any_overlapping_pair(records: list[dict[str, Any]]) -> bool:
-    """True when at least one pair of successful request inference windows
-    overlaps (proves genuine concurrency from typed intervals)."""
-    successful = [
-        r for r in records
-        if r.get("success") and r.get("inference_started_at_utc") and r.get("completed_at_utc")
-    ]
+    """True when at least one pair of successful request *full* windows
+    overlaps (queue wait included).
+
+    This matches the interval semantics used by ``CloudEvidence.validate()``
+    (``start_time_utc`` → ``completion_time_utc``).  With
+    ``COORDINATOR_CAPACITY = 1`` inference intervals are deliberately
+    serialised, so genuine two-session concurrency is visible as overlap of
+    the full request windows (one session queuing while the other runs),
+    not as overlap of the inference windows.
+    """
+    successful = [r for r in records if r.get("success")]
     for i in range(len(successful)):
         for j in range(i + 1, len(successful)):
             a, b = successful[i], successful[j]
-            if intervals_overlap(
-                a["inference_started_at_utc"], a["completed_at_utc"],
-                b["inference_started_at_utc"], b["completed_at_utc"],
+            a_start, a_end = _request_window(a)
+            b_start, b_end = _request_window(b)
+            if a_start and a_end and b_start and b_end and intervals_overlap(
+                a_start, a_end, b_start, b_end
             ):
                 return True
     return False
@@ -1002,9 +1145,10 @@ def categorise_request_ids(records: list[dict[str, Any]]) -> dict[str, list[str]
     for i in range(len(successful)):
         for j in range(i + 1, len(successful)):
             a, b = successful[i], successful[j]
-            if intervals_overlap(
-                a.get("inference_started_at_utc", ""), a.get("completed_at_utc", ""),
-                b.get("inference_started_at_utc", ""), b.get("completed_at_utc", ""),
+            a_start, a_end = _request_window(a)
+            b_start, b_end = _request_window(b)
+            if a_start and a_end and b_start and b_end and intervals_overlap(
+                a_start, a_end, b_start, b_end
             ):
                 for rid in (a.get("request_id", ""), b.get("request_id", "")):
                     if rid and rid not in concurrency:
@@ -1289,6 +1433,7 @@ def build_public_diagnostics_export(
     adapter: Any | None = None,
     coordinator: Any | None = None,
     store: RequestTelemetryStore | None = None,
+    session_id: str = "",
     deployment_url: str = "",
 ) -> dict[str, Any]:
     """Build the composite, allowlisted public export.
@@ -1299,13 +1444,17 @@ def build_public_diagnostics_export(
     can render on any platform while the release path still fails closed
     (Stage 3 refuses to build evidence from a non-release-ready export).
     Deterministic key order and deterministic canonical digest.
+
+    When ``session_id`` is supplied, only request records tagged with that
+    collection session are included, so one browser session's export never
+    contains another session's records.
     """
     diagnostics = build_runtime_diagnostics(
         expected_commit, adapter=adapter, coordinator=coordinator
     )
     validation_errors = diagnostics.validate(release=True)
 
-    request_records = store.snapshot() if store is not None else []
+    request_records = store.snapshot(session_id=session_id) if store is not None else []
 
     export = {
         "diagnostics": diagnostics.to_dict(),

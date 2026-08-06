@@ -950,3 +950,177 @@ class TestBuildRuntimeDiagnostics:
             assert any("expected collection commit" in e for e in errors)
         finally:
             reset_dependency_diagnostics_cache()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for codex review findings (PR #33, P1-1 .. P1-5)
+# ---------------------------------------------------------------------------
+
+
+class TestMachineResourcesStdlibFirst:
+    """P1-1: machine resources must be measurable without psutil (the Cloud
+    runtime installs only requirements.txt)."""
+
+    def test_machine_resource_summary_without_psutil(self, monkeypatch):
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", None)
+        from src.cloud_diagnostics import machine_resource_summary
+        res = machine_resource_summary()
+        assert res["cpu_logical_cores"] > 0
+        assert res["ram_total_gb"] > 0
+
+    def test_build_diagnostics_uses_resource_summary(self, monkeypatch):
+        """build_runtime_diagnostics must report positive cores/RAM even
+        when psutil is unavailable."""
+        import sys as _sys
+        import src.cloud_diagnostics as cd
+        monkeypatch.setitem(_sys.modules, "psutil", None)
+        monkeypatch.setattr(cd, "_run_pip_check", lambda: (True, "ok"))
+        monkeypatch.setenv("DEPLOYED_COMMIT", _VALID_COMMIT)
+        reset_dependency_diagnostics_cache()
+        try:
+            diag = build_runtime_diagnostics(_VALID_COMMIT)
+            assert diag.cpu_logical_cores > 0
+            assert diag.ram_total_gb > 0
+            errors = diag.validate(release=True)
+            # The resource fields themselves must never be flagged; on
+            # Windows the only release error is the (expected) unmeasurable
+            # process peak — on the Linux Cloud runtime it is measurable.
+            assert not any("cpu_logical_cores" in e for e in errors), errors
+            assert not any("ram_total_gb" in e for e in errors), errors
+        finally:
+            reset_dependency_diagnostics_cache()
+
+
+class TestRecordStopsSamplerBeforeSerialize:
+    """P1-2: the stored memory sample must be complete (sampler stopped
+    before serialization), never zeroed/empty."""
+
+    def test_record_cloud_request_stops_sampler_first(self):
+        import importlib
+        page = importlib.import_module("pages.1_Forecast")
+        store = RequestTelemetryStore()
+
+        class _Exec:
+            request_record = {
+                "request_id": "r1",
+                "start_time_utc": "2026-08-06T00:00:00+00:00",
+                "inference_start_utc": "2026-08-06T00:00:00+00:00",
+                "completion_time_utc": "2026-08-06T00:00:02+00:00",
+                "queue_seconds": 0.0,
+                "inference_seconds": 1.0,
+            }
+
+        sampler = RequestMemorySampler(request_id="r1", interval=0.005)
+        sampler.start()
+        time.sleep(0.03)
+        # Intentionally NOT stopped before the page helper serialises.
+        page._record_cloud_request(store, "r1", _Exec(), None, sampler, "s1", success=True)
+
+        rec = store.get("r1")
+        assert rec is not None
+        mem = rec.get("memory", {})
+        assert mem.get("started_at_utc"), mem
+        assert mem.get("stopped_at_utc"), "sampler must be stopped before serializing"
+        assert mem.get("rss_before_mb", 0) > 0
+        assert mem.get("rss_after_mb", 0) > 0, "rss_after must be measured before serializing"
+        assert mem.get("request_peak_rss_mb", 0) > 0
+
+
+class TestConcurrencyFullWindow:
+    """P1-3: concurrency must be detected across the full request windows
+    (queue wait included), matching CloudEvidence.validate() semantics —
+    not the serialised inference windows."""
+
+    def test_full_windows_overlap_despite_serialised_inference(self):
+        records = [
+            {"request_id": "a", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:06+00:00"},
+            {"request_id": "b", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00"},
+        ]
+        assert any_overlapping_pair(records) is True
+
+    def test_sequential_full_windows_do_not_overlap(self):
+        records = [
+            {"request_id": "a", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+            {"request_id": "b", "success": True,
+             "started_at_utc": "2026-08-06T00:00:02+00:00",
+             "completed_at_utc": "2026-08-06T00:00:04+00:00"},
+        ]
+        assert any_overlapping_pair(records) is False
+
+    def test_concurrency_ids_derived_from_full_windows(self):
+        records = [
+            {"request_id": "a", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:06+00:00"},
+            {"request_id": "b", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00"},
+        ]
+        cats = categorise_request_ids(records)
+        assert set(cats["concurrency_request_ids"]) == {"a", "b"}
+
+
+class TestAcceptanceEvents:
+    """P1-4: the collection session must record only acceptance tests that
+    genuinely ran, via typed events."""
+
+    def test_events_recorded_and_filtered_by_session(self):
+        store = RequestTelemetryStore()
+        store.record_acceptance_event("cold_forecast", True, session_id="s1")
+        store.record_acceptance_event("warm_forecast", True, session_id="s2")
+        assert [e["test_name"] for e in store.acceptance_events("s1")] == ["cold_forecast"]
+        assert [e["test_name"] for e in store.acceptance_events("s2")] == ["warm_forecast"]
+        assert [e["test_name"] for e in store.acceptance_events()] == ["cold_forecast", "warm_forecast"]
+
+    def test_unknown_test_name_rejected(self):
+        store = RequestTelemetryStore()
+        with pytest.raises(ValueError):
+            store.record_acceptance_event("not_a_canonical_test", True)
+
+    def test_session_test_names_reflect_only_ran_events(self):
+        store = RequestTelemetryStore()
+        store.record_acceptance_event("cold_forecast", True, session_id="s1")
+        # An event that did not pass must not be listed as collected.
+        store.record_acceptance_event("warm_forecast", False, session_id="s1")
+        ran = [e["test_name"] for e in store.acceptance_events("s1") if e.get("passed")]
+        assert ran == ["cold_forecast"]
+
+
+class TestSessionIsolation:
+    """P1-5: one browser session's collection window must not absorb or
+    clear another session's records."""
+
+    def _make_record(self, rid, session_id, start="2026-08-06T00:00:00+00:00"):
+        return CloudRequestRecord(
+            request_id=rid, session_id=session_id, success=True,
+            started_at_utc=start,
+            completed_at_utc="2026-08-06T00:00:01+00:00",
+            inference_seconds=1.0, model_revision="rev",
+        )
+
+    def test_records_separable_by_session(self):
+        store = RequestTelemetryStore()
+        store.record(self._make_record("a1", "sessionA"))
+        store.record(self._make_record("a2", "sessionA"))
+        store.record(self._make_record("b1", "sessionB"))
+        assert [r["request_id"] for r in store.snapshot(session_id="sessionA")] == ["a1", "a2"]
+        assert [r["request_id"] for r in store.snapshot(session_id="sessionB")] == ["b1"]
+        assert len(store.snapshot()) == 3
+
+    def test_events_separable_by_session(self):
+        store = RequestTelemetryStore()
+        store.record_acceptance_event("cold_forecast", True, session_id="sessionA")
+        store.record_acceptance_event("warm_forecast", True, session_id="sessionB")
+        assert [e["test_name"] for e in store.acceptance_events("sessionA")] == ["cold_forecast"]
+        assert [e["test_name"] for e in store.acceptance_events("sessionB")] == ["warm_forecast"]
