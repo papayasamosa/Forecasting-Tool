@@ -1407,26 +1407,84 @@ def build_collection_bundle(
 def import_prior_collection_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     """Validate and extract the prior lifecycle's evidence from its bundle.
 
-    Returns ``{"request_records": [...], "token_absent_execution_ids": [...],
-    "token_present_execution_ids": [...], "deployed_commit": str}``.
+    Every existing binding is verified before any field is accepted
+    (codex P1-26): the bundle's own canonical digest, the session's
+    ``request_records_digest`` against the actual records, the collection
+    receipt's binding to the session, and the session's
+    ``diagnostics_digest`` against the embedded diagnostics.  Returns
+    ``{"request_records": [...], "token_absent_execution_ids": [...],
+    "token_present_execution_ids": [...], "test_names": [...],
+    "deployed_commit": str}``.
 
-    Raises ``ValueError`` when the bundle is not a typed collection bundle.
+    Raises ``ValueError`` when the bundle is not a typed, internally
+    consistent collection bundle.
     """
     if not isinstance(bundle, dict):
         raise ValueError("prior collection bundle must be a JSON object")
+
+    # 1. The bundle's own canonical digest (if present) must match its payload.
+    if bundle.get("canonical_digest"):
+        payload = {k: v for k, v in bundle.items() if k != "canonical_digest"}
+        if canonical_evidence_sha256(payload) != bundle["canonical_digest"]:
+            raise ValueError(
+                "prior bundle canonical_digest does not match its payload — "
+                "the bundle has been altered"
+            )
+
     session = bundle.get("collection_session")
     if not isinstance(session, dict) or session.get("evidence_type") != "collection_session":
         raise ValueError("prior bundle has no collection_session record")
+
     request_records = bundle.get("request_records", [])
     if not isinstance(request_records, list):
         raise ValueError("prior bundle request_records must be a list")
     for rec in request_records:
         if not isinstance(rec, dict) or not rec.get("request_id"):
             raise ValueError("prior bundle request_records entries must be typed request records")
+
+    # 2. The session's request_records_digest must bind the actual records.
+    session_digest = session.get("request_records_digest", "")
+    if session_digest and canonical_evidence_sha256(request_records) != session_digest:
+        raise ValueError(
+            "prior bundle request_records do not match the session "
+            "request_records_digest — the telemetry has been altered"
+        )
+
+    # 3. The collection receipt must bind the session record.
+    receipt = bundle.get("collection_receipt")
+    if isinstance(receipt, dict) and receipt.get("canonical_content_sha256"):
+        expected = canonical_evidence_sha256(session)
+        if receipt["canonical_content_sha256"] != expected:
+            raise ValueError(
+                "prior bundle collection_receipt does not bind the "
+                "collection_session — the record has been altered"
+            )
+
+    # 4. The session's diagnostics_digest must bind the embedded diagnostics.
+    diagnostics = bundle.get("diagnostics")
+    if isinstance(diagnostics, dict) and session.get("diagnostics_digest"):
+        if canonical_evidence_sha256(diagnostics) != session["diagnostics_digest"]:
+            raise ValueError(
+                "prior bundle diagnostics do not match the session "
+                "diagnostics_digest — the snapshot has been altered"
+            )
+
+    # 5. The session record must pass its own typed validation.
+    try:
+        session_obj = CloudCollectionSessionRecord(**session)
+        session_errors = session_obj.validate()
+        if session_errors:
+            raise ValueError("; ".join(session_errors))
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"invalid prior collection session: {exc}") from exc
+
     return {
         "request_records": list(request_records),
         "token_absent_execution_ids": list(session.get("token_absent_execution_ids", []) or []),
         "token_present_execution_ids": list(session.get("token_present_execution_ids", []) or []),
+        "test_names": list(session.get("test_names", []) or []),
         "deployed_commit": str(session.get("deployed_commit", "") or ""),
     }
 

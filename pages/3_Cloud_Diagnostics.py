@@ -392,12 +392,27 @@ if st.button("Finalise collection session"):
                 except Exception as exc:
                     st.error(f"Invalid prior collection bundle: {exc}")
                     st.stop()
+                # The prior lifecycle must be the SAME exact deployed commit
+                # (codex P1-28) — mixing code versions corrupts provenance.
+                if prior_data["deployed_commit"] != diag.get("deployed_commit", ""):
+                    st.error(
+                        "Prior collection bundle deployed commit "
+                        f"`{prior_data['deployed_commit']}` does not match the "
+                        f"current deployment `{diag.get('deployed_commit', '')}` — "
+                        "refusing to merge evidence from different code versions."
+                    )
+                    st.stop()
                 cohort = merge_cohort_with_prior(cohort, prior_data["request_records"])
                 token_absent_ids = list(dict.fromkeys(
                     token_absent_ids + prior_data["token_absent_execution_ids"]
                 ))
                 token_present_ids = list(dict.fromkeys(
                     token_present_ids + prior_data["token_present_execution_ids"]
+                ))
+                # Preserve the prior lifecycle's acceptance-test names too
+                # (codex P1-27), deduplicated.
+                test_names = list(dict.fromkeys(
+                    test_names + prior_data["test_names"]
                 ))
             session_record = build_collection_session_record(
                 session_id=collection_session_id,

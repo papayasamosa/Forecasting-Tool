@@ -51,6 +51,18 @@ The repository and runtime roots are deliberately separate; move the repository 
 "@
     exit 1
 }
+# When FORECASTING_REPO_ROOT is unset, the repository must be the default —
+# verify_environment.py later compares the variable exactly against
+# REPO_ROOT_DEFAULT (D:\App Projects\Forecasting-Tool), so an arbitrary
+# D-drive path would fail the final verification (codex P2, thread 30).
+if (-not $env:FORECASTING_REPO_ROOT -and $resolvedRepoActual -ne [System.IO.Path]::GetFullPath($expectedRepoRoot)) {
+    Write-Error @"
+FORECASTING_REPO_ROOT is unset; the repository must be the default '$expectedRepoRoot'.
+Current location: '$repoRoot'
+Set FORECASTING_REPO_ROOT to the actual repository path or move the repository and re-run.
+"@
+    exit 1
+}
 if ($env:FORECASTING_REPO_ROOT -and [System.IO.Path]::GetFullPath($env:FORECASTING_REPO_ROOT) -ne $resolvedRepoActual) {
     Write-Error @"
 Repository location '$repoRoot' does not match FORECASTING_REPO_ROOT '$expectedRepoRoot'.

@@ -459,7 +459,9 @@ if run_button and df is not None and not st.session_state.is_running:
         working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
         retained_rows = len(working_df)
         retained_start = str(working_df[ts_col].iloc[0])
-        _record_acceptance_event("context_truncation_visible")
+        # context_truncation_visible is recorded in the SUCCESS path only —
+        # the notice is rendered only from a successful forecast_result
+        # (codex P1-29).
 
     # Only materialise retained rows
     records = tuple(working_df.to_dict("records"))
@@ -548,6 +550,10 @@ if run_button and df is not None and not st.session_state.is_running:
                 _record_acceptance_event("repeated_forecasts", details=f"request {request_id}")
             if data_option == "Upload CSV":
                 _record_acceptance_event("valid_csv_forecast", details=f"request {request_id}")
+            # Truncation notice is actually rendered for this successful
+            # result (codex P1-29).
+            if retained_rows < original_rows:
+                _record_acceptance_event("context_truncation_visible", details=f"request {request_id}")
             # Recovery tests are marked passed only after a later successful
             # request in the SAME collection that contains the timed-out /
             # failed request (codex P1-8 / P1-18) — pending flags carry the

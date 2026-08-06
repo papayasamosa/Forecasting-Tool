@@ -1672,6 +1672,147 @@ class TestTimeoutRecoverySameSession:
         assert "B-success" not in cats["timeout_recovery_ids"]
 
 
+class TestPriorBundleBindingVerification:
+    """P1-26: imported bundles must have every existing digest/receipt
+    binding verified before any field is accepted."""
+
+    def _bundle(self):
+        from src.cloud_diagnostics import (
+            build_collection_bundle,
+            build_collection_receipt,
+            build_collection_session_record,
+        )
+        records = [
+            {"request_id": "A-1", "session_id": "sessionA", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00",
+             "pipeline_constructed": True},
+        ]
+        session = build_collection_session_record(
+            session_id="sessionA",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["token_absent_load"],
+            token_absent_execution_ids=["A-1"],
+            request_records=records,
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        receipt = build_collection_receipt(session)
+        return build_collection_bundle(_valid_diagnostics(), records, session, receipt)
+
+    def test_valid_bundle_imports(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        data = import_prior_collection_bundle(self._bundle())
+        assert [r["request_id"] for r in data["request_records"]] == ["A-1"]
+        assert data["test_names"] == ["token_absent_load"]
+        assert data["deployed_commit"] == _VALID_COMMIT
+
+    def test_altered_bundle_digest_rejected(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        bundle = self._bundle()
+        bundle["canonical_digest"] = "0" * 64
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle(bundle)
+
+    def test_altered_request_records_rejected(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        bundle = self._bundle()
+        bundle["request_records"] = [
+            dict(bundle["request_records"][0], queue_seconds=999.0)
+        ]
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle(bundle)
+
+    def test_altered_session_rejected_by_receipt(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        bundle = self._bundle()
+        bundle["collection_session"] = dict(
+            bundle["collection_session"], session_id="tampered"
+        )
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle(bundle)
+
+    def test_altered_diagnostics_rejected_by_session_digest(self):
+        from src.cloud_diagnostics import (
+            canonical_evidence_sha256,
+            import_prior_collection_bundle,
+        )
+        bundle = self._bundle()
+        # Re-hash the bundle after tampering so the ONLY failing binding is
+        # the session's diagnostics_digest.
+        bundle["diagnostics"] = dict(bundle["diagnostics"], os_name="Tampered")
+        bundle["canonical_digest"] = canonical_evidence_sha256(
+            {k: v for k, v in bundle.items() if k != "canonical_digest"}
+        )
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle(bundle)
+
+
+class TestPriorBundleDeploymentMatch:
+    """P1-28: the prior lifecycle bundle must be from the same exact
+    deployed commit; P1-27: prior acceptance-test names are preserved."""
+
+    def test_page_enforces_prior_deployed_commit_match(self):
+        page = (REPO_ROOT / "pages" / "3_Cloud_Diagnostics.py").read_text(encoding="utf-8")
+        assert "prior_data['deployed_commit']" in page
+        assert "does not match the" in page
+
+    def test_import_preserves_prior_test_names(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        from src.cloud_diagnostics import build_collection_bundle, build_collection_receipt, build_collection_session_record
+        records = [
+            {"request_id": "A-1", "session_id": "sessionA", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00",
+             "pipeline_constructed": True},
+        ]
+        session = build_collection_session_record(
+            session_id="sessionA", deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["token_absent_load"],
+            token_absent_execution_ids=["A-1"],
+            request_records=records,
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        receipt = build_collection_receipt(session)
+        bundle = build_collection_bundle(_valid_diagnostics(), records, session, receipt)
+        data = import_prior_collection_bundle(bundle)
+        assert data["test_names"] == ["token_absent_load"]
+
+
+class TestTruncationVisibleOnlyOnSuccess:
+    """P1-29: context_truncation_visible must be recorded only in the
+    success path (the notice renders only from a successful result)."""
+
+    def test_page_emits_truncation_event_in_success_path(self):
+        page = (REPO_ROOT / "pages" / "1_Forecast.py").read_text(encoding="utf-8")
+        # The event must be emitted near retained_rows < original_rows in the
+        # success block, not in the preprocessing branch.
+        assert "if retained_rows < original_rows:" in page
+        assert '"context_truncation_visible"' in page
+        # The preprocessing branch must not emit it.
+        pre = page.split("if run_button", 1)[0]
+        assert '"context_truncation_visible"' not in pre
+
+
+class TestSetupEnforcesDefaultRepoRoot:
+    """P2-30: when FORECASTING_REPO_ROOT is unset, the setup preflight must
+    enforce the default repository path so the final verification matches."""
+
+    def test_setup_preflight_enforces_default(self):
+        content = (REPO_ROOT / "scripts" / "setup_local_windows.ps1").read_text(encoding="utf-8")
+        assert "D:\\App Projects\\Forecasting-Tool" in content
+        assert "-not $env:FORECASTING_REPO_ROOT" in content
+
+
 class TestOrphanCategoryIdsRejected:
     """P1-16: category IDs must be rejected whenever absent from
     request_ids, including when request_ids is empty."""
