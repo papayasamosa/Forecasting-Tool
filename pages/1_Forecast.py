@@ -186,12 +186,19 @@ def _record_cloud_request(
     metadata, and the request-scoped memory sample.  The sampler is stopped
     FIRST so the stored sample is complete (stopped_at_utc, rss_after_mb,
     process_peak_rss_mb) — stopping later cannot mutate the copied dict.
-    On error paths ``result``/``exec_record`` may be None — the record is
-    still typed, bounded, and truthful (success=False, error_category set).
+    ``exec_record`` may be a ``CoordinatorExecution`` or a raw coordinator
+    request-record dict (e.g. the real timeout record retrieved from
+    ``coordinator.get_request_record`` so its genuine queue/timing
+    measurements are preserved).  On error paths ``result``/``exec_record``
+    may be None — the record is still typed, bounded, and truthful
+    (success=False, error_category set).
     """
     if sampler is not None:
         sampler.stop(session_id=session_id)
-    rr = exec_record.request_record if exec_record is not None else {}
+    rr = getattr(exec_record, "request_record", None)
+    if rr is None and isinstance(exec_record, dict):
+        rr = exec_record
+    rr = rr or {}
     meta = result.runtime_metadata if result is not None else None
     sample = sampler.to_sample(session_id=session_id) if sampler is not None else None
 
@@ -525,14 +532,19 @@ if run_button and df is not None and not st.session_state.is_running:
             if meta.model_was_loaded_this_run:
                 _record_acceptance_event("cold_forecast", details=f"request {request_id}")
                 # Token-path load: the cold load genuinely ran under the
-                # observed token state (boolean only).
+                # observed token state (boolean only).  The event details
+                # carry the request ID so finalisation can bind the token
+                # execution IDs (codex P1-13).
                 if hf_token_present():
-                    _record_acceptance_event("token_present_load", details=f"request {request_id}")
+                    _record_acceptance_event("token_present_load", details=request_id)
                 else:
-                    _record_acceptance_event("token_absent_load", details=f"request {request_id}")
-            elif warm_so_far <= 1:
+                    _record_acceptance_event("token_absent_load", details=request_id)
+            elif warm_so_far < 3:
                 _record_acceptance_event("warm_forecast", details=f"request {request_id}")
             else:
+                # Only after the third countable warm run is the
+                # repeated_forecasts acceptance test genuinely satisfied
+                # (the release schema requires at least 3 warm runs).
                 _record_acceptance_event("repeated_forecasts", details=f"request {request_id}")
             if data_option == "Upload CSV":
                 _record_acceptance_event("valid_csv_forecast", details=f"request {request_id}")
@@ -545,8 +557,17 @@ if run_button and df is not None and not st.session_state.is_running:
                 st.session_state["_pending_recoverable_failure"] = False
                 _record_acceptance_event("recoverable_failure", details=f"recovered by {request_id}")
     except CoordinatorTimeoutError:
+        # Preserve the coordinator's genuine timeout measurement (queue
+        # start, completion, configured timeout duration) instead of
+        # discarding it — the coordinator already stored the record when it
+        # timed out (codex P1-12).
+        timeout_record = None
+        try:
+            timeout_record = coordinator.get_request_record(request_id)
+        except Exception:
+            timeout_record = None
         _record_cloud_request(
-            store, request_id, None, None, sampler, session_id,
+            store, request_id, timeout_record, None, sampler, session_id,
             error_category="CoordinatorTimeoutError", success=False,
         )
         # Keep the timeout pending: coordinator_timeout_recovery is only

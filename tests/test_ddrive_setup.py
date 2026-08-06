@@ -108,8 +108,9 @@ class TestDDriveSetupContract:
         """The setup script must have mkdir commands for all REQUIRED_DIRS."""
         setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
         content = setup_path.read_text(encoding="utf-8")
-        # Check that key dirs are mentioned
-        for key_dir in ["repo", "python312", "installers", "downloads", "temp\\pytest",
+        # Check that key dirs are mentioned (the repository is deliberately
+        # NOT under LocalRoot\repo — it lives at FORECASTING_REPO_ROOT).
+        for key_dir in ["python312", "installers", "downloads", "temp\\pytest",
                         "evidence-work", "logs"]:
             # Check for the directory name in New-Item calls
             assert key_dir in content, f"Setup script missing mkdir for {key_dir}"

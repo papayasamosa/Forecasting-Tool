@@ -32,7 +32,8 @@ LOCAL_ROOT = r"D:\Forecasting-Tool-Local"
 REPO_ROOT_DEFAULT = r"D:\App Projects\Forecasting-Tool"
 
 REQUIRED_DIRS: list[str] = [
-    os.path.join(LOCAL_ROOT, "repo"),
+    # NOTE: the repository root is deliberately NOT D:\\Forecasting-Tool-Local\\repo
+    # — it lives at FORECASTING_REPO_ROOT (separate D-drive directory).
     os.path.join(LOCAL_ROOT, "python312"),
     os.path.join(LOCAL_ROOT, "installers"),
     os.path.join(LOCAL_ROOT, "downloads"),

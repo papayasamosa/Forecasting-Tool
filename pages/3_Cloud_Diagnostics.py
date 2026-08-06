@@ -344,6 +344,17 @@ if st.button("Finalise collection session"):
             test_names = list(dict.fromkeys(
                 e["test_name"] for e in ran_events if e.get("passed")
             ))
+            # Bind the token-path execution IDs from the typed events that
+            # carried them (codex P1-13): the request that cold-loaded the
+            # pipeline under the observed token state.
+            token_absent_ids = [
+                e.get("details", "") for e in ran_events
+                if e.get("test_name") == "token_absent_load" and e.get("passed") and e.get("details")
+            ]
+            token_present_ids = [
+                e.get("details", "") for e in ran_events
+                if e.get("test_name") == "token_present_load" and e.get("passed") and e.get("details")
+            ]
             session_record = build_collection_session_record(
                 session_id=collection_session_id,
                 deployed_commit=diag.get("deployed_commit", ""),
@@ -351,6 +362,8 @@ if st.button("Finalise collection session"):
                 deployment_url=deployment_url,
                 diagnostics=_diagnostics_from_dict(diag),
                 acceptance_test_names=test_names,
+                token_absent_execution_ids=token_absent_ids,
+                token_present_execution_ids=token_present_ids,
                 request_records=cohort,
                 started_at_utc=started_at or diag.get("generated_at_utc", ""),
                 completed_at_utc=datetime.now(timezone.utc).isoformat(),

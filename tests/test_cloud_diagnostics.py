@@ -1253,3 +1253,102 @@ class TestTestNamesDeduplicated:
     def test_deduped_names_validate(self):
         session = self._build_session(["cold_forecast", "warm_forecast"])
         assert session.validate() == [], session.validate()
+
+
+class TestSetupAcceptsSeparateRepoRoot:
+    """P1-10: the setup script must accept the separate repository root
+    (never require D:\\Forecasting-Tool-Local\\repo)."""
+
+    def test_setup_script_uses_forecasting_repo_root(self):
+        content = (REPO_ROOT / "scripts" / "setup_local_windows.ps1").read_text(encoding="utf-8")
+        assert "FORECASTING_REPO_ROOT" in content
+        assert "$env:FORECASTING_REPO_ROOT = $repoRoot" in content
+        # No stale requirement that the repository live under LocalRoot\repo.
+        assert 'Repository must be at \'$expectedRepoPath\'' not in content
+        assert 'Repository must be at "$expectedRepoPath"' not in content
+
+    def test_required_dirs_no_longer_contains_repo(self):
+        from src.storage_policy import REQUIRED_DIRS, LOCAL_ROOT
+        import os
+        stale = [d for d in REQUIRED_DIRS if d.lower().endswith(os.sep + "repo")]
+        assert not stale, f"REQUIRED_DIRS must not contain LocalRoot\\repo: {stale}"
+
+
+class TestRepeatedForecastsRequiresThreeWarmRuns:
+    """P1-11: repeated_forecasts may only be marked passed after the third
+    countable warm run (the schema requires >= 3 warm runs)."""
+
+    def test_page_source_gates_repeated_forecasts_on_third_warm_run(self):
+        page = (REPO_ROOT / "pages" / "1_Forecast.py").read_text(encoding="utf-8")
+        assert "warm_so_far < 3" in page
+        gate_pos = page.index("warm_so_far < 3")
+        repeated_pos = page.index('"repeated_forecasts"')
+        assert repeated_pos > gate_pos
+
+
+class TestTimeoutRecordPreservesCoordinatorTelemetry:
+    """P1-12: a timed-out request's record must preserve the coordinator's
+    genuine queue/completion measurements, not sampler-derived zeros."""
+
+    def test_record_cloud_request_accepts_raw_coordinator_record(self):
+        import importlib
+        page = importlib.import_module("pages.1_Forecast")
+        store = RequestTelemetryStore()
+        coordinator_record = {
+            "request_id": "r-timeout",
+            "start_time_utc": "2026-08-06T00:00:00+00:00",
+            "inference_start_utc": "",
+            "completion_time_utc": "2026-08-06T00:00:05+00:00",
+            "queue_seconds": 300.0,
+            "inference_seconds": 0.0,
+            "success": False,
+            "error_code": "CoordinatorTimeoutError",
+            "sync_mode": "semaphore",
+        }
+        sampler = RequestMemorySampler(request_id="r-timeout", interval=0.005)
+        sampler.start()
+        time.sleep(0.02)
+        page._record_cloud_request(
+            store, "r-timeout", coordinator_record, None, sampler, "s1",
+            error_category="CoordinatorTimeoutError", success=False,
+        )
+        rec = store.get("r-timeout")
+        assert rec["queue_seconds"] == 300.0
+        assert rec["started_at_utc"] == "2026-08-06T00:00:00+00:00"
+        assert rec["completed_at_utc"] == "2026-08-06T00:00:05+00:00"
+        assert rec["success"] is False
+        assert rec["error_category"] == "CoordinatorTimeoutError"
+
+
+class TestTokenExecutionIdsBound:
+    """P1-13: the collection session must bind token-path execution IDs."""
+
+    def test_session_binds_token_execution_ids(self):
+        records = [
+            {"request_id": "req-absent", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00",
+             "pipeline_constructed": True},
+            {"request_id": "req-present", "success": True,
+             "started_at_utc": "2026-08-06T00:00:03+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:03+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00",
+             "pipeline_constructed": True},
+        ]
+        session = build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["token_absent_load", "token_present_load"],
+            token_absent_execution_ids=["req-absent"],
+            token_present_execution_ids=["req-present"],
+            request_records=records,
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        assert session.token_absent_execution_ids == ["req-absent"]
+        assert session.token_present_execution_ids == ["req-present"]
+        assert session.validate() == [], session.validate()
