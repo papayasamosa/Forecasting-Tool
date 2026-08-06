@@ -1124,3 +1124,132 @@ class TestSessionIsolation:
         store.record_acceptance_event("warm_forecast", True, session_id="sessionB")
         assert [e["test_name"] for e in store.acceptance_events("sessionA")] == ["cold_forecast"]
         assert [e["test_name"] for e in store.acceptance_events("sessionB")] == ["warm_forecast"]
+
+
+class TestAllCanonicalPathsInstrumented:
+    """P1-6: every canonical acceptance path has a typed event producer (the
+    page emits events via _record_acceptance_event; verify the helper and
+    the session-level semantics)."""
+
+    def test_page_acceptance_event_helper_records_and_tags(self):
+        import importlib
+        page = importlib.import_module("pages.1_Forecast")
+        page._telemetry_store.begin_collection_session()
+        page._record_acceptance_event("oversized_csv_rejected")
+        page._record_acceptance_event("same_column_rejected")
+        page._record_acceptance_event("blank_timestamp_rejected")
+        page._record_acceptance_event("invalid_timestamp_rejected")
+        page._record_acceptance_event("context_truncation_visible")
+        events = page._telemetry_store.acceptance_events(session_id=page._session_id)
+        names = [e["test_name"] for e in events]
+        for expected in ("oversized_csv_rejected", "same_column_rejected",
+                         "blank_timestamp_rejected", "invalid_timestamp_rejected",
+                         "context_truncation_visible"):
+            assert expected in names, (expected, names)
+
+    def test_all_canonical_tests_have_producers(self):
+        """Every canonical acceptance test name must be emitted by at least
+        one page branch (source-level contract)."""
+        from src.evidence_schemas import CANONICAL_CLOUD_TESTS
+        page_source = (REPO_ROOT / "pages" / "1_Forecast.py").read_text(encoding="utf-8")
+        diag_source = (REPO_ROOT / "pages" / "3_Cloud_Diagnostics.py").read_text(encoding="utf-8")
+        combined = page_source + diag_source
+        missing = [
+            name for name in CANONICAL_CLOUD_TESTS
+            if f'"{name}"' not in combined and f"'{name}'" not in combined
+        ]
+        assert not missing, f"canonical tests without a producer call site: {missing}"
+
+
+class TestConcurrencyPeerCohort:
+    """P1-7: a finalised session must bind peer-session requests so genuine
+    two-session concurrency is captured in concurrency_request_ids."""
+
+    def _cohort_records(self):
+        return [
+            {"request_id": "browserA-req1", "session_id": "sessionA", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:06+00:00"},
+            {"request_id": "browserB-req1", "session_id": "sessionB", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00"},
+        ]
+
+    def test_session_binds_peer_requests_for_concurrency(self):
+        session = build_collection_session_record(
+            session_id="sessionA",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["cold_forecast", "two_session_concurrency"],
+            request_records=self._cohort_records(),
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        assert set(session.concurrency_request_ids) == {"browserA-req1", "browserB-req1"}
+        assert session.request_ids == ["browserA-req1", "browserB-req1"]
+        assert session.validate() == [], session.validate()
+
+
+class TestTimeoutRecoveryPending:
+    """P1-8: timeout recovery is marked passed only after a later successful
+    request — categorise keeps the pending timeout + recovery ids."""
+
+    def test_timeout_recovery_ids_pair_timeout_with_next_success(self):
+        records = [
+            {"request_id": "req-a", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:01+00:00",
+             "pipeline_constructed": True},
+            {"request_id": "req-timeout", "success": False,
+             "error_category": "CoordinatorTimeoutError",
+             "started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+            {"request_id": "req-recovery", "success": True,
+             "started_at_utc": "2026-08-06T00:00:02+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:02+00:00",
+             "completed_at_utc": "2026-08-06T00:00:03+00:00",
+             "pipeline_reused": True},
+        ]
+        cats = categorise_request_ids(records)
+        assert cats["timeout_recovery_ids"] == ["req-timeout", "req-recovery"]
+
+
+class TestTestNamesDeduplicated:
+    """P1-9: duplicate acceptance-test names are rejected (so the page's
+    dedupe is required) and deduped names validate."""
+
+    def _build_session(self, test_names):
+        return build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=test_names,
+            request_records=[
+                {"request_id": "r1", "success": True,
+                 "started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "completed_at_utc": "2026-08-06T00:00:01+00:00",
+                 "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "pipeline_constructed": True},
+            ],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+
+    def test_duplicate_test_names_rejected(self):
+        session = self._build_session(["cold_forecast", "cold_forecast"])
+        assert any("duplicate test_name" in e for e in session.validate())
+
+    def test_non_canonical_test_name_rejected(self):
+        session = self._build_session(["not_a_canonical_test"])
+        assert any("not canonical" in e for e in session.validate())
+
+    def test_deduped_names_validate(self):
+        session = self._build_session(["cold_forecast", "warm_forecast"])
+        assert session.validate() == [], session.validate()

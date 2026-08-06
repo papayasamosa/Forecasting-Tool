@@ -124,6 +124,38 @@ except Exception as exc:  # pragma: no cover - defensive
     export = None
     diag = None
 
+
+def _record_event(test_name: str, passed: bool = True, details: str = "") -> None:
+    """Record a canonical acceptance-test event for this browser session,
+    deduplicated so repeated renders do not flood the bounded log."""
+    existing = {e["test_name"] for e in store.acceptance_events(session_id=collection_session_id)}
+    if test_name in existing:
+        return
+    try:
+        store.record_acceptance_event(
+            test_name, passed, details=details, session_id=collection_session_id,
+        )
+    except ValueError:  # pragma: no cover - defensive
+        pass
+
+
+if diag is not None:
+    # Environment-level acceptance tests genuinely measured by the
+    # dependency diagnostics (cached once per process).
+    pkg = diag.get("package_versions", {})
+    mandatory_known = all(
+        pkg.get(name) not in ("", "unknown")
+        for name in ("chronos-forecasting", "torch", "streamlit", "pandas", "numpy")
+    )
+    if mandatory_known:
+        _record_event("dependency_install")
+    if diag.get("pip_check_passed"):
+        _record_event("pip_check")
+    if diag.get("torch_cpu_only"):
+        _record_event("cpu_only_torch")
+    if not diag.get("nvidia_packages"):
+        _record_event("no_nvidia_packages")
+
 if diag is not None:
     # ------------------------------------------------------------------
     # Deployment identity (WP3): exact commit + resolution source.
@@ -289,10 +321,29 @@ if st.button("Finalise collection session"):
         else:
             deployment_url = _deployment_url()
             started_at = st.session_state.get("collection_started_at_utc", "")
-            # Only acceptance tests that genuinely ran in this browser
-            # session are recorded (review finding P1-4).
+            # Concurrency is a process-level phenomenon: use the protected
+            # shared cohort (all requests in this collection window,
+            # including peer-session requests) so the overlap categoriser
+            # sees both participants of a genuine two-session run
+            # (codex P1-7).  Public resets cannot alter this cohort — only
+            # the deliberate Begin action defines the window.
+            cohort = store.snapshot()
+            window_start = started_at or diag.get("generated_at_utc", "")
+            if window_start:
+                cohort = [
+                    r for r in cohort
+                    if (r.get("started_at_utc") or r.get("inference_started_at_utc") or "") >= window_start
+                ]
+            from src.cloud_diagnostics import any_overlapping_pair
+            if any_overlapping_pair(cohort):
+                _record_event("two_session_concurrency")
+            # Only acceptance tests that genuinely ran are recorded
+            # (codex P1-4/P1-6), deduplicated so repeated warm runs do not
+            # produce duplicate names (codex P1-9).
             ran_events = store.acceptance_events(session_id=collection_session_id)
-            test_names = [e["test_name"] for e in ran_events if e.get("passed")]
+            test_names = list(dict.fromkeys(
+                e["test_name"] for e in ran_events if e.get("passed")
+            ))
             session_record = build_collection_session_record(
                 session_id=collection_session_id,
                 deployed_commit=diag.get("deployed_commit", ""),
@@ -300,7 +351,7 @@ if st.button("Finalise collection session"):
                 deployment_url=deployment_url,
                 diagnostics=_diagnostics_from_dict(diag),
                 acceptance_test_names=test_names,
-                request_records=store.snapshot(session_id=collection_session_id),
+                request_records=cohort,
                 started_at_utc=started_at or diag.get("generated_at_utc", ""),
                 completed_at_utc=datetime.now(timezone.utc).isoformat(),
             )

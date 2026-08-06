@@ -1205,6 +1205,17 @@ class CloudCollectionSessionRecord:
             errors.append("collection session: evidence_type must be 'collection_session'")
         if not self.session_id:
             errors.append("collection session: session_id empty")
+        # Acceptance-test names must be canonical and unique (matches the
+        # evidence-schema CloudCollectionSession.validate() contract, so the
+        # producer never emits a session the schema would reject).
+        from src.evidence_schemas import CANONICAL_CLOUD_TESTS as _CANONICAL
+        _seen_names: set[str] = set()
+        for name in self.test_names:
+            if name not in _CANONICAL:
+                errors.append(f"collection session: test_name '{name}' is not canonical")
+            if name in _seen_names:
+                errors.append(f"collection session: duplicate test_name '{name}'")
+            _seen_names.add(name)
         if not is_exact_commit_sha(self.deployed_commit):
             errors.append("collection session: deployed_commit not exactly 40 lowercase hex chars")
         if self.code_commit and self.code_commit != self.deployed_commit:

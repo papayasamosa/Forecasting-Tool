@@ -58,6 +58,7 @@ from src.cloud_diagnostics import (  # noqa: E402
     CloudRequestRecord,
     RequestMemorySampler,
     RequestTelemetryStore,
+    hf_token_present,
 )
 
 logger = logging.getLogger(__name__)
@@ -254,6 +255,23 @@ for k, v in _DEFAULT_STATE.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+# Per-browser collection session: the process-wide bounded store is shared,
+# but records and acceptance-test events are tagged with the browser session
+# ID so one visitor's collection window never absorbs another's.
+_telemetry_store = _resolve_telemetry_store()
+_session_id = _resolve_collection_session_id()
+
+
+def _record_acceptance_event(test_name: str, passed: bool = True, details: str = "") -> None:
+    """Record a canonical acceptance-test event for this browser's
+    collection session (a test genuinely executed)."""
+    try:
+        _telemetry_store.record_acceptance_event(
+            test_name, passed, details=details, session_id=_session_id,
+        )
+    except ValueError:
+        logger.warning("Ignoring unknown acceptance-test event %s", test_name)
+
 # ---------------------------------------------------------------------------
 # Page layout
 # ---------------------------------------------------------------------------
@@ -284,6 +302,7 @@ with st.sidebar:
             uploaded_file.seek(0)
             if size > MAX_UPLOAD_SIZE_BYTES:
                 st.error(f"File exceeds the {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB limit ({size / 1024 / 1024:.1f} MB).")
+                _record_acceptance_event("oversized_csv_rejected")
                 uploaded_file = None
                 st.session_state.cached_df = None
                 st.session_state.cached_df_hash = ""
@@ -360,6 +379,7 @@ if run_button and df is not None and not st.session_state.is_running:
     # Block identical timestamp and target column selections (WP6)
     if ts_col == target_col:
         st.error("Timestamp and target columns must be different.")
+        _record_acceptance_event("same_column_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -377,6 +397,7 @@ if run_button and df is not None and not st.session_state.is_running:
     except Exception as exc:
         logger.warning(f"Timestamp parse failed in column '{ts_col}': {type(exc).__name__}")
         st.error(f"Could not parse timestamps in column '{ts_col}'. Check the date format.")
+        _record_acceptance_event("invalid_timestamp_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -401,6 +422,7 @@ if run_button and df is not None and not st.session_state.is_running:
                 f"row(s) out of {total_rows}. "
                 "Remove or fix the invalid timestamps and try again."
             )
+        _record_acceptance_event("blank_timestamp_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -430,6 +452,7 @@ if run_button and df is not None and not st.session_state.is_running:
         working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
         retained_rows = len(working_df)
         retained_start = str(working_df[ts_col].iloc[0])
+        _record_acceptance_event("context_truncation_visible")
 
     # Only materialise retained rows
     records = tuple(working_df.to_dict("records"))
@@ -455,8 +478,8 @@ if run_button and df is not None and not st.session_state.is_running:
     # sessions' inference calls through a bounded semaphore).  Every request
     # is also recorded as a typed, bounded CloudRequestRecord with its own
     # request-scoped memory sample (WP4/WP5).
-    store = _resolve_telemetry_store()
-    session_id = _resolve_collection_session_id()
+    store = _telemetry_store
+    session_id = _session_id
     request_id = str(uuid.uuid4())
     sampler = RequestMemorySampler(request_id=request_id)
     # Sampler starts before queue wait / model loading so the request-scoped
@@ -490,38 +513,46 @@ if run_button and df is not None and not st.session_state.is_running:
             _record_cloud_request(
                 store, request_id, exec_record, result, sampler, session_id,
             )
-            # Record which canonical acceptance test genuinely ran (cold /
-            # first warm / repeated warm) so the collection session reports
-            # only tests that actually executed (review finding P1-4).
+            # Record which canonical acceptance tests genuinely ran so the
+            # collection session reports only tests that actually executed
+            # (codex P1-4 / P1-6).
+            meta = result.runtime_metadata
             warm_so_far = len([
                 r for r in store.snapshot(session_id=session_id)
                 if r.get("success") and r.get("pipeline_reused")
                 and not r.get("pipeline_constructed")
             ])
-            meta = result.runtime_metadata
             if meta.model_was_loaded_this_run:
-                event_name = "cold_forecast"
+                _record_acceptance_event("cold_forecast", details=f"request {request_id}")
+                # Token-path load: the cold load genuinely ran under the
+                # observed token state (boolean only).
+                if hf_token_present():
+                    _record_acceptance_event("token_present_load", details=f"request {request_id}")
+                else:
+                    _record_acceptance_event("token_absent_load", details=f"request {request_id}")
             elif warm_so_far <= 1:
-                event_name = "warm_forecast"
+                _record_acceptance_event("warm_forecast", details=f"request {request_id}")
             else:
-                event_name = "repeated_forecasts"
-            store.record_acceptance_event(
-                event_name, True,
-                details=f"request {request_id}",
-                session_id=session_id,
-            )
+                _record_acceptance_event("repeated_forecasts", details=f"request {request_id}")
+            if data_option == "Upload CSV":
+                _record_acceptance_event("valid_csv_forecast", details=f"request {request_id}")
+            # Recovery tests are marked passed only after a later successful
+            # request in the same collection (codex P1-8).
+            if st.session_state.get("_pending_timeout_recovery", False):
+                st.session_state["_pending_timeout_recovery"] = False
+                _record_acceptance_event("coordinator_timeout_recovery", details=f"recovered by {request_id}")
+            if st.session_state.get("_pending_recoverable_failure", False):
+                st.session_state["_pending_recoverable_failure"] = False
+                _record_acceptance_event("recoverable_failure", details=f"recovered by {request_id}")
     except CoordinatorTimeoutError:
         _record_cloud_request(
             store, request_id, None, None, sampler, session_id,
             error_category="CoordinatorTimeoutError", success=False,
         )
-        # The timeout surfaced as a recoverable, configuration-preserving
-        # error — the coordinator_timeout_recovery test genuinely ran.
-        store.record_acceptance_event(
-            "coordinator_timeout_recovery", True,
-            details=f"timeout request {request_id}",
-            session_id=session_id,
-        )
+        # Keep the timeout pending: coordinator_timeout_recovery is only
+        # marked passed after a later successful request (codex P1-8).
+        st.session_state["_pending_timeout_recovery"] = True
+        _record_acceptance_event("configuration_preserved", details=f"timeout {request_id}")
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "
             "become available in time. Please try again in a moment."
@@ -532,11 +563,8 @@ if run_button and df is not None and not st.session_state.is_running:
             store, request_id, None, None, sampler, session_id,
             error_category=type(e).__name__, success=False,
         )
-        store.record_acceptance_event(
-            "configuration_preserved", True,
-            details=f"recoverable error {request_id}",
-            session_id=session_id,
-        )
+        st.session_state["_pending_recoverable_failure"] = True
+        _record_acceptance_event("configuration_preserved", details=f"recoverable error {request_id}")
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
     except Exception:
@@ -544,11 +572,8 @@ if run_button and df is not None and not st.session_state.is_running:
             store, request_id, None, None, sampler, session_id,
             error_category="UnexpectedError", success=False,
         )
-        store.record_acceptance_event(
-            "configuration_preserved", True,
-            details=f"unexpected error {request_id}",
-            session_id=session_id,
-        )
+        st.session_state["_pending_recoverable_failure"] = True
+        _record_acceptance_event("configuration_preserved", details=f"unexpected error {request_id}")
         st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
         logger.error("Unexpected forecast error", exc_info=True)
     finally:
