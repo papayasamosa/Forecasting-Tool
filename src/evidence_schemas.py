@@ -1437,6 +1437,12 @@ class CloudCollectionSession:
                 errors.append("collection_session: deployment_url: empty — must identify the deployment")
             if not self.diagnostics_digest:
                 errors.append("collection_session: diagnostics_digest: empty — must bind the runtime diagnostics")
+            elif not _is_valid_sha256(self.diagnostics_digest):
+                errors.append(
+                    "collection_session: diagnostics_digest is not a 64-char "
+                    "lowercase SHA-256 — a malformed digest binds no canonical "
+                    "diagnostics artifact"
+                )
         # Within-group uniqueness + category IDs subset of request_ids.
         _subset_groups = (
             "token_absent_execution_ids", "token_present_execution_ids",

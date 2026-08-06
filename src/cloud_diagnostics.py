@@ -1245,7 +1245,7 @@ class CloudCollectionSessionRecord:
         # Acceptance-test names must be canonical and unique (matches the
         # evidence-schema CloudCollectionSession.validate() contract, so the
         # producer never emits a session the schema would reject).
-        from src.evidence_schemas import CANONICAL_CLOUD_TESTS as _CANONICAL
+        from src.evidence_schemas import _is_valid_sha256, CANONICAL_CLOUD_TESTS as _CANONICAL
         _seen_names: set[str] = set()
         for name in self.test_names:
             if name not in _CANONICAL:
@@ -1253,6 +1253,14 @@ class CloudCollectionSessionRecord:
             if name in _seen_names:
                 errors.append(f"collection session: duplicate test_name '{name}'")
             _seen_names.add(name)
+        # Real sessions bind the canonical diagnostics digest (a malformed
+        # value binds no artifact) — codex P2 (thread 21).
+        if self.evidence_origin == EVIDENCE_ORIGIN_REAL and self.diagnostics_digest:
+            if not _is_valid_sha256(self.diagnostics_digest):
+                errors.append(
+                    "collection session: diagnostics_digest is not a 64-char "
+                    "lowercase SHA-256"
+                )
         if not is_exact_commit_sha(self.deployed_commit):
             errors.append("collection session: deployed_commit not exactly 40 lowercase hex chars")
         if self.code_commit and self.code_commit != self.deployed_commit:

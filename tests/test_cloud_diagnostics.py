@@ -1535,3 +1535,95 @@ class TestOrphanCategoryIdsRejected:
         )
         errors = session.validate()
         assert any("not in request_ids" in e for e in errors), errors
+
+
+class TestBackendFailurePreservesCoordinatorTelemetry:
+    """P1-20: backend-failure handlers must preserve the coordinator's
+    genuine queue/inference measurements, not replace them with zeros."""
+
+    def test_page_retrieves_coordinator_record_on_all_failure_handlers(self):
+        page = (REPO_ROOT / "pages" / "1_Forecast.py").read_text(encoding="utf-8")
+        # timeout, AdapterError, and generic Exception handlers all
+        # retrieve the coordinator's stored record by request_id.
+        assert page.count("coordinator.get_request_record(request_id)") >= 3
+
+    def test_raw_failure_record_preserves_measurements(self):
+        import importlib
+        page = importlib.import_module("pages.1_Forecast")
+        store = RequestTelemetryStore()
+        coordinator_record = {
+            "request_id": "r-fail",
+            "start_time_utc": "2026-08-06T00:00:00+00:00",
+            "inference_start_utc": "2026-08-06T00:00:00+00:00",
+            "completion_time_utc": "2026-08-06T00:00:04+00:00",
+            "queue_seconds": 0.0,
+            "inference_seconds": 3.0,
+            "success": False,
+            "error_code": "InferenceError",
+            "sync_mode": "semaphore",
+        }
+        sampler = RequestMemorySampler(request_id="r-fail", interval=0.005)
+        sampler.start()
+        time.sleep(0.02)
+        page._record_cloud_request(
+            store, "r-fail", coordinator_record, None, sampler, "s1",
+            error_category="InferenceError", success=False,
+        )
+        rec = store.get("r-fail")
+        assert rec["queue_seconds"] == 0.0
+        assert rec["inference_seconds"] == 3.0
+        assert rec["started_at_utc"] == "2026-08-06T00:00:00+00:00"
+        assert rec["completed_at_utc"] == "2026-08-06T00:00:04+00:00"
+        assert rec["success"] is False
+        assert rec["error_category"] == "InferenceError"
+
+
+class TestDiagnosticsDigestSha256:
+    """P2-21: a real collection session's diagnostics_digest must be a
+    64-char lowercase SHA-256 (a malformed value binds no artifact)."""
+
+    def _session(self):
+        return build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["cold_forecast"],
+            request_records=[
+                {"request_id": "r1", "success": True,
+                 "started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "completed_at_utc": "2026-08-06T00:00:02+00:00",
+                 "pipeline_constructed": True},
+            ],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+
+    def test_valid_digest_passes(self):
+        assert self._session().validate() == []
+
+    def test_producer_rejects_malformed_digest(self):
+        import dataclasses
+        bad = dataclasses.replace(self._session(), diagnostics_digest="x")
+        errors = bad.validate()
+        assert any("SHA-256" in e for e in errors), errors
+
+    def test_schema_rejects_malformed_digest(self):
+        from src.evidence_schemas import CloudCollectionSession
+        session = CloudCollectionSession(
+            evidence_schema_version="2",
+            evidence_type="collection_session",
+            evidence_origin="real_measurement",
+            session_id="s1",
+            code_commit=_VALID_COMMIT,
+            deployed_commit=_VALID_COMMIT,
+            deployment_url="https://example.streamlit.app",
+            diagnostics_digest="x",
+            test_names=["cold_forecast"],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        errors = session.validate()
+        assert any("SHA-256" in e for e in errors), errors

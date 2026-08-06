@@ -589,8 +589,16 @@ if run_button and df is not None and not st.session_state.is_running:
         )
         logger.warning("Coordinator timeout waiting for inference slot", exc_info=True)
     except AdapterError as e:
+        # Preserve the coordinator's genuine failure measurement (queue and
+        # inference timestamps) — it recorded the request before re-raising
+        # (codex P1-20).
+        failure_record = None
+        try:
+            failure_record = coordinator.get_request_record(request_id)
+        except Exception:
+            failure_record = None
         _record_cloud_request(
-            store, request_id, None, None, sampler, session_id,
+            store, request_id, failure_record, None, sampler, session_id,
             error_category=type(e).__name__, success=False,
         )
         st.session_state["_pending_recoverable_failure"] = True
@@ -599,8 +607,13 @@ if run_button and df is not None and not st.session_state.is_running:
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
     except Exception:
+        failure_record = None
+        try:
+            failure_record = coordinator.get_request_record(request_id)
+        except Exception:
+            failure_record = None
         _record_cloud_request(
-            store, request_id, None, None, sampler, session_id,
+            store, request_id, failure_record, None, sampler, session_id,
             error_category="UnexpectedError", success=False,
         )
         st.session_state["_pending_recoverable_failure"] = True
