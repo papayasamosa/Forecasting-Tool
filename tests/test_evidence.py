@@ -929,6 +929,7 @@ class TestCloudEvidenceValidation:
             "deployment_url": data.get("deployed_url", "https://example.com/app"),
             "diagnostics_digest": "d" * 64,
             "diagnostics_id": "diag-1",
+            "request_records_digest": "e" * 64,
             "test_names": ["dependency_install", "cold_forecast", "warm_forecast"],
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:05:00",

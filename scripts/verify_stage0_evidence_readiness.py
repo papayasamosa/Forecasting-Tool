@@ -579,6 +579,7 @@ def _check_sanitised_collection_binding_still_valid() -> list[str]:
         code_commit=_commit, deployed_commit=_commit,
         deployment_url="https://example.streamlit.app",
         diagnostics_digest="d" * 64,
+        request_records_digest="e" * 64,
         test_names=["cold_forecast"],
         started_at_utc="2026-01-01T00:00:00", completed_at_utc="2026-01-01T00:05:00",
     )

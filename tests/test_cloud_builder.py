@@ -34,6 +34,7 @@ class TestCloudCollectionSession:
             deployed_commit="8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
             deployment_url="https://example.streamlit.app",
             diagnostics_digest="d" * 64,
+            request_records_digest="e" * 64,
             test_names=["dependency_install"],
             started_at_utc="2026-07-30T00:00:00",
             completed_at_utc="2026-07-30T00:01:00",

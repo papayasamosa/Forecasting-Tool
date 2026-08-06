@@ -1455,11 +1455,10 @@ class TestDeploymentUrlAndRecoveryScoping:
 
 
 class TestConcurrencyCohortParticipationBoundary:
-    """P1-15: the concurrency cohort must be bounded to participating
-    sessions — unrelated visitor traffic must never supply a false
-    overlapping pair or unrelated request IDs."""
+    """P1-15/P1-22: the concurrency cohort must use EXPLICIT membership —
+    never infer peers from temporal overlap alone."""
 
-    def test_cohort_excludes_unrelated_peer(self):
+    def test_cohort_includes_only_explicit_peer(self):
         from src.cloud_diagnostics import build_concurrency_cohort
         records = [
             {"request_id": "A1", "session_id": "sessionA", "success": True,
@@ -1475,25 +1474,202 @@ class TestConcurrencyCohortParticipationBoundary:
              "inference_started_at_utc": "2026-08-06T00:00:07+00:00",
              "completed_at_utc": "2026-08-06T00:00:09+00:00"},
         ]
-        cohort = build_concurrency_cohort(records, "sessionA")
+        cohort = build_concurrency_cohort(records, "sessionA", peer_session_id="sessionB")
         ids = {r["request_id"] for r in cohort}
         assert ids == {"A1", "B1"}
         assert "C1" not in ids
 
-    def test_cohort_is_own_records_without_overlap(self):
+    def test_cohort_never_infers_peer_from_overlap(self):
+        """Even a stranger whose request overlaps must NOT be admitted
+        without an explicit peer identifier."""
         from src.cloud_diagnostics import build_concurrency_cohort
         records = [
             {"request_id": "A1", "session_id": "sessionA", "success": True,
              "started_at_utc": "2026-08-06T00:00:00+00:00",
              "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
-             "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+             "completed_at_utc": "2026-08-06T00:00:06+00:00"},
             {"request_id": "C1", "session_id": "sessionC", "success": True,
-             "started_at_utc": "2026-08-06T00:00:07+00:00",
-             "inference_started_at_utc": "2026-08-06T00:00:07+00:00",
-             "completed_at_utc": "2026-08-06T00:00:09+00:00"},
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00"},
         ]
         cohort = build_concurrency_cohort(records, "sessionA")
         assert [r["request_id"] for r in cohort] == ["A1"]
+
+    def test_page_uses_explicit_peer_session_param(self):
+        page = (REPO_ROOT / "pages" / "3_Cloud_Diagnostics.py").read_text(encoding="utf-8")
+        assert "concurrency_peer_session" in page
+
+
+class TestRequestRecordsDigest:
+    """P1-24: the collection session must bind the canonical digest of the
+    actual request records so telemetry cannot be altered or substituted."""
+
+    def _records(self):
+        return [
+            {"request_id": "r1", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00",
+             "queue_seconds": 0.0, "inference_seconds": 1.5,
+             "pipeline_constructed": True},
+        ]
+
+    def test_session_binds_request_records_digest(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        session = build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["cold_forecast"],
+            request_records=self._records(),
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        assert session.request_records_digest == canonical_evidence_sha256(self._records())
+        assert session.validate() == [], session.validate()
+
+    def test_altered_record_changes_digest(self):
+        from src.evidence_schemas import canonical_evidence_sha256
+        records = self._records()
+        altered = [dict(records[0], queue_seconds=99.0)]
+        assert canonical_evidence_sha256(altered) != canonical_evidence_sha256(records)
+
+    def test_schema_requires_records_digest_for_real_session(self):
+        from src.evidence_schemas import CloudCollectionSession
+        session = CloudCollectionSession(
+            evidence_schema_version="2",
+            evidence_type="collection_session",
+            evidence_origin="real_measurement",
+            session_id="s1",
+            code_commit=_VALID_COMMIT,
+            deployed_commit=_VALID_COMMIT,
+            deployment_url="https://example.streamlit.app",
+            diagnostics_digest="d" * 64,
+            test_names=["cold_forecast"],
+            request_records_digest="",
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        errors = session.validate()
+        assert any("request_records_digest" in e for e in errors), errors
+
+
+class TestCrossRebootTokenImport:
+    """P1-23: the prior token lifecycle's typed evidence must be explicitly
+    importable so a single collection record binds both token paths across
+    the required app reboot."""
+
+    def _records(self, prefix):
+        return [
+            {"request_id": f"{prefix}-1", "session_id": f"session{prefix}", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00",
+             "pipeline_constructed": True},
+        ]
+
+    def _bundle(self, prefix, token_absent_ids, token_present_ids):
+        from src.cloud_diagnostics import (
+            build_collection_bundle,
+            build_collection_receipt,
+            build_collection_session_record,
+        )
+        records = self._records(prefix)
+        session = build_collection_session_record(
+            session_id=f"session{prefix}",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["token_absent_load", "token_present_load"],
+            token_absent_execution_ids=token_absent_ids,
+            token_present_execution_ids=token_present_ids,
+            request_records=records,
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        receipt = build_collection_receipt(session)
+        return build_collection_bundle(_valid_diagnostics(), records, session, receipt)
+
+    def test_bundle_roundtrip_and_import(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        bundle = self._bundle("A", ["A-1"], [])
+        prior = import_prior_collection_bundle(bundle)
+        assert [r["request_id"] for r in prior["request_records"]] == ["A-1"]
+        assert prior["token_absent_execution_ids"] == ["A-1"]
+        assert prior["token_present_execution_ids"] == []
+        assert prior["deployed_commit"] == _VALID_COMMIT
+
+    def test_import_rejects_non_bundle(self):
+        from src.cloud_diagnostics import import_prior_collection_bundle
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle({"request_records": []})
+        with pytest.raises(ValueError):
+            import_prior_collection_bundle("not a dict")
+
+    def test_merge_cohort_deduplicates(self):
+        from src.cloud_diagnostics import merge_cohort_with_prior
+        current = self._records("B")
+        prior = self._records("A") + [dict(self._records("B")[0])]
+        merged = merge_cohort_with_prior(current, prior)
+        ids = [r["request_id"] for r in merged]
+        assert ids == ["B-1", "A-1"]
+
+    def test_merged_session_binds_both_token_paths(self):
+        from src.cloud_diagnostics import (
+            build_collection_session_record,
+            import_prior_collection_bundle,
+            merge_cohort_with_prior,
+        )
+        prior = import_prior_collection_bundle(self._bundle("A", ["A-1"], []))
+        current_records = self._records("B")
+        merged_records = merge_cohort_with_prior(current_records, prior["request_records"])
+        session = build_collection_session_record(
+            session_id="sessionB",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["token_absent_load", "token_present_load"],
+            token_absent_execution_ids=["A-1"],
+            token_present_execution_ids=["B-1"],
+            request_records=merged_records,
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        assert set(session.token_absent_execution_ids) == {"A-1"}
+        assert set(session.token_present_execution_ids) == {"B-1"}
+        assert session.validate() == [], session.validate()
+
+
+class TestTimeoutRecoverySameSession:
+    """P1-25: timeout recovery must be matched within the timed-out session,
+    never a peer session's success in the cohort."""
+
+    def test_recovery_matches_same_session_not_peer(self):
+        records = [
+            {"request_id": "A-timeout", "success": False,
+             "error_category": "CoordinatorTimeoutError",
+             "session_id": "sessionA",
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:01+00:00"},
+            {"request_id": "B-success", "success": True,
+             "session_id": "sessionB",
+             "started_at_utc": "2026-08-06T00:00:01+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+            {"request_id": "A-recovery", "success": True,
+             "session_id": "sessionA",
+             "started_at_utc": "2026-08-06T00:00:02+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:02+00:00",
+             "completed_at_utc": "2026-08-06T00:00:03+00:00"},
+        ]
+        cats = categorise_request_ids(records)
+        assert cats["timeout_recovery_ids"] == ["A-timeout", "A-recovery"]
+        assert "B-success" not in cats["timeout_recovery_ids"]
 
 
 class TestOrphanCategoryIdsRejected:

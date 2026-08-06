@@ -1389,6 +1389,9 @@ class CloudCollectionSession:
     deployment_url: str = ""
     diagnostics_digest: str = ""
     diagnostics_id: str = ""
+    # Canonical digest of the actual request records bound by this session
+    # (codex P1-24) — optional with default for backward compatibility.
+    request_records_digest: str = ""
     test_names: list[str] = dataclasses.field(default_factory=list)
     request_ids: list[str] = dataclasses.field(default_factory=list)
     token_absent_execution_ids: list[str] = dataclasses.field(default_factory=list)
@@ -1442,6 +1445,17 @@ class CloudCollectionSession:
                     "collection_session: diagnostics_digest is not a 64-char "
                     "lowercase SHA-256 — a malformed digest binds no canonical "
                     "diagnostics artifact"
+                )
+            if not self.request_records_digest:
+                errors.append(
+                    "collection_session: request_records_digest: empty — must "
+                    "bind the actual request records"
+                )
+            elif not _is_valid_sha256(self.request_records_digest):
+                errors.append(
+                    "collection_session: request_records_digest is not a "
+                    "64-char lowercase SHA-256 — altered or substituted "
+                    "request telemetry must invalidate the receipt"
                 )
         # Within-group uniqueness + category IDs subset of request_ids.
         _subset_groups = (

@@ -237,7 +237,7 @@
     "started_at_utc": "2026-07-30T12:00:00",
     "completed_at_utc": "2026-07-30T13:00:00",
     "exit_code": 0,
-    "canonical_content_sha256": "b1d79a69262b8fc3dc926dbed7a1f27304eada57c7164350bb89b59e76a23ddd",
+    "canonical_content_sha256": "7b6ab0baf7a7f2db72f59bae3853e56efc92d549bb2a2942a577a22ab5b1ee61",
     "model_id": "amazon/chronos-2",
     "configured_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
     "resolved_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",

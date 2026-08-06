@@ -1085,40 +1085,23 @@ def _request_window(record: dict[str, Any]) -> tuple[str, str]:
 
 
 def build_concurrency_cohort(
-    records: list[dict[str, Any]], session_id: str
+    records: list[dict[str, Any]],
+    session_id: str,
+    peer_session_id: str = "",
 ) -> list[dict[str, Any]]:
     """Return the explicit participation cohort for a collection session.
 
-    Includes the session's own records plus only those peer sessions whose
-    records overlap them (full request windows).  Unrelated visitor traffic
-    that does not overlap this session is excluded, so a public deployment
-    cannot supply a false concurrency pair or unrelated request IDs
-    (codex P1-15).
+    Membership is EXPLICIT, never inferred from temporal overlap: the cohort
+    is this session's own records plus, when the operator names a peer
+    collection session (the other browser in the two-session test), that
+    peer's records.  Unrelated visitor traffic is never admitted — even if a
+    stranger's request happens to overlap (codex P1-15 / P1-22).
     """
     mine = [r for r in records if r.get("session_id") == session_id]
-    peer_ids = {
-        r.get("session_id")
-        for r in records
-        if r.get("session_id") and r.get("session_id") != session_id
-    }
-    included = {session_id}
-    for pid in peer_ids:
-        peer_records = [r for r in records if r.get("session_id") == pid]
-        overlaps_mine = False
-        for a in mine:
-            a_start, a_end = _request_window(a)
-            if not a_start or not a_end:
-                continue
-            for b in peer_records:
-                b_start, b_end = _request_window(b)
-                if b_start and b_end and intervals_overlap(a_start, a_end, b_start, b_end):
-                    overlaps_mine = True
-                    break
-            if overlaps_mine:
-                break
-        if overlaps_mine:
-            included.add(pid)
-    return [r for r in records if r.get("session_id") in included]
+    if peer_session_id:
+        peer = [r for r in records if r.get("session_id") == peer_session_id]
+        return mine + peer
+    return mine
 
 
 def any_overlapping_pair(records: list[dict[str, Any]]) -> bool:
@@ -1172,9 +1155,14 @@ def categorise_request_ids(records: list[dict[str, Any]]) -> dict[str, list[str]
                 repeated.append(r.get("request_id", ""))
         if not r.get("success") and r.get("error_category") == "CoordinatorTimeoutError":
             timeout_recovery.append(r.get("request_id", ""))
-            # The next successful request is the recovery.
+            # The recovery is the next successful request in the SAME
+            # collection session as the timed-out request — never a peer
+            # session's success in the cohort (codex P1-25).
+            timeout_session = r.get("session_id", "")
             for nxt in ordered[i + 1:]:
-                if nxt.get("success"):
+                if nxt.get("success") and (
+                    not timeout_session or nxt.get("session_id") == timeout_session
+                ):
                     timeout_recovery.append(nxt.get("request_id", ""))
                     break
 
@@ -1224,6 +1212,11 @@ class CloudCollectionSessionRecord:
     deployment_url: str = ""
     diagnostics_digest: str = ""
     diagnostics_id: str = ""
+    # Canonical digest of the actual request records bound by this session,
+    # so queue/inference/memory/success/error fields cannot be altered or a
+    # different export substituted without invalidating the receipt
+    # (codex P1-24).
+    request_records_digest: str = ""
     test_names: list[str] = dataclasses.field(default_factory=list)
     request_ids: list[str] = dataclasses.field(default_factory=list)
     token_absent_execution_ids: list[str] = dataclasses.field(default_factory=list)
@@ -1254,12 +1247,24 @@ class CloudCollectionSessionRecord:
                 errors.append(f"collection session: duplicate test_name '{name}'")
             _seen_names.add(name)
         # Real sessions bind the canonical diagnostics digest (a malformed
-        # value binds no artifact) — codex P2 (thread 21).
-        if self.evidence_origin == EVIDENCE_ORIGIN_REAL and self.diagnostics_digest:
-            if not _is_valid_sha256(self.diagnostics_digest):
+        # value binds no artifact) and the request-records digest (so the
+        # actual request telemetry cannot be altered/substituted without
+        # invalidating the receipt) — codex P2 (thread 21) / P1-24.
+        if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+            if self.diagnostics_digest and not _is_valid_sha256(self.diagnostics_digest):
                 errors.append(
                     "collection session: diagnostics_digest is not a 64-char "
                     "lowercase SHA-256"
+                )
+            if not self.request_records_digest:
+                errors.append(
+                    "collection session: request_records_digest empty — must "
+                    "bind the actual request records"
+                )
+            elif not _is_valid_sha256(self.request_records_digest):
+                errors.append(
+                    "collection session: request_records_digest is not a "
+                    "64-char lowercase SHA-256"
                 )
         if not is_exact_commit_sha(self.deployed_commit):
             errors.append("collection session: deployed_commit not exactly 40 lowercase hex chars")
@@ -1347,6 +1352,9 @@ def build_collection_session_record(
         repeated_run_ids = repeated_run_ids if repeated_run_ids is not None else derived["repeated_run_ids"]
         concurrency_request_ids = concurrency_request_ids if concurrency_request_ids is not None else derived["concurrency_request_ids"]
         timeout_recovery_ids = timeout_recovery_ids if timeout_recovery_ids is not None else derived["timeout_recovery_ids"]
+    # Bind the canonical digest of the ACTUAL request records so altered or
+    # substituted telemetry invalidates the receipt (codex P1-24).
+    request_records_digest = canonical_evidence_sha256(request_records)
     return CloudCollectionSessionRecord(
         evidence_schema_version=EVIDENCE_SCHEMA_VERSION,
         evidence_type="collection_session",
@@ -1357,6 +1365,7 @@ def build_collection_session_record(
         deployment_url=deployment_url,
         diagnostics_digest=canonical_diagnostics_digest(diagnostics),
         diagnostics_id=diagnostics.diagnostics_id,
+        request_records_digest=request_records_digest,
         test_names=list(acceptance_test_names),
         request_ids=request_ids,
         token_absent_execution_ids=list(token_absent_execution_ids or []),
@@ -1367,6 +1376,76 @@ def build_collection_session_record(
         started_at_utc=started_at_utc,
         completed_at_utc=completed_at_utc,
     )
+
+
+def build_collection_bundle(
+    diagnostics: CloudRuntimeDiagnostics,
+    request_records: list[dict[str, Any]],
+    session_record: CloudCollectionSessionRecord,
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the self-contained collection bundle for one lifecycle.
+
+    Contains the typed diagnostics, the actual request records, the
+    collection-session record, and its binding receipt, plus the canonical
+    digest of the whole bundle.  The operator downloads one bundle per
+    token lifecycle; the second lifecycle explicitly imports the first
+    bundle so a single collection can bind both token paths across the
+    required reboot (codex P1-23).
+    """
+    bundle = {
+        "diagnostics": diagnostics.to_dict(),
+        "request_records": list(request_records),
+        "request_count": len(request_records),
+        "collection_session": session_record.to_dict(),
+        "collection_receipt": receipt,
+    }
+    bundle["canonical_digest"] = canonical_evidence_sha256(bundle)
+    return bundle
+
+
+def import_prior_collection_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Validate and extract the prior lifecycle's evidence from its bundle.
+
+    Returns ``{"request_records": [...], "token_absent_execution_ids": [...],
+    "token_present_execution_ids": [...], "deployed_commit": str}``.
+
+    Raises ``ValueError`` when the bundle is not a typed collection bundle.
+    """
+    if not isinstance(bundle, dict):
+        raise ValueError("prior collection bundle must be a JSON object")
+    session = bundle.get("collection_session")
+    if not isinstance(session, dict) or session.get("evidence_type") != "collection_session":
+        raise ValueError("prior bundle has no collection_session record")
+    request_records = bundle.get("request_records", [])
+    if not isinstance(request_records, list):
+        raise ValueError("prior bundle request_records must be a list")
+    for rec in request_records:
+        if not isinstance(rec, dict) or not rec.get("request_id"):
+            raise ValueError("prior bundle request_records entries must be typed request records")
+    return {
+        "request_records": list(request_records),
+        "token_absent_execution_ids": list(session.get("token_absent_execution_ids", []) or []),
+        "token_present_execution_ids": list(session.get("token_present_execution_ids", []) or []),
+        "deployed_commit": str(session.get("deployed_commit", "") or ""),
+    }
+
+
+def merge_cohort_with_prior(
+    current_records: list[dict[str, Any]],
+    prior_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge the prior lifecycle's request records into the current cohort,
+    deduplicated by request_id (order preserved)."""
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for rec in list(current_records) + list(prior_records):
+        rid = rec.get("request_id", "")
+        if rid in seen:
+            continue
+        seen.add(rid)
+        merged.append(rec)
+    return merged
 
 
 def build_collection_receipt(

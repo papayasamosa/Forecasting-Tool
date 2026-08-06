@@ -328,20 +328,39 @@ if st.button("Begin new collection session"):
     st.session_state["_pending_recoverable_collection"] = ""
     st.success(f"New collection session started: `{new_id}`")
 
+st.caption(
+    "**Token-path import:** after the required reboot between token lifecycles, "
+    "upload the previous lifecycle's downloaded collection bundle JSON here so "
+    "a single collection record can bind both token paths (codex P1-23)."
+)
+prior_bundle_file = st.file_uploader(
+    "Prior token-path collection bundle (JSON from the other lifecycle)",
+    type=["json"],
+)
+
 if st.button("Finalise collection session"):
     try:
         if diag is None:
             st.error("Cannot finalise: diagnostics snapshot unavailable.")
         else:
+            from src.cloud_diagnostics import (
+                any_overlapping_pair,
+                build_collection_bundle,
+                build_concurrency_cohort,
+                import_prior_collection_bundle,
+                merge_cohort_with_prior,
+            )
             deployment_url = _deployment_url()
             started_at = st.session_state.get("collection_started_at_utc", "")
-            # Concurrency is a process-level phenomenon: use the explicit
-            # participation cohort — this session's requests plus only peer
-            # sessions that genuinely overlap them (codex P1-7 / P1-15) — so
-            # the overlap categoriser sees both participants of a genuine
-            # two-session run while unrelated visitor traffic is excluded.
-            from src.cloud_diagnostics import any_overlapping_pair, build_concurrency_cohort
-            cohort = build_concurrency_cohort(store.snapshot(), collection_session_id)
+            # Concurrency uses the explicit participation cohort — this
+            # session's requests plus an explicitly named peer session
+            # (codex P1-7 / P1-15 / P1-22); unrelated visitor traffic is
+            # never admitted.
+            peer_session = st.query_params.get("concurrency_peer_session", "")
+            peer_session = str(peer_session) if peer_session else ""
+            cohort = build_concurrency_cohort(
+                store.snapshot(), collection_session_id, peer_session_id=peer_session,
+            )
             if any_overlapping_pair(cohort):
                 _record_event("two_session_concurrency")
             # Only acceptance tests that genuinely ran are recorded
@@ -362,6 +381,24 @@ if st.button("Finalise collection session"):
                 e.get("details", "") for e in ran_events
                 if e.get("test_name") == "token_present_load" and e.get("passed") and e.get("details")
             ]
+            # Explicitly import the prior lifecycle's typed evidence so a
+            # single collection record binds both token paths across the
+            # required reboot (codex P1-23).
+            if prior_bundle_file is not None:
+                import json as _json
+                try:
+                    prior = _json.loads(prior_bundle_file.read().decode("utf-8"))
+                    prior_data = import_prior_collection_bundle(prior)
+                except Exception as exc:
+                    st.error(f"Invalid prior collection bundle: {exc}")
+                    st.stop()
+                cohort = merge_cohort_with_prior(cohort, prior_data["request_records"])
+                token_absent_ids = list(dict.fromkeys(
+                    token_absent_ids + prior_data["token_absent_execution_ids"]
+                ))
+                token_present_ids = list(dict.fromkeys(
+                    token_present_ids + prior_data["token_present_execution_ids"]
+                ))
             session_record = build_collection_session_record(
                 session_id=collection_session_id,
                 deployed_commit=diag.get("deployed_commit", ""),
@@ -389,6 +426,15 @@ if st.button("Finalise collection session"):
                 "Download collection receipt",
                 data=_safe_json(receipt),
                 file_name="cloud_collection_receipt.json",
+                mime="application/json",
+            )
+            bundle = build_collection_bundle(
+                _diagnostics_from_dict(diag), cohort, session_record, receipt,
+            )
+            st.download_button(
+                "Download collection bundle (self-contained)",
+                data=_safe_json(bundle),
+                file_name="cloud_collection_bundle.json",
                 mime="application/json",
             )
             st.code(f"Receipt canonical content SHA-256: {receipt.get('canonical_content_sha256', '')}")
