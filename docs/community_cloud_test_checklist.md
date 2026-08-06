@@ -57,15 +57,32 @@ Use this checklist when deploying to Streamlit Community Cloud.
 > `src/evidence_schemas.py` and shared by schema validation, tests, and the Cloud
 > evidence builder.
 
-> **Measurement source:** The deployed app exposes per-run resource and
-> deployment telemetry in the "⏱ Timing & model details" expander on the
-> Forecast page (`Process peak RSS`, `Current RSS`, `Deployed commit`), and
-> the Methodology page shows the resolved `Deployed commit` / worktree
-> status without requiring a forecast run. These are stdlib-only reads
-> (no Cloud admin access needed). RSS values are read from the app UI;
-> `cold.rss_mb` / `warm.rss_mb` / `cold_peak_rss_mb` /
-> `process_peak_rss_mb` come from the cold / warm / repeated forecast runs'
-> displayed values.
+> **Measurement source (Cloud Diagnostics page):** The deployed app exposes
+> a dedicated **Cloud Diagnostics** page (`pages/3_Cloud_Diagnostics.py`)
+> that produces a typed, allowlisted runtime-diagnostics snapshot with:
+> exact deployed commit + resolution source, package/Python versions, OS,
+> CPU model/cores, RAM, `pip check`, CPU-only Torch, NVIDIA-package
+> absence, `hf_token_present` boolean, current/process-peak RSS, pipeline
+> state, coordinator state, bounded per-request telemetry (with scoped
+> per-request memory samples), a deterministic JSON download, and a
+> canonical JSON digest.  This is the **only** release-evidence source —
+> human-readable UI values and screenshots are **not** sufficient
+> evidence (P0: no manual transcription).
+>
+> **Exact deployed commit:** release collection requires the exact 40-char
+> deployed commit (from `?expected_commit=<sha>` on the Cloud Diagnostics
+> page).  The page fails closed when the deployed commit cannot be proven
+> or does not match the expected collection commit.
+>
+> **Token sequence:** collect the token-absent lifecycle first (no
+> `HF_TOKEN` in Streamlit Secrets, app rebooted), then the token-present
+> lifecycle (token added, app rebooted).  Each lifecycle has its own run
+> IDs, timestamps, model-load result, and execution receipt; the two paths
+> are never simulated from one another.
+>
+> **No screenshot-only evidence:** screenshots and manually transcribed
+> values are treated as insufficient.  Cloud Gate C evidence is built from
+> the downloaded typed diagnostics/request/session JSON only.
 
 ## Recorded measurements
 
@@ -106,3 +123,32 @@ Use this checklist when deploying to Streamlit Community Cloud.
 - [ ] Configuration preserved after recoverable error
 
 **Decision:** ⏳ Pending
+
+## Administration checkpoints (user-authenticated, exact)
+
+The coding agent cannot authenticate to Streamlit Community Cloud. The
+user performs these actions and confirms only non-secret results:
+
+1. **Deployment A (token absent):** sign in → select the app connected to
+   `papayasamosa/Forecasting-Tool` → deploy the exact Stage 1 merge commit
+   from `main` → ensure `HF_TOKEN` is **absent** from Streamlit Secrets →
+   reboot the app → confirm `deployment A restarted` and `HF_TOKEN absent`
+   plus the public app URL.
+2. **Deployment B (token present):** open app settings → add the read-only
+   token as `HF_TOKEN = "..."` → save Secrets → reboot the app → confirm
+   `deployment B restarted` and `HF_TOKEN present`.
+
+Never send the token, passwords, email/MFA codes, cookies, or session
+tokens through the coding agent.
+
+## PR / merge / post-merge requirements
+
+- Corrective instrumentation, evidence, and ADR PRs are opened and merged
+  automatically only after: latest-head CI green, coverage + readiness
+  gates passed, review completed on the latest SHA, zero unresolved
+  discussions, zero unremediated P0/P1 findings, branch current with
+  `main`, no secrets detected, and documentation consistent with the code.
+- PR prose is **not** authoritative test evidence — only GitHub workflow
+  results and logs are.
+- The exact push-to-main workflow run on the merge commit is verified
+  separately from the PR's own run before the next stage commences.

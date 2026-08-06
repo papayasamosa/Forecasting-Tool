@@ -30,13 +30,50 @@ class TestCloudCollectionSession:
         session = CloudCollectionSession(
             evidence_origin="real_measurement",
             session_id="s1",
-            code_commit="abc123",
-            deployed_commit="abc123",
+            code_commit="8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
+            deployed_commit="8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
+            deployment_url="https://example.streamlit.app",
+            diagnostics_digest="d" * 64,
             test_names=["dependency_install"],
             started_at_utc="2026-07-30T00:00:00",
             completed_at_utc="2026-07-30T00:01:00",
         )
         assert session.validate() == []
+
+    def test_real_session_requires_exact_deployed_commit(self):
+        """WP3: real collection sessions must carry an exact 40-char SHA —
+        short SHAs and arbitrary text are rejected for release evidence."""
+        from src.evidence_schemas import CloudCollectionSession
+        session = CloudCollectionSession(
+            evidence_origin="real_measurement",
+            session_id="s1",
+            code_commit="abc123",
+            deployed_commit="abc123",
+            deployment_url="https://example.streamlit.app",
+            diagnostics_digest="d" * 64,
+            test_names=["dependency_install"],
+            started_at_utc="2026-07-30T00:00:00",
+            completed_at_utc="2026-07-30T00:01:00",
+        )
+        errors = session.validate()
+        assert any("deployed_commit" in e and "not exactly 40" in e for e in errors)
+
+    def test_real_session_requires_deployment_binding(self):
+        """WP11: a real collection session must bind the deployment URL and
+        the runtime-diagnostics digest."""
+        from src.evidence_schemas import CloudCollectionSession
+        session = CloudCollectionSession(
+            evidence_origin="real_measurement",
+            session_id="s1",
+            code_commit="8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
+            deployed_commit="8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9",
+            test_names=["dependency_install"],
+            started_at_utc="2026-07-30T00:00:00",
+            completed_at_utc="2026-07-30T00:01:00",
+        )
+        errors = session.validate()
+        assert any("deployment_url" in e for e in errors)
+        assert any("diagnostics_digest" in e for e in errors)
 
     def test_missing_test_names_rejected(self):
         from src.evidence_schemas import CloudCollectionSession

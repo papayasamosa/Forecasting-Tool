@@ -23,6 +23,7 @@ import os
 import sys
 import uuid
 from io import StringIO, BytesIO
+from typing import Any
 
 import streamlit as st
 import pandas as pd
@@ -31,8 +32,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (  # noqa: E402
     CONTEXT_WINDOW_CAP,
-    COORDINATOR_CAPACITY,
-    COORDINATOR_TIMEOUT_SECONDS,
     MAX_UPLOAD_SIZE_BYTES,
     QUANTILE_MIN,
     QUANTILE_MAX,
@@ -54,6 +53,11 @@ from src.telemetry import (  # noqa: E402
     current_rss_mb,
     deployed_commit,
     process_peak_rss_mb,
+)
+from src.cloud_diagnostics import (  # noqa: E402
+    CloudRequestRecord,
+    RequestMemorySampler,
+    RequestTelemetryStore,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,11 +86,11 @@ def _build_demo_data() -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
-@st.cache_resource
 def _get_forecast_backend() -> Chronos2Adapter:
-    """Return a process-cached Chronos2Adapter (model loads on first forecast)."""
-    logger.info("Creating Chronos2Adapter (process-level cache).")
-    return Chronos2Adapter()
+    """Return the process-cached Chronos2Adapter (shared with the Cloud
+    Diagnostics page via pages._cloud_runtime)."""
+    from pages._cloud_runtime import get_forecast_backend
+    return get_forecast_backend()
 
 
 def _resolve_backend() -> Chronos2Adapter:
@@ -106,11 +110,11 @@ def _resolve_backend() -> Chronos2Adapter:
     return _get_forecast_backend()
 
 
-@st.cache_resource
 def _get_coordinator() -> InferenceCoordinator:
-    """Return a process-cached InferenceCoordinator (one per process, like the backend)."""
-    logger.info("Creating InferenceCoordinator (process-level cache).")
-    return InferenceCoordinator(capacity=COORDINATOR_CAPACITY, timeout_seconds=COORDINATOR_TIMEOUT_SECONDS)
+    """Return the process-cached InferenceCoordinator (shared with the Cloud
+    Diagnostics page via pages._cloud_runtime)."""
+    from pages._cloud_runtime import get_coordinator
+    return get_coordinator()
 
 
 def _resolve_coordinator() -> InferenceCoordinator:
@@ -125,6 +129,88 @@ def _resolve_coordinator() -> InferenceCoordinator:
     if override is not None:
         return override
     return _get_coordinator()
+
+
+def _get_telemetry_store() -> RequestTelemetryStore:
+    """Return the process-wide bounded request-telemetry store (shared with
+    the Cloud Diagnostics page via pages._cloud_runtime).  Holds only typed,
+    sanitised request records — never raw payloads."""
+    from pages._cloud_runtime import get_telemetry_store
+    return get_telemetry_store()
+
+
+def _resolve_telemetry_store() -> RequestTelemetryStore:
+    """Return the request-telemetry store to use for this run.
+
+    Test-only seam mirroring ``_resolve_backend``: if
+    st.session_state["_test_telemetry_store_override"] is set, it is
+    returned instead of the process-cached store. Production code paths
+    never set this session_state key.
+    """
+    override = st.session_state.get("_test_telemetry_store_override")
+    if override is not None:
+        return override
+    return _get_telemetry_store()
+
+
+def _record_cloud_request(
+    store: RequestTelemetryStore,
+    request_id: str,
+    exec_record,
+    result,
+    sampler,
+    session_id: str,
+    *,
+    error_category: str = "",
+    success: bool = True,
+) -> None:
+    """Build and store a typed ``CloudRequestRecord`` for a completed run.
+
+    Combines the coordinator's sanitised timing, the adapter's runtime
+    metadata, and the request-scoped memory sample.  On error paths
+    ``result``/``exec_record`` may be None — the record is still typed,
+    bounded, and truthful (success=False, error_category set).
+    """
+    rr = exec_record.request_record if exec_record is not None else {}
+    meta = result.runtime_metadata if result is not None else None
+    sample = sampler.to_sample(session_id=session_id) if sampler is not None else None
+
+    def _f(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or default)
+        except (TypeError, ValueError):
+            return default
+
+    inference_seconds = _f(getattr(meta, "inference_seconds", None) if meta else rr.get("inference_seconds"))
+    total_seconds = _f(getattr(meta, "total_runtime_seconds", None) if meta else 0.0)
+    model_load_seconds = _f(getattr(meta, "model_load_seconds", None) if meta else 0.0)
+    result_conversion_seconds = _f(getattr(meta, "result_conversion_seconds", None) if meta else 0.0)
+
+    record = CloudRequestRecord(
+        request_id=request_id,
+        session_id=session_id,
+        started_at_utc=rr.get("start_time_utc") or (sample.started_at_utc if sample else ""),
+        queued_at_utc=rr.get("start_time_utc", ""),
+        inference_started_at_utc=rr.get("inference_start_utc", ""),
+        completed_at_utc=rr.get("completion_time_utc") or (sample.stopped_at_utc if sample else ""),
+        queue_seconds=_f(rr.get("queue_seconds")),
+        model_load_seconds=model_load_seconds,
+        inference_seconds=inference_seconds,
+        result_conversion_seconds=result_conversion_seconds,
+        total_seconds=total_seconds,
+        success=success,
+        error_category=error_category,
+        pipeline_constructed=bool(getattr(meta, "model_was_loaded_this_run", False)) if meta else False,
+        pipeline_reused=bool(getattr(meta, "pipeline_reused", False)) if meta else False,
+        model_revision=getattr(meta, "model_revision", "") or (result.model_revision if result is not None else ""),
+        context_rows_used=int(getattr(meta, "context_rows_used", 0) or 0) if meta else 0,
+        context_truncated=(
+            int(getattr(meta, "preprocessing_original_rows", 0) or 0)
+            > int(getattr(meta, "preprocessing_retained_rows", 0) or 0)
+        ) if meta else False,
+        memory=sample.to_dict() if sample else {},
+    )
+    store.record(record)
 
 
 def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
@@ -347,11 +433,19 @@ if run_button and df is not None and not st.session_state.is_running:
 
     # Get or create the process-cached backend and coordinator (model loads
     # lazily on first forecast; the coordinator serialises concurrent
-    # sessions' inference calls through a bounded semaphore).
+    # sessions' inference calls through a bounded semaphore).  Every request
+    # is also recorded as a typed, bounded CloudRequestRecord with its own
+    # request-scoped memory sample (WP4/WP5).
+    store = _resolve_telemetry_store()
+    session_id = store.session_id
+    request_id = str(uuid.uuid4())
+    sampler = RequestMemorySampler(request_id=request_id)
+    # Sampler starts before queue wait / model loading so the request-scoped
+    # peak captures the whole request window.
+    sampler.start()
     try:
         backend = _resolve_backend()
         coordinator = _resolve_coordinator()
-        request_id = str(uuid.uuid4())
         # Run forecast under the coordinator so overlapping sessions queue
         # rather than racing the shared cached backend directly.
         with st.spinner("Running Chronos-2 forecast (may load model on first call, or queue behind another request)..."):
@@ -374,18 +468,36 @@ if run_button and df is not None and not st.session_state.is_running:
             # Sanitised queue-time telemetry from the execution record (no
             # full-history scan).
             st.session_state.last_queue_seconds = exec_record.request_record.get("queue_seconds", 0.0)
+            _record_cloud_request(
+                store, request_id, exec_record, result, sampler, session_id,
+            )
     except CoordinatorTimeoutError:
+        _record_cloud_request(
+            store, request_id, None, None, sampler, session_id,
+            error_category="CoordinatorTimeoutError", success=False,
+        )
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "
             "become available in time. Please try again in a moment."
         )
         logger.warning("Coordinator timeout waiting for inference slot", exc_info=True)
     except AdapterError as e:
+        _record_cloud_request(
+            store, request_id, None, None, sampler, session_id,
+            error_category=type(e).__name__, success=False,
+        )
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
     except Exception:
+        _record_cloud_request(
+            store, request_id, None, None, sampler, session_id,
+            error_category="UnexpectedError", success=False,
+        )
         st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
         logger.error("Unexpected forecast error", exc_info=True)
+    finally:
+        # Always stop the request-scoped sampler, even on failure.
+        sampler.stop(session_id=session_id)
 
     st.session_state.is_running = False
 

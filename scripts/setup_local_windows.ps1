@@ -195,6 +195,9 @@ Write-Host "Version: $pyVer"
 
 # ---- Step 5: Set ALL required environment variables (match storage_policy) ----
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
+# The repository root is deliberately separate from the runtime root and
+# is NOT under D:\Forecasting-Tool-Local\repo.
+$env:FORECASTING_REPO_ROOT = Split-Path -Parent $PSScriptRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "$LocalRoot\cache\huggingface"

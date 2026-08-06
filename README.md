@@ -34,6 +34,10 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Cloud acceptance-test evidence | ✅ Schema complete, all tests required |
 | Cloud evidence bound to deployed commit | ✅ Validated |
 | Cloud resource/memory evidence | ✅ Required |
+| Typed Cloud runtime diagnostics (`src/cloud_diagnostics.py`) | ✅ Implemented — allowlisted snapshot, exact deployed-commit resolution (40-hex fail-closed), request-scoped memory sampling, bounded request telemetry, measured dependency diagnostics, token state boolean only |
+| Cloud Diagnostics page (`pages/3_Cloud_Diagnostics.py`) | ✅ Implemented — read-only safe metadata, deterministic JSON download, canonical digest, collection-session begin/finalise (no secret input) |
+| Cloud collection-session + receipt binding (WP11) | ✅ Implemented — session binds deployed commit, URL, diagnostics digest, request/token/repeated/concurrency/timeout IDs; receipt binds the session's canonical digest |
+| Cloud instrumentation readiness checks (WP13) | ✅ Implemented in `scripts/verify_stage0_evidence_readiness.py` |
 | Evidence publisher (sanitise, copy, manifest) | ✅ Implemented |
 | Bundle builder with recursive typed validation | ✅ Implemented, shared validator |
 | Manifest deep verifier (internal JSON validation) | ✅ Implemented, uses Path.is_relative_to() |

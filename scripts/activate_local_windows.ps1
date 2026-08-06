@@ -29,6 +29,9 @@ if ($resolvedRoot -ne 'D:\Forecasting-Tool-Local' -and $resolvedRoot -notlike 'D
 
 # ---- Set D: drive environment variables ------------------------------------
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
+# The repository root is deliberately separate from the runtime root and
+# is NOT under D:\Forecasting-Tool-Local\repo.
+$env:FORECASTING_REPO_ROOT = Split-Path -Parent $PSScriptRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "$LocalRoot\cache\huggingface"
@@ -53,6 +56,7 @@ $env:GRAPHIFY_CACHE_DIR = "$LocalRoot\cache\graphify"
 $env:GRAPHIFY_OUTPUT_DIR = "$LocalRoot\graphify-output"
 
 Write-Host "✅ Environment variables set to D: drive:"
+Write-Host "   FORECASTING_REPO_ROOT  = $env:FORECASTING_REPO_ROOT"
 Write-Host "   FORECASTING_LOCAL_ROOT = $LocalRoot"
 Write-Host "   PIP_CACHE_DIR          = $env:PIP_CACHE_DIR"
 Write-Host "   HF_HOME                = $env:HF_HOME"

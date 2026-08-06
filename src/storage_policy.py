@@ -25,6 +25,12 @@ from typing import Any
 # ---------------------------------------------------------------------------
 LOCAL_ROOT = r"D:\Forecasting-Tool-Local"
 
+# The repository root is deliberately SEPARATE from the runtime/artifact
+# root (LOCAL_ROOT).  It must live on the D: drive but is NOT under
+# D:\Forecasting-Tool-Local\repo.  FORECASTING_REPO_ROOT is the only
+# required environment variable whose value is not under LOCAL_ROOT.
+REPO_ROOT_DEFAULT = r"D:\App Projects\Forecasting-Tool"
+
 REQUIRED_DIRS: list[str] = [
     os.path.join(LOCAL_ROOT, "repo"),
     os.path.join(LOCAL_ROOT, "python312"),
@@ -61,6 +67,9 @@ REQUIRED_DIRS: list[str] = [
 ]
 
 REQUIRED_ENV_VARS: dict[str, str] = {
+    # Repository root is separate from the runtime root (mandated
+    # separation); every other required variable targets LOCAL_ROOT.
+    "FORECASTING_REPO_ROOT": REPO_ROOT_DEFAULT,
     "FORECASTING_LOCAL_ROOT": LOCAL_ROOT,
     "PIP_CACHE_DIR": os.path.join(LOCAL_ROOT, "cache", "pip"),
     "HF_HOME": os.path.join(LOCAL_ROOT, "cache", "huggingface"),
@@ -165,6 +174,23 @@ def is_under_local_root(path: str) -> bool:
     norm_path_l = norm_path.lower()
     norm_root_l = norm_root.lower()
     return norm_path_l.startswith(norm_root_l + "/") or norm_path_l == norm_root_l
+
+
+def is_on_d_drive(path: str) -> bool:
+    """Return True if *path* is an absolute Windows path on drive D:.
+
+    Used for the repository root, which is deliberately NOT under LOCAL_ROOT
+    (repository and runtime roots are separate) but must still live on D:.
+    Rejects UNC paths and relative paths.
+    """
+    if not path:
+        return False
+    if _UNC_RE.match(path):
+        return False
+    normalised = _normalise_windows_path(path)
+    if not _is_abs_windows_path(normalised):
+        return False
+    return bool(_DRIVE_D_RE.match(normalised))
 
 
 # Pinned project runtime interpreter directory. The venv MUST be based on this
@@ -338,19 +364,33 @@ def assert_d_drive_preflight() -> list[str]:
     # a venv created from a C-drive Python is not an approved runtime.
     errors.extend(verify_ddrive_runtime())
 
-    # Check repo location
-    repo_root = Path(__file__).resolve().parent.parent
-    if not is_under_local_root(str(repo_root)):
+    # Check repo location: the repository root is deliberately separate
+    # from LOCAL_ROOT (never D:\Forecasting-Tool-Local\repo); it must be on
+    # the D: drive and match FORECASTING_REPO_ROOT when that variable is set.
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if not is_on_d_drive(repo_root):
         errors.append(
-            f"Repository at '{repo_root}' is not under "
-            f"'{LOCAL_ROOT}\\repo'"
+            f"Repository at '{repo_root}' is not on the D: drive — the "
+            "repository and runtime roots must both be on D: (the repository "
+            "is NOT under D:\\Forecasting-Tool-Local\\repo)"
+        )
+    expected_repo = os.environ.get("FORECASTING_REPO_ROOT", REPO_ROOT_DEFAULT)
+    if expected_repo and os.path.normcase(repo_root) != os.path.normcase(os.path.abspath(expected_repo)):
+        errors.append(
+            f"Repository at '{repo_root}' does not match "
+            f"FORECASTING_REPO_ROOT '{expected_repo}'"
         )
 
-    # Check env vars
+    # Check env vars.  FORECASTING_REPO_ROOT is the deliberate exception:
+    # it names the separate repository root and only needs to be on D:,
+    # whereas every other required variable must be under LOCAL_ROOT.
     for var, expected in REQUIRED_ENV_VARS.items():
         actual = os.environ.get(var, "")
         if not actual:
             errors.append(f"{var}: not set, expected '{expected}'")
+        elif var == "FORECASTING_REPO_ROOT":
+            if not is_on_d_drive(actual):
+                errors.append(f"{var}: '{actual}' is not on D: drive")
         elif not is_under_local_root(actual):
             errors.append(f"{var}: '{actual}' is not on D: drive")
 
