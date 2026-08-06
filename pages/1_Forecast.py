@@ -549,12 +549,19 @@ if run_button and df is not None and not st.session_state.is_running:
             if data_option == "Upload CSV":
                 _record_acceptance_event("valid_csv_forecast", details=f"request {request_id}")
             # Recovery tests are marked passed only after a later successful
-            # request in the same collection (codex P1-8).
-            if st.session_state.get("_pending_timeout_recovery", False):
+            # request in the SAME collection that contains the timed-out /
+            # failed request (codex P1-8 / P1-18) — pending flags carry the
+            # originating collection ID so a new session can never absorb
+            # the recovery.
+            if (st.session_state.get("_pending_timeout_recovery", False)
+                    and st.session_state.get("_pending_timeout_collection", "") == session_id):
                 st.session_state["_pending_timeout_recovery"] = False
+                st.session_state["_pending_timeout_collection"] = ""
                 _record_acceptance_event("coordinator_timeout_recovery", details=f"recovered by {request_id}")
-            if st.session_state.get("_pending_recoverable_failure", False):
+            if (st.session_state.get("_pending_recoverable_failure", False)
+                    and st.session_state.get("_pending_recoverable_collection", "") == session_id):
                 st.session_state["_pending_recoverable_failure"] = False
+                st.session_state["_pending_recoverable_collection"] = ""
                 _record_acceptance_event("recoverable_failure", details=f"recovered by {request_id}")
     except CoordinatorTimeoutError:
         # Preserve the coordinator's genuine timeout measurement (queue
@@ -571,8 +578,10 @@ if run_button and df is not None and not st.session_state.is_running:
             error_category="CoordinatorTimeoutError", success=False,
         )
         # Keep the timeout pending: coordinator_timeout_recovery is only
-        # marked passed after a later successful request (codex P1-8).
+        # marked passed after a later successful request in the same
+        # collection (codex P1-8 / P1-18).
         st.session_state["_pending_timeout_recovery"] = True
+        st.session_state["_pending_timeout_collection"] = session_id
         _record_acceptance_event("configuration_preserved", details=f"timeout {request_id}")
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "
@@ -585,6 +594,7 @@ if run_button and df is not None and not st.session_state.is_running:
             error_category=type(e).__name__, success=False,
         )
         st.session_state["_pending_recoverable_failure"] = True
+        st.session_state["_pending_recoverable_collection"] = session_id
         _record_acceptance_event("configuration_preserved", details=f"recoverable error {request_id}")
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
@@ -594,6 +604,7 @@ if run_button and df is not None and not st.session_state.is_running:
             error_category="UnexpectedError", success=False,
         )
         st.session_state["_pending_recoverable_failure"] = True
+        st.session_state["_pending_recoverable_collection"] = session_id
         _record_acceptance_event("configuration_preserved", details=f"unexpected error {request_id}")
         st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
         logger.error("Unexpected forecast error", exc_info=True)

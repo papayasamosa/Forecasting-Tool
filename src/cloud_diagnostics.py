@@ -1382,13 +1382,21 @@ def build_collection_receipt(
     digest = canonical_evidence_sha256(session_dict)
     now = _utcnow()
     trace = capture_traceability()
+    # The clean-worktree attestation must describe the SAME commit as the
+    # receipt's code_commit (the deployed commit).  When deployed identity
+    # comes from an exact override, the git checkout inspected by
+    # capture_traceability() can be a different commit — in that case the
+    # clean flag is NOT copied across (codex P1-19).
+    worktree_clean = bool(trace.get("git_worktree_clean", False)) and (
+        trace.get("code_commit", "") == session_record.deployed_commit
+    )
     receipt = ExecutionReceipt(
         execution_id=execution_id or f"collection_{uuid.uuid4().hex[:12]}",
         attestation_type="operator_attested",
         code_commit=session_record.deployed_commit,
         producer_name="src.cloud_diagnostics.build_collection_receipt",
         producer_version="1.0",
-        git_worktree_clean=bool(trace.get("git_worktree_clean", False)),
+        git_worktree_clean=worktree_clean,
         sanitised_command=sanitise_command([sanitised_command]),
         started_at_utc=now,
         completed_at_utc=now,

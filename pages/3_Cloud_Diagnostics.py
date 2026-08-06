@@ -53,7 +53,15 @@ st.markdown(
 
 
 def _deployment_url() -> str:
-    """Best-effort public URL of this app (never a header dump)."""
+    """Public URL of this app from ``st.context.url`` (the supported public
+    API on the pinned Streamlit runtime), falling back to the script-run
+    context when available.  Never reads cookies, headers, or credentials."""
+    try:
+        url = getattr(st.context, "url", "")
+        if url:
+            return str(url)
+    except Exception:
+        pass
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
         ctx = get_script_run_ctx()
@@ -312,6 +320,12 @@ if st.button("Begin new collection session"):
     # visitor's session window (review finding P1-5).
     st.session_state["collection_session_id"] = new_id
     st.session_state["collection_started_at_utc"] = datetime.now(timezone.utc).isoformat()
+    # Clear pending recovery flags from the previous collection so a later
+    # success cannot be mis-attributed to the new session (codex P1-18).
+    st.session_state["_pending_timeout_recovery"] = False
+    st.session_state["_pending_timeout_collection"] = ""
+    st.session_state["_pending_recoverable_failure"] = False
+    st.session_state["_pending_recoverable_collection"] = ""
     st.success(f"New collection session started: `{new_id}`")
 
 if st.button("Finalise collection session"):

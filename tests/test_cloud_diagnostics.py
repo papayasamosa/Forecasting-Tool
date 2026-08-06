@@ -1407,6 +1407,52 @@ class TestCollectionReceiptWorktreeState:
         errors = receipt_is_release_ready(obj)
         assert not any("git_worktree_clean" in e for e in errors), errors
 
+    def test_clean_attestation_binds_same_commit(self, monkeypatch):
+        """P1-19: the clean-worktree flag may only attest the deployed commit
+        when the git checkout inspected is that same commit."""
+        import src.cloud_diagnostics as cd
+        session = self._session()  # deployed_commit == _VALID_COMMIT
+        monkeypatch.setattr(
+            cd, "capture_traceability",
+            lambda: {"git_worktree_clean": True, "code_commit": _VALID_COMMIT},
+        )
+        receipt = build_collection_receipt(session)
+        assert receipt["git_worktree_clean"] is True
+
+        # Override identity: the git checkout is a different commit — the
+        # clean flag must NOT be copied across.
+        monkeypatch.setattr(
+            cd, "capture_traceability",
+            lambda: {"git_worktree_clean": True, "code_commit": _OTHER_COMMIT},
+        )
+        receipt2 = build_collection_receipt(session)
+        assert receipt2["git_worktree_clean"] is False
+
+
+class TestDeploymentUrlAndRecoveryScoping:
+    """P1-17/P1-18: deployment URL from st.context.url; pending recoveries
+    are cleared/reset when starting a new collection and scoped to the
+    originating collection."""
+
+    def test_page_reads_url_from_st_context(self):
+        page = (REPO_ROOT / "pages" / "3_Cloud_Diagnostics.py").read_text(encoding="utf-8")
+        assert "st.context" in page
+        assert "url" in page
+        assert "_deployment_url" in page
+
+    def test_page_begin_clears_pending_recovery_flags(self):
+        page = (REPO_ROOT / "pages" / "3_Cloud_Diagnostics.py").read_text(encoding="utf-8")
+        assert '_pending_timeout_recovery"] = False' in page
+        assert '_pending_recoverable_failure"] = False' in page
+
+    def test_page_pending_recovery_scoped_to_originating_collection(self):
+        page = (REPO_ROOT / "pages" / "1_Forecast.py").read_text(encoding="utf-8")
+        assert "_pending_timeout_collection" in page
+        assert "_pending_recoverable_collection" in page
+        # Recovery is only accepted when the originating collection matches
+        # the current session.
+        assert '_pending_timeout_collection", "") == session_id' in page
+
 
 class TestConcurrencyCohortParticipationBoundary:
     """P1-15: the concurrency cohort must be bounded to participating
