@@ -1084,6 +1084,43 @@ def _request_window(record: dict[str, Any]) -> tuple[str, str]:
     return start, end
 
 
+def build_concurrency_cohort(
+    records: list[dict[str, Any]], session_id: str
+) -> list[dict[str, Any]]:
+    """Return the explicit participation cohort for a collection session.
+
+    Includes the session's own records plus only those peer sessions whose
+    records overlap them (full request windows).  Unrelated visitor traffic
+    that does not overlap this session is excluded, so a public deployment
+    cannot supply a false concurrency pair or unrelated request IDs
+    (codex P1-15).
+    """
+    mine = [r for r in records if r.get("session_id") == session_id]
+    peer_ids = {
+        r.get("session_id")
+        for r in records
+        if r.get("session_id") and r.get("session_id") != session_id
+    }
+    included = {session_id}
+    for pid in peer_ids:
+        peer_records = [r for r in records if r.get("session_id") == pid]
+        overlaps_mine = False
+        for a in mine:
+            a_start, a_end = _request_window(a)
+            if not a_start or not a_end:
+                continue
+            for b in peer_records:
+                b_start, b_end = _request_window(b)
+                if b_start and b_end and intervals_overlap(a_start, a_end, b_start, b_end):
+                    overlaps_mine = True
+                    break
+            if overlaps_mine:
+                break
+        if overlaps_mine:
+            included.add(pid)
+    return [r for r in records if r.get("session_id") in included]
+
+
 def any_overlapping_pair(records: list[dict[str, Any]]) -> bool:
     """True when at least one pair of successful request *full* windows
     overlaps (queue wait included).
@@ -1252,13 +1289,16 @@ class CloudCollectionSessionRecord:
                 if rid in seen_in_group:
                     errors.append(f"collection session: duplicate id '{rid}' in {group_name}")
                 seen_in_group.add(rid)
-        # Category IDs must be a subset of the request IDs they describe.
+        # Category IDs must be a subset of the request IDs they describe —
+        # even when request_ids is empty, an orphan category ID is rejected
+        # (codex P1-16: a receipt must never attest to an execution that is
+        # not actually bound by the session).
         request_id_set = set(self.request_ids)
         for group_name in ("token_absent_execution_ids", "token_present_execution_ids",
                            "repeated_run_ids", "concurrency_request_ids",
                            "timeout_recovery_ids"):
             for rid in getattr(self, group_name):
-                if rid and request_id_set and rid not in request_id_set:
+                if rid and rid not in request_id_set:
                     errors.append(
                         f"collection session: {group_name} id '{rid}' not in request_ids"
                     )
@@ -1332,17 +1372,23 @@ def build_collection_receipt(
     binds the canonical digest of the collection-session record.
 
     The receipt is a separate object; the session record never contains it.
+
+    The worktree state is derived from ``capture_traceability()`` (never
+    hard-coded ``False``): the release schema routes real receipts through
+    ``receipt_is_release_ready()`` which requires ``git_worktree_clean``,
+    so a genuine collection must record its verified deployed state.
     """
     session_dict = session_record.to_dict()
     digest = canonical_evidence_sha256(session_dict)
     now = _utcnow()
+    trace = capture_traceability()
     receipt = ExecutionReceipt(
         execution_id=execution_id or f"collection_{uuid.uuid4().hex[:12]}",
         attestation_type="operator_attested",
         code_commit=session_record.deployed_commit,
         producer_name="src.cloud_diagnostics.build_collection_receipt",
         producer_version="1.0",
-        git_worktree_clean=False,
+        git_worktree_clean=bool(trace.get("git_worktree_clean", False)),
         sanitised_command=sanitise_command([sanitised_command]),
         started_at_utc=now,
         completed_at_utc=now,

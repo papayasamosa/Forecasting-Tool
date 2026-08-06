@@ -1352,3 +1352,140 @@ class TestTokenExecutionIdsBound:
         assert session.token_absent_execution_ids == ["req-absent"]
         assert session.token_present_execution_ids == ["req-present"]
         assert session.validate() == [], session.validate()
+
+
+class TestCollectionReceiptWorktreeState:
+    """P1-14: the collection receipt must record the verified deployed
+    worktree state, not a hard-coded False (which the release schema
+    rejects)."""
+
+    def _session(self):
+        return build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=["cold_forecast"],
+            request_records=[
+                {"request_id": "r1", "success": True,
+                 "started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+                 "completed_at_utc": "2026-08-06T00:00:02+00:00",
+                 "pipeline_constructed": True},
+            ],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+
+    def test_receipt_derives_worktree_state_from_traceability(self, monkeypatch):
+        import src.cloud_diagnostics as cd
+        session = self._session()
+        monkeypatch.setattr(
+            cd, "capture_traceability",
+            lambda: {"git_worktree_clean": True, "code_commit": _VALID_COMMIT},
+        )
+        receipt = build_collection_receipt(session)
+        assert receipt["git_worktree_clean"] is True
+
+        monkeypatch.setattr(
+            cd, "capture_traceability",
+            lambda: {"git_worktree_clean": False, "code_commit": _VALID_COMMIT},
+        )
+        receipt2 = build_collection_receipt(session)
+        assert receipt2["git_worktree_clean"] is False
+
+    def test_clean_receipt_passes_release_ready(self, monkeypatch):
+        import src.cloud_diagnostics as cd
+        from src.evidence_schemas import ExecutionReceipt, receipt_is_release_ready
+        monkeypatch.setattr(
+            cd, "capture_traceability",
+            lambda: {"git_worktree_clean": True, "code_commit": _VALID_COMMIT},
+        )
+        receipt = build_collection_receipt(self._session())
+        obj = ExecutionReceipt(**receipt)
+        errors = receipt_is_release_ready(obj)
+        assert not any("git_worktree_clean" in e for e in errors), errors
+
+
+class TestConcurrencyCohortParticipationBoundary:
+    """P1-15: the concurrency cohort must be bounded to participating
+    sessions — unrelated visitor traffic must never supply a false
+    overlapping pair or unrelated request IDs."""
+
+    def test_cohort_excludes_unrelated_peer(self):
+        from src.cloud_diagnostics import build_concurrency_cohort
+        records = [
+            {"request_id": "A1", "session_id": "sessionA", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:06+00:00"},
+            {"request_id": "B1", "session_id": "sessionB", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:01+00:00",
+             "completed_at_utc": "2026-08-06T00:00:05+00:00"},
+            {"request_id": "C1", "session_id": "sessionC", "success": True,
+             "started_at_utc": "2026-08-06T00:00:07+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:07+00:00",
+             "completed_at_utc": "2026-08-06T00:00:09+00:00"},
+        ]
+        cohort = build_concurrency_cohort(records, "sessionA")
+        ids = {r["request_id"] for r in cohort}
+        assert ids == {"A1", "B1"}
+        assert "C1" not in ids
+
+    def test_cohort_is_own_records_without_overlap(self):
+        from src.cloud_diagnostics import build_concurrency_cohort
+        records = [
+            {"request_id": "A1", "session_id": "sessionA", "success": True,
+             "started_at_utc": "2026-08-06T00:00:00+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:00+00:00",
+             "completed_at_utc": "2026-08-06T00:00:02+00:00"},
+            {"request_id": "C1", "session_id": "sessionC", "success": True,
+             "started_at_utc": "2026-08-06T00:00:07+00:00",
+             "inference_started_at_utc": "2026-08-06T00:00:07+00:00",
+             "completed_at_utc": "2026-08-06T00:00:09+00:00"},
+        ]
+        cohort = build_concurrency_cohort(records, "sessionA")
+        assert [r["request_id"] for r in cohort] == ["A1"]
+
+
+class TestOrphanCategoryIdsRejected:
+    """P1-16: category IDs must be rejected whenever absent from
+    request_ids, including when request_ids is empty."""
+
+    def test_producer_rejects_orphan_ids_when_request_ids_empty(self):
+        session = build_collection_session_record(
+            session_id="s1",
+            deployed_commit=_VALID_COMMIT,
+            commit_resolution_source="git_head",
+            deployment_url="https://example.streamlit.app",
+            diagnostics=_valid_diagnostics(),
+            acceptance_test_names=[],
+            token_absent_execution_ids=["req-1"],
+            request_records=[],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        errors = session.validate()
+        assert any("not in request_ids" in e for e in errors), errors
+
+    def test_schema_rejects_orphan_ids_when_request_ids_empty(self):
+        from src.evidence_schemas import CloudCollectionSession
+        session = CloudCollectionSession(
+            evidence_schema_version="2",
+            evidence_type="collection_session",
+            evidence_origin="real_measurement",
+            session_id="s1",
+            code_commit=_VALID_COMMIT,
+            deployed_commit=_VALID_COMMIT,
+            deployment_url="https://example.streamlit.app",
+            diagnostics_digest="d" * 64,
+            token_absent_execution_ids=["req-1"],
+            request_ids=[],
+            test_names=["cold_forecast"],
+            started_at_utc="2026-08-06T00:00:00+00:00",
+            completed_at_utc="2026-08-06T00:05:00+00:00",
+        )
+        errors = session.validate()
+        assert any("not in request_ids" in e for e in errors), errors

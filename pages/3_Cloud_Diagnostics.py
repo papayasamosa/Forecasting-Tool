@@ -321,20 +321,13 @@ if st.button("Finalise collection session"):
         else:
             deployment_url = _deployment_url()
             started_at = st.session_state.get("collection_started_at_utc", "")
-            # Concurrency is a process-level phenomenon: use the protected
-            # shared cohort (all requests in this collection window,
-            # including peer-session requests) so the overlap categoriser
-            # sees both participants of a genuine two-session run
-            # (codex P1-7).  Public resets cannot alter this cohort — only
-            # the deliberate Begin action defines the window.
-            cohort = store.snapshot()
-            window_start = started_at or diag.get("generated_at_utc", "")
-            if window_start:
-                cohort = [
-                    r for r in cohort
-                    if (r.get("started_at_utc") or r.get("inference_started_at_utc") or "") >= window_start
-                ]
-            from src.cloud_diagnostics import any_overlapping_pair
+            # Concurrency is a process-level phenomenon: use the explicit
+            # participation cohort — this session's requests plus only peer
+            # sessions that genuinely overlap them (codex P1-7 / P1-15) — so
+            # the overlap categoriser sees both participants of a genuine
+            # two-session run while unrelated visitor traffic is excluded.
+            from src.cloud_diagnostics import any_overlapping_pair, build_concurrency_cohort
+            cohort = build_concurrency_cohort(store.snapshot(), collection_session_id)
             if any_overlapping_pair(cohort):
                 _record_event("two_session_concurrency")
             # Only acceptance tests that genuinely ran are recorded

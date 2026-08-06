@@ -1449,12 +1449,14 @@ class CloudCollectionSession:
                 continue
             if len(set(ids)) != len(ids):
                 errors.append(f"collection_session: {group}: duplicate ids")
-            if self.request_ids:
-                missing = [i for i in ids if i and i not in set(self.request_ids)]
-                if missing:
-                    errors.append(
-                        f"collection_session: {group}: ids not in request_ids: {missing}"
-                    )
+            # Orphan category IDs are rejected even when request_ids is
+            # empty — a receipt must never attest to an execution that is
+            # not actually bound by the session (codex P1-16).
+            missing = [i for i in ids if i and i not in set(self.request_ids)]
+            if missing:
+                errors.append(
+                    f"collection_session: {group}: ids not in request_ids: {missing}"
+                )
         if (
             self.evidence_origin == EVIDENCE_ORIGIN_REAL
             and self.code_commit
