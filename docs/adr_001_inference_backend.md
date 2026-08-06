@@ -1,7 +1,7 @@
 # ADR-001: Inference Backend Architecture
 
 **Status:** ⏳ Provisionally accepted, pending Cloud Gate C  
-**Date:** 2026-08-05 (updated)  
+**Date:** 2026-08-06 (updated)  
 **Note:** A genuine current-head local evidence bundle (Gate B3) is now
 published on commit `7831cb4`:
 `docs/evidence/stage0/evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json`
@@ -9,6 +9,15 @@ published on commit `7831cb4`:
 timestamps) and passes the hardened bundle checks. The invalidated PR #18
 bundle remains in place for audit only. Cloud Gate C evidence is still
 required for final ADR acceptance.
+
+**Note (Stage 1 instrumentation closure):** the Cloud evidence
+instrumentation (exact deployed-commit resolution, typed runtime
+diagnostics, request-scoped memory sampling, dependency diagnostics,
+bounded request telemetry, token-state boolean, and collection-session
+digest binding) is being merged so that genuine Cloud Gate C evidence can
+be collected from the deployed app. **Gate C is not complete** in that
+instrumentation pull request — this ADR remains provisional until genuine
+Cloud collection, evidence publication, and review complete.
 
 ## Context
 

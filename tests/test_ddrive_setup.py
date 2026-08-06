@@ -23,6 +23,7 @@ from src.storage_policy import (
     REQUIRED_ENV_VARS,
     is_valid_storage_root,
     is_under_local_root,
+    is_on_d_drive,
     assert_d_drive_preflight,
     _is_abs_windows_path,
 )
@@ -43,8 +44,13 @@ class TestDDriveSetupContract:
             assert is_under_local_root(d), f"{d} not under {LOCAL_ROOT}"
 
     def test_required_env_vars_match_policy(self):
-        """Every env var target in storage_policy.REQUIRED_ENV_VARS must be under LOCAL_ROOT."""
+        """Every env var target in storage_policy.REQUIRED_ENV_VARS must be under
+        LOCAL_ROOT, except FORECASTING_REPO_ROOT which is the deliberately
+        separate repository root (never under LOCAL_ROOT\repo)."""
         for var, val in REQUIRED_ENV_VARS.items():
+            if var == "FORECASTING_REPO_ROOT":
+                assert is_on_d_drive(val), f"{var}={val} not on D: drive"
+                continue
             assert is_under_local_root(val), f"{var}={val} not under {LOCAL_ROOT}"
 
     def test_root_descendant_outside_repo_rejected(self):
@@ -102,8 +108,9 @@ class TestDDriveSetupContract:
         """The setup script must have mkdir commands for all REQUIRED_DIRS."""
         setup_path = REPO_ROOT / "scripts" / "setup_local_windows.ps1"
         content = setup_path.read_text(encoding="utf-8")
-        # Check that key dirs are mentioned
-        for key_dir in ["repo", "python312", "installers", "downloads", "temp\\pytest",
+        # Check that key dirs are mentioned (the repository is deliberately
+        # NOT under LocalRoot\repo — it lives at FORECASTING_REPO_ROOT).
+        for key_dir in ["python312", "installers", "downloads", "temp\\pytest",
                         "evidence-work", "logs"]:
             # Check for the directory name in New-Item calls
             assert key_dir in content, f"Setup script missing mkdir for {key_dir}"
@@ -160,10 +167,16 @@ class TestDDriveSetupContract:
             content = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
             for var, expected_value in REQUIRED_ENV_VARS.items():
                 # Value is either a quoted "$LocalRoot\..." string, or (for
-                # FORECASTING_LOCAL_ROOT itself) the bare $LocalRoot variable.
-                m = re.search(rf'\$env:{re.escape(var)}\s*=\s*(?:"([^"]*)"|(\$LocalRoot))', content)
+                # FORECASTING_LOCAL_ROOT itself) the bare $LocalRoot variable,
+                # or (for FORECASTING_REPO_ROOT) Split-Path -Parent $PSScriptRoot.
+                m = re.search(rf'\$env:{re.escape(var)}\s*=\s*(?:"([^"]*)"|(\$LocalRoot)|(Split-Path -Parent \$PSScriptRoot))', content)
                 assert m, f"{script_name} does not set $env:{var}"
-                ps1_value = m.group(1) if m.group(1) is not None else "$LocalRoot"
+                ps1_value = m.group(1) if m.group(1) is not None else (m.group(3) or "$LocalRoot")
+                if var == "FORECASTING_REPO_ROOT":
+                    # Deliberate exception: the repo root is separate from
+                    # LOCAL_ROOT and derived from the script location.
+                    assert "Split-Path -Parent" in ps1_value, ps1_value
+                    continue
                 expected_suffix = expected_value.replace("\\", "/")[len(LOCAL_ROOT.replace("\\", "/")):].lstrip("/")
                 ps1_suffix = ps1_value.replace("\\", "/").replace("$LocalRoot", "").lstrip("/")
                 assert ps1_suffix == expected_suffix, (

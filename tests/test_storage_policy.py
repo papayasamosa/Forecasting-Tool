@@ -28,6 +28,11 @@ class TestStoragePolicy:
 
     def test_required_env_vars_all_under_local_root(self):
         for var, val in REQUIRED_ENV_VARS.items():
+            if var == "FORECASTING_REPO_ROOT":
+                # Deliberate exception: the repository root is separate
+                # from the runtime root (never under LOCAL_ROOT\repo).
+                assert var in REQUIRED_ENV_VARS
+                continue
             assert val.startswith(LOCAL_ROOT), f"{var}={val} not under {LOCAL_ROOT}"
 
     # ── D-drive validation tests (Windows-only logic) ─────────────────

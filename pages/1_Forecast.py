@@ -23,6 +23,7 @@ import os
 import sys
 import uuid
 from io import StringIO, BytesIO
+from typing import Any
 
 import streamlit as st
 import pandas as pd
@@ -31,8 +32,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (  # noqa: E402
     CONTEXT_WINDOW_CAP,
-    COORDINATOR_CAPACITY,
-    COORDINATOR_TIMEOUT_SECONDS,
     MAX_UPLOAD_SIZE_BYTES,
     QUANTILE_MIN,
     QUANTILE_MAX,
@@ -54,6 +53,12 @@ from src.telemetry import (  # noqa: E402
     current_rss_mb,
     deployed_commit,
     process_peak_rss_mb,
+)
+from src.cloud_diagnostics import (  # noqa: E402
+    CloudRequestRecord,
+    RequestMemorySampler,
+    RequestTelemetryStore,
+    hf_token_present,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,11 +87,11 @@ def _build_demo_data() -> pd.DataFrame:
     return pd.DataFrame({"timestamp": dates, "target": values})
 
 
-@st.cache_resource
 def _get_forecast_backend() -> Chronos2Adapter:
-    """Return a process-cached Chronos2Adapter (model loads on first forecast)."""
-    logger.info("Creating Chronos2Adapter (process-level cache).")
-    return Chronos2Adapter()
+    """Return the process-cached Chronos2Adapter (shared with the Cloud
+    Diagnostics page via pages._cloud_runtime)."""
+    from pages._cloud_runtime import get_forecast_backend
+    return get_forecast_backend()
 
 
 def _resolve_backend() -> Chronos2Adapter:
@@ -106,11 +111,11 @@ def _resolve_backend() -> Chronos2Adapter:
     return _get_forecast_backend()
 
 
-@st.cache_resource
 def _get_coordinator() -> InferenceCoordinator:
-    """Return a process-cached InferenceCoordinator (one per process, like the backend)."""
-    logger.info("Creating InferenceCoordinator (process-level cache).")
-    return InferenceCoordinator(capacity=COORDINATOR_CAPACITY, timeout_seconds=COORDINATOR_TIMEOUT_SECONDS)
+    """Return the process-cached InferenceCoordinator (shared with the Cloud
+    Diagnostics page via pages._cloud_runtime)."""
+    from pages._cloud_runtime import get_coordinator
+    return get_coordinator()
 
 
 def _resolve_coordinator() -> InferenceCoordinator:
@@ -125,6 +130,114 @@ def _resolve_coordinator() -> InferenceCoordinator:
     if override is not None:
         return override
     return _get_coordinator()
+
+
+def _get_telemetry_store() -> RequestTelemetryStore:
+    """Return the process-wide bounded request-telemetry store (shared with
+    the Cloud Diagnostics page via pages._cloud_runtime).  Holds only typed,
+    sanitised request records — never raw payloads."""
+    from pages._cloud_runtime import get_telemetry_store
+    return get_telemetry_store()
+
+
+def _resolve_telemetry_store() -> RequestTelemetryStore:
+    """Return the request-telemetry store to use for this run.
+
+    Test-only seam mirroring ``_resolve_backend``: if
+    st.session_state["_test_telemetry_store_override"] is set, it is
+    returned instead of the process-cached store. Production code paths
+    never set this session_state key.
+    """
+    override = st.session_state.get("_test_telemetry_store_override")
+    if override is not None:
+        return override
+    return _get_telemetry_store()
+
+
+def _resolve_collection_session_id() -> str:
+    """Return the per-browser collection-session ID.
+
+    Stored in ``st.session_state`` so one visitor's collection window is
+    isolated from every other visitor's (review finding: a public reset must
+    never mutate another session's evidence window).  The process-wide store
+    remains shared and bounded; records are tagged with this ID.
+    """
+    session_id = st.session_state.get("collection_session_id", "")
+    if not session_id:
+        session_id = f"session_{uuid.uuid4().hex[:12]}"
+        st.session_state["collection_session_id"] = session_id
+    return session_id
+
+
+def _record_cloud_request(
+    store: RequestTelemetryStore,
+    request_id: str,
+    exec_record,
+    result,
+    sampler,
+    session_id: str,
+    *,
+    error_category: str = "",
+    success: bool = True,
+) -> None:
+    """Build and store a typed ``CloudRequestRecord`` for a completed run.
+
+    Combines the coordinator's sanitised timing, the adapter's runtime
+    metadata, and the request-scoped memory sample.  The sampler is stopped
+    FIRST so the stored sample is complete (stopped_at_utc, rss_after_mb,
+    process_peak_rss_mb) — stopping later cannot mutate the copied dict.
+    ``exec_record`` may be a ``CoordinatorExecution`` or a raw coordinator
+    request-record dict (e.g. the real timeout record retrieved from
+    ``coordinator.get_request_record`` so its genuine queue/timing
+    measurements are preserved).  On error paths ``result``/``exec_record``
+    may be None — the record is still typed, bounded, and truthful
+    (success=False, error_category set).
+    """
+    if sampler is not None:
+        sampler.stop(session_id=session_id)
+    rr = getattr(exec_record, "request_record", None)
+    if rr is None and isinstance(exec_record, dict):
+        rr = exec_record
+    rr = rr or {}
+    meta = result.runtime_metadata if result is not None else None
+    sample = sampler.to_sample(session_id=session_id) if sampler is not None else None
+
+    def _f(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or default)
+        except (TypeError, ValueError):
+            return default
+
+    inference_seconds = _f(getattr(meta, "inference_seconds", None) if meta else rr.get("inference_seconds"))
+    total_seconds = _f(getattr(meta, "total_runtime_seconds", None) if meta else 0.0)
+    model_load_seconds = _f(getattr(meta, "model_load_seconds", None) if meta else 0.0)
+    result_conversion_seconds = _f(getattr(meta, "result_conversion_seconds", None) if meta else 0.0)
+
+    record = CloudRequestRecord(
+        request_id=request_id,
+        session_id=session_id,
+        started_at_utc=rr.get("start_time_utc") or (sample.started_at_utc if sample else ""),
+        queued_at_utc=rr.get("start_time_utc", ""),
+        inference_started_at_utc=rr.get("inference_start_utc", ""),
+        completed_at_utc=rr.get("completion_time_utc") or (sample.stopped_at_utc if sample else ""),
+        queue_seconds=_f(rr.get("queue_seconds")),
+        model_load_seconds=model_load_seconds,
+        inference_seconds=inference_seconds,
+        result_conversion_seconds=result_conversion_seconds,
+        total_seconds=total_seconds,
+        success=success,
+        error_category=error_category,
+        pipeline_constructed=bool(getattr(meta, "model_was_loaded_this_run", False)) if meta else False,
+        pipeline_reused=bool(getattr(meta, "pipeline_reused", False)) if meta else False,
+        model_revision=getattr(meta, "model_revision", "") or (result.model_revision if result is not None else ""),
+        context_rows_used=int(getattr(meta, "context_rows_used", 0) or 0) if meta else 0,
+        context_truncated=(
+            int(getattr(meta, "preprocessing_original_rows", 0) or 0)
+            > int(getattr(meta, "preprocessing_retained_rows", 0) or 0)
+        ) if meta else False,
+        memory=sample.to_dict() if sample else {},
+    )
+    store.record(record)
 
 
 def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
@@ -148,6 +261,23 @@ _DEFAULT_STATE = {
 for k, v in _DEFAULT_STATE.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Per-browser collection session: the process-wide bounded store is shared,
+# but records and acceptance-test events are tagged with the browser session
+# ID so one visitor's collection window never absorbs another's.
+_telemetry_store = _resolve_telemetry_store()
+_session_id = _resolve_collection_session_id()
+
+
+def _record_acceptance_event(test_name: str, passed: bool = True, details: str = "") -> None:
+    """Record a canonical acceptance-test event for this browser's
+    collection session (a test genuinely executed)."""
+    try:
+        _telemetry_store.record_acceptance_event(
+            test_name, passed, details=details, session_id=_session_id,
+        )
+    except ValueError:
+        logger.warning("Ignoring unknown acceptance-test event %s", test_name)
 
 # ---------------------------------------------------------------------------
 # Page layout
@@ -179,6 +309,7 @@ with st.sidebar:
             uploaded_file.seek(0)
             if size > MAX_UPLOAD_SIZE_BYTES:
                 st.error(f"File exceeds the {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB limit ({size / 1024 / 1024:.1f} MB).")
+                _record_acceptance_event("oversized_csv_rejected")
                 uploaded_file = None
                 st.session_state.cached_df = None
                 st.session_state.cached_df_hash = ""
@@ -255,6 +386,7 @@ if run_button and df is not None and not st.session_state.is_running:
     # Block identical timestamp and target column selections (WP6)
     if ts_col == target_col:
         st.error("Timestamp and target columns must be different.")
+        _record_acceptance_event("same_column_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -272,6 +404,7 @@ if run_button and df is not None and not st.session_state.is_running:
     except Exception as exc:
         logger.warning(f"Timestamp parse failed in column '{ts_col}': {type(exc).__name__}")
         st.error(f"Could not parse timestamps in column '{ts_col}'. Check the date format.")
+        _record_acceptance_event("invalid_timestamp_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -296,6 +429,7 @@ if run_button and df is not None and not st.session_state.is_running:
                 f"row(s) out of {total_rows}. "
                 "Remove or fix the invalid timestamps and try again."
             )
+        _record_acceptance_event("blank_timestamp_rejected")
         st.session_state.is_running = False
         st.stop()
 
@@ -325,6 +459,9 @@ if run_button and df is not None and not st.session_state.is_running:
         working_df = working_df.iloc[-CONTEXT_WINDOW_CAP:].reset_index(drop=True)
         retained_rows = len(working_df)
         retained_start = str(working_df[ts_col].iloc[0])
+        # context_truncation_visible is recorded in the SUCCESS path only —
+        # the notice is rendered only from a successful forecast_result
+        # (codex P1-29).
 
     # Only materialise retained rows
     records = tuple(working_df.to_dict("records"))
@@ -347,11 +484,19 @@ if run_button and df is not None and not st.session_state.is_running:
 
     # Get or create the process-cached backend and coordinator (model loads
     # lazily on first forecast; the coordinator serialises concurrent
-    # sessions' inference calls through a bounded semaphore).
+    # sessions' inference calls through a bounded semaphore).  Every request
+    # is also recorded as a typed, bounded CloudRequestRecord with its own
+    # request-scoped memory sample (WP4/WP5).
+    store = _telemetry_store
+    session_id = _session_id
+    request_id = str(uuid.uuid4())
+    sampler = RequestMemorySampler(request_id=request_id)
+    # Sampler starts before queue wait / model loading so the request-scoped
+    # peak captures the whole request window.
+    sampler.start()
     try:
         backend = _resolve_backend()
         coordinator = _resolve_coordinator()
-        request_id = str(uuid.uuid4())
         # Run forecast under the coordinator so overlapping sessions queue
         # rather than racing the shared cached backend directly.
         with st.spinner("Running Chronos-2 forecast (may load model on first call, or queue behind another request)..."):
@@ -374,18 +519,118 @@ if run_button and df is not None and not st.session_state.is_running:
             # Sanitised queue-time telemetry from the execution record (no
             # full-history scan).
             st.session_state.last_queue_seconds = exec_record.request_record.get("queue_seconds", 0.0)
+            _record_cloud_request(
+                store, request_id, exec_record, result, sampler, session_id,
+            )
+            # Record which canonical acceptance tests genuinely ran so the
+            # collection session reports only tests that actually executed
+            # (codex P1-4 / P1-6).
+            meta = result.runtime_metadata
+            warm_so_far = len([
+                r for r in store.snapshot(session_id=session_id)
+                if r.get("success") and r.get("pipeline_reused")
+                and not r.get("pipeline_constructed")
+            ])
+            if meta.model_was_loaded_this_run:
+                _record_acceptance_event("cold_forecast", details=f"request {request_id}")
+                # Token-path load: the cold load genuinely ran under the
+                # observed token state (boolean only).  The event details
+                # carry the request ID so finalisation can bind the token
+                # execution IDs (codex P1-13).
+                if hf_token_present():
+                    _record_acceptance_event("token_present_load", details=request_id)
+                else:
+                    _record_acceptance_event("token_absent_load", details=request_id)
+            elif warm_so_far < 3:
+                _record_acceptance_event("warm_forecast", details=f"request {request_id}")
+            else:
+                # Only after the third countable warm run is the
+                # repeated_forecasts acceptance test genuinely satisfied
+                # (the release schema requires at least 3 warm runs).
+                _record_acceptance_event("repeated_forecasts", details=f"request {request_id}")
+            if data_option == "Upload CSV":
+                _record_acceptance_event("valid_csv_forecast", details=f"request {request_id}")
+            # Truncation notice is actually rendered for this successful
+            # result (codex P1-29).
+            if retained_rows < original_rows:
+                _record_acceptance_event("context_truncation_visible", details=f"request {request_id}")
+            # Recovery tests are marked passed only after a later successful
+            # request in the SAME collection that contains the timed-out /
+            # failed request (codex P1-8 / P1-18) — pending flags carry the
+            # originating collection ID so a new session can never absorb
+            # the recovery.
+            if (st.session_state.get("_pending_timeout_recovery", False)
+                    and st.session_state.get("_pending_timeout_collection", "") == session_id):
+                st.session_state["_pending_timeout_recovery"] = False
+                st.session_state["_pending_timeout_collection"] = ""
+                _record_acceptance_event("coordinator_timeout_recovery", details=f"recovered by {request_id}")
+            if (st.session_state.get("_pending_recoverable_failure", False)
+                    and st.session_state.get("_pending_recoverable_collection", "") == session_id):
+                st.session_state["_pending_recoverable_failure"] = False
+                st.session_state["_pending_recoverable_collection"] = ""
+                _record_acceptance_event("recoverable_failure", details=f"recovered by {request_id}")
     except CoordinatorTimeoutError:
+        # Preserve the coordinator's genuine timeout measurement (queue
+        # start, completion, configured timeout duration) instead of
+        # discarding it — the coordinator already stored the record when it
+        # timed out (codex P1-12).
+        timeout_record = None
+        try:
+            timeout_record = coordinator.get_request_record(request_id)
+        except Exception:
+            timeout_record = None
+        _record_cloud_request(
+            store, request_id, timeout_record, None, sampler, session_id,
+            error_category="CoordinatorTimeoutError", success=False,
+        )
+        # Keep the timeout pending: coordinator_timeout_recovery is only
+        # marked passed after a later successful request in the same
+        # collection (codex P1-8 / P1-18).
+        st.session_state["_pending_timeout_recovery"] = True
+        st.session_state["_pending_timeout_collection"] = session_id
+        _record_acceptance_event("configuration_preserved", details=f"timeout {request_id}")
         st.session_state.error_message = (
             "The forecasting service is busy handling another request and did not "
             "become available in time. Please try again in a moment."
         )
         logger.warning("Coordinator timeout waiting for inference slot", exc_info=True)
     except AdapterError as e:
+        # Preserve the coordinator's genuine failure measurement (queue and
+        # inference timestamps) — it recorded the request before re-raising
+        # (codex P1-20).
+        failure_record = None
+        try:
+            failure_record = coordinator.get_request_record(request_id)
+        except Exception:
+            failure_record = None
+        _record_cloud_request(
+            store, request_id, failure_record, None, sampler, session_id,
+            error_category=type(e).__name__, success=False,
+        )
+        st.session_state["_pending_recoverable_failure"] = True
+        st.session_state["_pending_recoverable_collection"] = session_id
+        _record_acceptance_event("configuration_preserved", details=f"recoverable error {request_id}")
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
     except Exception:
+        failure_record = None
+        try:
+            failure_record = coordinator.get_request_record(request_id)
+        except Exception:
+            failure_record = None
+        _record_cloud_request(
+            store, request_id, failure_record, None, sampler, session_id,
+            error_category="UnexpectedError", success=False,
+        )
+        st.session_state["_pending_recoverable_failure"] = True
+        st.session_state["_pending_recoverable_collection"] = session_id
+        _record_acceptance_event("configuration_preserved", details=f"unexpected error {request_id}")
         st.session_state.error_message = "An unexpected error occurred. Please check your data and try again."
         logger.error("Unexpected forecast error", exc_info=True)
+    finally:
+        # Always stop the request-scoped sampler, even on failure
+        # (idempotent — _record_cloud_request already stopped it).
+        sampler.stop(session_id=session_id)
 
     st.session_state.is_running = False
 

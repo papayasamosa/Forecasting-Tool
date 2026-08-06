@@ -308,11 +308,22 @@ class TokenPathResult:
 # Constants for SHA-256 validation
 # ---------------------------------------------------------------------------
 _SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+# Exactly 40 lowercase hexadecimal characters (Git commit SHA).
+_SHA40_RE = re.compile(r'^[0-9a-f]{40}$')
 
 
 def _is_valid_sha256(value: str) -> bool:
     """Return True if *value* is a valid lowercase 64-char SHA-256 hex string."""
     return bool(_SHA256_RE.match(value)) if value else False
+
+
+def _is_exact_commit(value: str) -> bool:
+    """Return True only for exactly 40 lowercase hexadecimal characters.
+
+    Rejects short SHAs, uppercase SHAs, arbitrary text, ``not available``
+    and empty values — release evidence requires the exact deployed commit.
+    """
+    return bool(value) and bool(_SHA40_RE.match(value))
 
 
 # ---------------------------------------------------------------------------
@@ -1370,7 +1381,24 @@ class CloudCollectionSession:
     session_id: str = ""
     code_commit: str = ""
     deployed_commit: str = ""
+    # Stage 1 instrumentation closure (WP11): the collection session binds
+    # the deployment URL, the runtime-diagnostics digest, and every
+    # collected request/execution ID group so the collection receipt has
+    # real content to bind.  All new fields are optional-with-defaults to
+    # preserve backward compatibility with existing fixtures.
+    deployment_url: str = ""
+    diagnostics_digest: str = ""
+    diagnostics_id: str = ""
+    # Canonical digest of the actual request records bound by this session
+    # (codex P1-24) — optional with default for backward compatibility.
+    request_records_digest: str = ""
     test_names: list[str] = dataclasses.field(default_factory=list)
+    request_ids: list[str] = dataclasses.field(default_factory=list)
+    token_absent_execution_ids: list[str] = dataclasses.field(default_factory=list)
+    token_present_execution_ids: list[str] = dataclasses.field(default_factory=list)
+    repeated_run_ids: list[str] = dataclasses.field(default_factory=list)
+    concurrency_request_ids: list[str] = dataclasses.field(default_factory=list)
+    timeout_recovery_ids: list[str] = dataclasses.field(default_factory=list)
     started_at_utc: str = ""
     completed_at_utc: str = ""
 
@@ -1394,6 +1422,61 @@ class CloudCollectionSession:
         # validate as long as its receipt digest was updated to match.
         if not self.deployed_commit:
             errors.append("collection_session: deployed_commit: empty")
+        # Stage 1 (WP3): release evidence must carry an exact deployed commit.
+        if (
+            self.evidence_origin == EVIDENCE_ORIGIN_REAL
+            and not _is_exact_commit(self.deployed_commit)
+        ):
+            errors.append(
+                f"collection_session: deployed_commit {self.deployed_commit!r} is "
+                "not exactly 40 lowercase hexadecimal characters — release "
+                "evidence requires the exact deployed commit"
+            )
+        # Stage 1 (WP11): real collection sessions must bind the deployment
+        # URL and the runtime-diagnostics digest; synthetic fixtures may stay
+        # minimal (backward compatible).
+        if self.evidence_origin == EVIDENCE_ORIGIN_REAL:
+            if not self.deployment_url:
+                errors.append("collection_session: deployment_url: empty — must identify the deployment")
+            if not self.diagnostics_digest:
+                errors.append("collection_session: diagnostics_digest: empty — must bind the runtime diagnostics")
+            elif not _is_valid_sha256(self.diagnostics_digest):
+                errors.append(
+                    "collection_session: diagnostics_digest is not a 64-char "
+                    "lowercase SHA-256 — a malformed digest binds no canonical "
+                    "diagnostics artifact"
+                )
+            if not self.request_records_digest:
+                errors.append(
+                    "collection_session: request_records_digest: empty — must "
+                    "bind the actual request records"
+                )
+            elif not _is_valid_sha256(self.request_records_digest):
+                errors.append(
+                    "collection_session: request_records_digest is not a "
+                    "64-char lowercase SHA-256 — altered or substituted "
+                    "request telemetry must invalidate the receipt"
+                )
+        # Within-group uniqueness + category IDs subset of request_ids.
+        _subset_groups = (
+            "token_absent_execution_ids", "token_present_execution_ids",
+            "repeated_run_ids", "concurrency_request_ids", "timeout_recovery_ids",
+        )
+        for group in _subset_groups:
+            ids = getattr(self, group)
+            if not isinstance(ids, list):
+                errors.append(f"collection_session: {group}: must be a list")
+                continue
+            if len(set(ids)) != len(ids):
+                errors.append(f"collection_session: {group}: duplicate ids")
+            # Orphan category IDs are rejected even when request_ids is
+            # empty — a receipt must never attest to an execution that is
+            # not actually bound by the session (codex P1-16).
+            missing = [i for i in ids if i and i not in set(self.request_ids)]
+            if missing:
+                errors.append(
+                    f"collection_session: {group}: ids not in request_ids: {missing}"
+                )
         if (
             self.evidence_origin == EVIDENCE_ORIGIN_REAL
             and self.code_commit

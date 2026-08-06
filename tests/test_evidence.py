@@ -757,11 +757,14 @@ class TestCloudEvidenceValidation:
     """Test CloudEvidence.validate() with strict cache states and concurrency gate."""
 
     def _valid_cloud_dict(self, overrides: dict | None = None) -> dict:
+        # Exact 40-hex commit so the hardened collection-session contract
+        # (WP3) validates; short SHAs are release-invalid by design now.
+        _commit = "8c3c67c4cb4302bb788f4801ae3fd2e57032c4a9"
         data = {
             "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
             "evidence_type": "cloud_stage0",
             "success": True,
-            "code_commit": "abc123",
+            "code_commit": _commit,
             "evidence_origin": "real_measurement",
             "git_worktree_clean": True,
             "started_at_utc": "2026-07-29T00:00:00",
@@ -792,7 +795,7 @@ class TestCloudEvidenceValidation:
             "torch_cuda_none": True,
             "nvidia_packages_absent": True,
             "deployed_url": "https://example.com/app",
-            "deployed_commit": "abc123",
+            "deployed_commit": _commit,
             "deployment_time_utc": "2026-07-29T00:00:00",
             "cold": {
                 "total_seconds": 120.0,
@@ -923,6 +926,10 @@ class TestCloudEvidenceValidation:
             "session_id": "collection-session-1",
             "code_commit": commit,
             "deployed_commit": data.get("deployed_commit", commit),
+            "deployment_url": data.get("deployed_url", "https://example.com/app"),
+            "diagnostics_digest": "d" * 64,
+            "diagnostics_id": "diag-1",
+            "request_records_digest": "e" * 64,
             "test_names": ["dependency_install", "cold_forecast", "warm_forecast"],
             "started_at_utc": "2026-07-29T00:00:00",
             "completed_at_utc": "2026-07-29T00:05:00",

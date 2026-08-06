@@ -37,24 +37,43 @@ if (-not (Test-Path $driveRoot)) {
     exit 1
 }
 
-# ---- Step 2: Preflight — require repository under D:\Forecasting-Tool-Local\repo ----
-$expectedRepoPath = "$LocalRoot\repo"
-$resolvedRepoExpected = [System.IO.Path]::GetFullPath($expectedRepoPath)
+# ---- Step 2: Preflight — the repository root is deliberately separate from
+#      the runtime root (never D:\Forecasting-Tool-Local\repo); it must be on
+#      the D: drive and match FORECASTING_REPO_ROOT when that is configured. ----
+$expectedRepoRoot = if ($env:FORECASTING_REPO_ROOT) { $env:FORECASTING_REPO_ROOT } else { "D:\App Projects\Forecasting-Tool" }
 $resolvedRepoActual = [System.IO.Path]::GetFullPath($repoRoot)
-if ($resolvedRepoActual -ne $resolvedRepoExpected) {
+$resolvedRepoDrive = [System.IO.Path]::GetPathRoot($resolvedRepoActual).TrimEnd('\')
+if ($resolvedRepoDrive -ne 'D:') {
     Write-Error @"
-Repository must be at '$expectedRepoPath'.
+Repository must be on the D: drive.
 Current location: '$repoRoot'
-Clone or move the repository to:
-  git clone https://github.com/papayasamosa/Forecasting-Tool.git "$expectedRepoPath"
-Then re-run this script from that location.
+The repository and runtime roots are deliberately separate; move the repository to a D: directory and re-run.
 "@
     exit 1
 }
+# When FORECASTING_REPO_ROOT is unset, the repository must be the default —
+# verify_environment.py later compares the variable exactly against
+# REPO_ROOT_DEFAULT (D:\App Projects\Forecasting-Tool), so an arbitrary
+# D-drive path would fail the final verification (codex P2, thread 30).
+if (-not $env:FORECASTING_REPO_ROOT -and $resolvedRepoActual -ne [System.IO.Path]::GetFullPath($expectedRepoRoot)) {
+    Write-Error @"
+FORECASTING_REPO_ROOT is unset; the repository must be the default '$expectedRepoRoot'.
+Current location: '$repoRoot'
+Set FORECASTING_REPO_ROOT to the actual repository path or move the repository and re-run.
+"@
+    exit 1
+}
+if ($env:FORECASTING_REPO_ROOT -and [System.IO.Path]::GetFullPath($env:FORECASTING_REPO_ROOT) -ne $resolvedRepoActual) {
+    Write-Error @"
+Repository location '$repoRoot' does not match FORECASTING_REPO_ROOT '$expectedRepoRoot'.
+"@
+    exit 1
+}
+# Export the repo root so subsequent steps and the venv know the separation.
+$env:FORECASTING_REPO_ROOT = $repoRoot
 
 # ---- Step 3: Create ALL required directories (must match storage_policy) ----
 $dirs = @(
-    "$LocalRoot\repo",
     "$LocalRoot\python312",
     "$LocalRoot\installers",
     "$LocalRoot\downloads",
@@ -195,6 +214,9 @@ Write-Host "Version: $pyVer"
 
 # ---- Step 5: Set ALL required environment variables (match storage_policy) ----
 $env:FORECASTING_LOCAL_ROOT = $LocalRoot
+# The repository root is deliberately separate from the runtime root and
+# is NOT under D:\Forecasting-Tool-Local\repo.
+$env:FORECASTING_REPO_ROOT = Split-Path -Parent $PSScriptRoot
 $env:PIP_CACHE_DIR = "$LocalRoot\cache\pip"
 $env:HF_HOME = "$LocalRoot\cache\huggingface"
 $env:HUGGINGFACE_HUB_CACHE = "$LocalRoot\cache\huggingface"
