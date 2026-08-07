@@ -74,7 +74,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
-| Community Cloud deployment (Gate C) | ⏳ Pending — checklist remains blank |
+| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected on commit `c46e586d` (14 measurements verified, both token lifecycles bound); remaining items need concurrency/failure/timeout capture — see `docs/evidence/cloud_gate_c/README.md` |
 | ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
@@ -288,9 +288,15 @@ commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
   `scripts/build_local_stage0_bundle.py` require independently-provenanced
   token-path evidence (unique `run_id`, timestamps, matching revisions per
   attempted path) so a duplicated record is mechanically rejected.
-- **Cloud evidence (Gate C)**: Not yet completed. The Community Cloud checklist
-  is still empty. This is now the sole remaining Stage 0 evidence blocker
-  (the Gate B3 local bundle is published and valid).
+- **Cloud evidence (Gate C)**: Genuine collection performed on commit `c46e586d`
+  (2026-08-07) — both token lifecycles bound in typed bundles under
+  `docs/evidence/cloud_gate_c/`; 14 required measurements verified. **Gate C is
+  still not complete**: two-session concurrency, coordinator timeout recovery, and
+  recoverable-failure require capabilities the agent does not have (a second
+  browser session, an induced genuine failure), and the oversized-rejection
+  acceptance event is blocked by the platform upload limit. This is the sole
+  remaining Stage 0 evidence blocker (the Gate B3 local bundle is published and
+  valid).
 - **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.

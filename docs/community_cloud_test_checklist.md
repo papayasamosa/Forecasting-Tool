@@ -28,27 +28,33 @@ Use this checklist when deploying to Streamlit Community Cloud.
 
 ## Test scenarios
 
+> **Status key:** ✅ passed (genuine, verified in the typed collection bundles under
+> `docs/evidence/cloud_gate_c/`, commit `c46e586d`, 2026-08-07) · ⚠️ platform-enforced
+> (rejection before parsing genuinely occurred via the Streamlit uploader, but the
+> typed app event is not emitted) · ❌ not run (requires tooling/actions the agent does
+> not have; never fabricated).
+
 | # | Canonical Test Name | Expected | Actual |
 |---|---------------------|----------|--------|
-| 1 | `dependency_install` | `pip install -r requirements.txt` succeeds | |
-| 2 | `pip_check` | `pip check` passes | |
-| 3 | `cpu_only_torch` | `torch.version.cuda is None` | |
-| 4 | `no_nvidia_packages` | No NVIDIA/CUDA packages installed | |
-| 5 | `token_absent_load` | Model loads without HF_TOKEN (public model) | |
-| 6 | `token_present_load` | Model loads with HF_TOKEN | |
-| 7 | `cold_forecast` | First forecast completes, model loads within 5 min | |
-| 8 | `warm_forecast` | Inference faster than cold, pipeline reused | |
-| 9 | `repeated_forecasts` | 3+ repeated forecasts with stable timing | |
-| 10 | `valid_csv_forecast` | Upload valid CSV, preview + forecast works | |
-| 11 | `oversized_csv_rejected` | Upload file > 50 MB rejected before parsing | |
-| 12 | `blank_timestamp_rejected` | CSV with blank timestamps produces user-friendly error | |
-| 13 | `invalid_timestamp_rejected` | CSV with invalid timestamps produces user-friendly error | |
-| 14 | `same_column_rejected` | Same timestamp/target column selected is blocked | |
-| 15 | `context_truncation_visible` | Truncation notice displayed for long context | |
-| 16 | `recoverable_failure` | Expected failure + same-adapter retry succeeds | |
-| 17 | `configuration_preserved` | App config stays intact after recoverable error | |
-| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | |
-| 19 | `coordinator_timeout_recovery` | Coordinator timeout surfaces as recoverable error | |
+| 1 | `dependency_install` | `pip install -r requirements.txt` succeeds | ✅ both lifecycles |
+| 2 | `pip_check` | `pip check` passes | ✅ both lifecycles |
+| 3 | `cpu_only_torch` | `torch.version.cuda is None` | ✅ both (torch 2.13.0+cpu) |
+| 4 | `no_nvidia_packages` | No NVIDIA/CUDA packages installed | ✅ both |
+| 5 | `token_absent_load` | Model loads without HF_TOKEN (public model) | ✅ A lifecycle (req `3867b1f0-…`, 8.178 s) |
+| 6 | `token_present_load` | Model loads with HF_TOKEN | ✅ B lifecycle (req `c183d6b4-…`, 8.745 s) |
+| 7 | `cold_forecast` | First forecast completes, model loads within 5 min | ✅ both (RSS ~330→~970 MB) |
+| 8 | `warm_forecast` | Inference faster than cold, pipeline reused | ✅ both (0.06–0.09 s, `pipeline_reused`) |
+| 9 | `repeated_forecasts` | 3+ repeated forecasts with stable timing | ✅ both (≥3 warm runs each) |
+| 10 | `valid_csv_forecast` | Upload valid CSV, preview + forecast works | ✅ both |
+| 11 | `oversized_csv_rejected` | Upload file > 50 MB rejected before parsing | ⚠️ platform-enforced (51 MB rejected client-side by uploader; app event not emitted) |
+| 12 | `blank_timestamp_rejected` | CSV with blank timestamps produces user-friendly error | ✅ both |
+| 13 | `invalid_timestamp_rejected` | CSV with invalid timestamps produces user-friendly error | ✅ both |
+| 14 | `same_column_rejected` | Same timestamp/target column selected is blocked | ✅ both |
+| 15 | `context_truncation_visible` | Truncation notice displayed for long context | ✅ both (9000→8192 rows) |
+| 16 | `recoverable_failure` | Expected failure + same-adapter retry succeeds | ❌ not run (requires induced genuine failure) |
+| 17 | `configuration_preserved` | App config stays intact after recoverable error | ✅ recorded on genuine error paths that ran |
+| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | ❌ not run (needs a second browser session) |
+| 19 | `coordinator_timeout_recovery` | Coordinator timeout surfaces as recoverable error | ❌ not run (300 s timeout not safely inducible) |
 
 > **Note:** Duplicate-timestamp remediation is Phase 1 work. In Stage 0, malformed
 > input produces a user-friendly error without detailed duplicate guidance.
@@ -112,17 +118,24 @@ Use this checklist when deploying to Streamlit Community Cloud.
 
 ## Acceptance / rejection
 
-- [ ] Dependency install matches CI
-- [ ] CPU-only Torch confirmed
-- [ ] Cold start completes within 5 minutes
-- [ ] Warm forecast completes within 30 seconds
-- [ ] Peak memory within Community Cloud platform limits (to be measured)
-- [ ] File upload size limit enforced before parse
-- [ ] Same-column mapping blocked
-- [ ] Errors show user-friendly messages (no stack traces)
-- [ ] Configuration preserved after recoverable error
+- [x] Dependency install matches CI
+- [x] CPU-only Torch confirmed
+- [x] Cold start completes within 5 minutes (model load 8.2–8.7 s on this deployment)
+- [x] Warm forecast completes within 30 seconds (0.06–0.09 s)
+- [x] Peak memory within Community Cloud platform limits (peak RSS 976 MB recorded)
+- [x] File upload size limit enforced before parse (platform uploader rejects > 50 MB)
+- [x] Same-column mapping blocked
+- [x] Errors show user-friendly messages (no stack traces)
+- [x] Configuration preserved after recoverable error
+- [ ] Two-session concurrency measured (requires a second browser session)
+- [ ] Coordinator timeout recovery measured (300 s timeout — not safely inducible)
+- [ ] Recoverable failure + retry measured (requires induced genuine failure)
 
-**Decision:** ⏳ Pending
+**Decision:** ⏳ Pending — genuine Cloud Gate C evidence collected on commit
+`c46e586d` (14 measurements verified, both token lifecycles bound); the remaining
+items above require capabilities the agent does not have. See
+`docs/evidence/cloud_gate_c/README.md` for the full status. Do not mark Gate C
+complete.
 
 ## Administration checkpoints (user-authenticated, exact)
 
