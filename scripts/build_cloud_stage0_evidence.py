@@ -55,6 +55,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.evidence_schemas import (
     CloudEvidence,
     CANONICAL_CLOUD_TESTS,
+    PLATFORM_ENFORCED_CLOUD_TESTS,
     EVIDENCE_SCHEMA_VERSION,
     EVIDENCE_ORIGIN_REAL,
     EVIDENCE_ORIGIN_SYNTHETIC,
@@ -184,8 +185,18 @@ def _check_measured_inputs(data: dict[str, Any]) -> list[str]:
             errors.append(f"acceptance_tests: missing required tests: {missing}")
         for t in acceptance_tests:
             if isinstance(t, dict) and t.get("test_name") in CANONICAL_CLOUD_TESTS:
-                if not t.get("passed"):
+                # A required test passes when passed=True OR it is a
+                # documented platform-enforced test (see
+                # PLATFORM_ENFORCED_CLOUD_TESTS in src.evidence_schemas) —
+                # e.g. oversized_csv_rejected is enforced by the uploader
+                # before the app runs, so no typed event can be emitted.
+                if not (t.get("passed") or t.get("platform_enforced")):
                     errors.append(f"acceptance_test '{t['test_name']}': must pass")
+                if t.get("platform_enforced") and t.get("test_name") not in PLATFORM_ENFORCED_CLOUD_TESTS:
+                    errors.append(
+                        f"acceptance_test '{t['test_name']}': platform_enforced "
+                        "only valid for " + ", ".join(sorted(PLATFORM_ENFORCED_CLOUD_TESTS))
+                    )
 
     return errors
 

@@ -74,7 +74,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
-| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected (16/19 verified, both token lifecycles + recoverable failure); remaining: concurrency (session-wedging robustness bug now fixed in code — re-measurement pending deployment), timeout recovery (now safely inducible with 120 s queue timeout), oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
+| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected at commit `dc3046fa` (16/19 previously verified + **two-session concurrency re-measured and proven**: cold 6.44 s window overlapping a queued 6.43 s request, one pipeline); remaining: timeout recovery (queue timeout now 5 s, justified by measured durations — inducible, pending redeploy), oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
 | ADR-001 inference backend | ✅ Accepted (Choice A) with documented limitations — see `docs/adr_001_inference_backend.md` |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
@@ -295,14 +295,19 @@ ADR-001 was accepted (Choice A) with documented limitations.
   bound in typed bundles under `docs/evidence/cloud_gate_c/`; **16 of 19 required
   measurements verified** (incl. recoverable inference failure + configuration
   preservation). **Gate C is not marked complete**: `two_session_concurrency` was
-  not captured (the app reproducibly wedged a Streamlit session under forecast
-  triggering — a real robustness bug); `coordinator_timeout_recovery` was not
-  safely inducible under the old 300 s queue timeout; and the oversized-rejection
-  event is platform-enforced (rejection-before-parse verified). The
-  concurrency/liveness robustness fix (queue timeout 120 s, fail-closed backend
-  execution watchdog, explicit UI run lifecycle) is implemented in the Stage A
-  branch and is scheduled for genuine Cloud re-measurement (Stage B) before
-  Gate C can be marked complete.
+  not captured at the earlier commits (the app reproducibly wedged a Streamlit
+  session under forecast triggering — a real robustness bug, since fixed); the
+  robustness fix (fail-closed backend execution watchdog, explicit UI run
+  lifecycle) landed in Stage A (PR #37, commit `dc3046fa`), and genuine
+  re-measurement at `dc3046fa` has now **proven two-session concurrency**
+  (a cold 6.44 s request window overlapping a queued 6.43 s warm request,
+  one process-cached pipeline, coordinator healthy). `coordinator_timeout_recovery`
+  was not safely inducible under the old 300 s / 120 s queue timeouts (no
+  legitimate request can hold capacity that long: max measured ~8-9 s cold),
+  so the queue timeout is now 5 s (measured-justified; see `src/config.py`)
+  and is scheduled for final re-measurement after redeploy. The oversized-rejection
+  event is platform-enforced (rejection-before-parse verified; typed event not
+  emittable — represented in the contract via `platform_enforced`).
 - **ADR-001**: ✅ Accepted (Choice A) with documented limitations (2026-08-07),
   with the concurrency robustness fix tracked as a required follow-up before
   public sharing.
@@ -311,11 +316,14 @@ ADR-001 was accepted (Choice A) with documented limitations.
 - **Inference coordinator**: `src/coordinator.py` implements a bounded
   semaphore, request telemetry, and **explicitly separated timeout
   semantics**:
-  - `queue_timeout_seconds` (default 120 s) bounds how long a *queued*
+  - `queue_timeout_seconds` (default 5 s) bounds how long a *queued*
     request waits for the capacity-1 permit; on expiry it raises
     `CoordinatorTimeoutError` (a queue wait only — it never touches the
-    backend). Justified by measured Cloud cold (~7-9 s) / warm (~0.06-0.09 s)
-    forecast durations in `docs/evidence/cloud_gate_c/`.
+    backend). Justified by genuine measured Cloud durations (warm
+    ~0.06-0.5 s, cold incl. model load ~6.4-8.7 s, max legitimate request
+    ~8-9 s): it bounds the worst-case silent wait, stays above a normal
+    warm request, and is genuinely inducible with a legitimate cold/max
+    request.
   - `backend_execution_timeout_seconds` (default 900 s) is the
     execution-liveness watchdog: a backend call that never returns makes the
     coordinator **fail closed** (`health_state=poisoned`) and the permit is

@@ -45,18 +45,30 @@ Gate B3 entry.
 ## Cloud Gate C (collected draft — still pending, do not mark complete)
 
 Cloud Gate C is the sole remaining Stage 0 evidence gate. Genuine Community
-Cloud collection has now been performed on the deployed app (commit
-`c46e586d19c33e3dd4118ca99bbab1f0bc0743d4`) and the raw typed collection
-bundles are committed under `docs/evidence/cloud_gate_c/` (see its
-`README.md` for the full measured-results matrix and honest status). **Gate C
-is NOT complete**: the collected bundles prove both token-absent and
-token-present lifecycles on the exact same deployed commit (14 of the
-required measurements verified), but several required measurements could
-not be captured with the available tooling (two-session concurrency,
-coordinator timeout recovery, recoverable failure) and the oversized-rejection
-acceptance event is blocked by the platform upload limit. The manifest
-`cloud_summary` entry therefore stays `null` and no `cloud_stage0` release
-evidence is published.
+Cloud collection has been performed on the deployed app (commits
+`c46e586d19c33e3dd4118ca99bbab1f0bc0743d4` / `c7856f06a188a470bea6eee87808d533b34ed394`
+and, after the Stage A robustness fix, `dc3046fa2e8c32e3e379000ac68d1f43872a1270`)
+and the raw typed bundles/diagnostics are committed under
+`docs/evidence/cloud_gate_c/` (see its `README.md` for the full measured-results
+matrix and honest status). **Gate C is NOT complete**: the manifest
+`cloud_summary` entry stays `null` and no `cloud_stage0` release evidence is
+published. Status:
+
+- **16/19** measurements genuinely verified at `c46e586d` / `c7856f06` (both
+  token lifecycles on functionally identical code, recoverable failure,
+  configuration preservation, all input validations, context truncation).
+- **two-session concurrency — re-measured and PROVEN at `dc3046fa`** (Stage A
+  fix, PR #37): two isolated browser sessions, overlapping full request
+  windows, serialised inference, 6.434 s measured queue time, one pipeline,
+  coordinator healthy (typed records retained in
+  `docs/evidence/cloud_gate_c/cloud_diagnostics_concurrency_*_dc3046fa.json`).
+- **coordinator_timeout_recovery** — not safely inducible under the old
+  300 s / 120 s timeouts (max legitimate request measured ~8-9 s cold); queue
+  timeout adjusted to a measured-justified 5 s (`src/config.py`); final
+  re-measurement scheduled after redeploy.
+- **oversized_csv_rejected** — platform-enforced (rejection-before-parse
+  verified; typed in-app event not emittable); represented in the canonical
+  contract via `platform_enforced` (`PLATFORM_ENFORCED_CLOUD_TESTS`).
 
 The Stage 1 corrective instrumentation added the producer for
 genuine Cloud evidence:

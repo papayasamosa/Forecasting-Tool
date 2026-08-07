@@ -1,0 +1,72 @@
+{
+  "diagnostics": {
+    "commit_resolution_source": "git_head",
+    "configured_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+    "coordinator_state": "capacity=1;max_history=256;history=2;sync_mode=semaphore;health=healthy;queue_timeout_s=120.0;exec_timeout_s=900.0;queue_depth=0;active_request_id=;active_since=;last_release_at=2026-08-07T18:31:42.046431+00:00;last_failure_category=",
+    "cpu_logical_cores": 16,
+    "cpu_model": "AMD EPYC 7B13",
+    "current_rss_mb": 960.695,
+    "deployed_commit": "dc3046fa2e8c32e3e379000ac68d1f43872a1270",
+    "diagnostics_id": "diag_70ccc87f8a0d",
+    "expected_commit": "",
+    "expected_commit_match": null,
+    "generated_at_utc": "2026-08-07T18:32:20.957064+00:00",
+    "hf_token_present": true,
+    "model_id": "amazon/chronos-2",
+    "nvidia_packages": [],
+    "os_name": "linux",
+    "package_versions": {
+      "chronos-forecasting": "2.3.1",
+      "numpy": "2.4.6",
+      "pandas": "3.0.5",
+      "python": "3.12.13",
+      "streamlit": "1.60.0",
+      "torch": "2.13.0+cpu"
+    },
+    "pip_check_passed": true,
+    "pip_check_summary": "No broken requirements found.",
+    "pipeline_constructed": true,
+    "pipeline_construction_count": 1,
+    "process_peak_rss_mb": 959.402,
+    "python_version": "3.12.13",
+    "ram_total_gb": 125.8,
+    "schema_version": "1",
+    "torch_cpu_only": true,
+    "torch_cuda_version": ""
+  },
+  "release_ready": true,
+  "request_count": 1,
+  "request_records": [
+    {
+      "completed_at_utc": "2026-08-07T18:31:42.046431+00:00",
+      "context_rows_used": 104,
+      "context_truncated": false,
+      "error_category": "",
+      "inference_seconds": 0.257,
+      "inference_started_at_utc": "2026-08-07T18:31:41.783682+00:00",
+      "memory": {
+        "process_peak_rss_mb": 943.816,
+        "request_id": "e0055809-a9b5-4b03-aa19-92803acf60c2",
+        "request_peak_rss_mb": 945.359,
+        "rss_after_mb": 945.277,
+        "rss_before_mb": 336.281,
+        "session_id": "session_ecc49f26c6de",
+        "started_at_utc": "2026-08-07T18:31:35.348697+00:00",
+        "stopped_at_utc": "2026-08-07T18:31:42.058600+00:00"
+      },
+      "model_load_seconds": 0.0,
+      "model_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+      "pipeline_constructed": false,
+      "pipeline_reused": true,
+      "queue_seconds": 6.434,
+      "queued_at_utc": "2026-08-07T18:31:35.349954+00:00",
+      "request_id": "e0055809-a9b5-4b03-aa19-92803acf60c2",
+      "result_conversion_seconds": 0.002,
+      "session_id": "session_ecc49f26c6de",
+      "started_at_utc": "2026-08-07T18:31:35.349954+00:00",
+      "success": true,
+      "total_seconds": 0.259
+    }
+  ],
+  "validation_errors": []
+}

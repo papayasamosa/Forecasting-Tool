@@ -27,27 +27,37 @@ failure + configuration preservation, all input validations, and context
 truncation. The following limitations are documented and accepted for this
 Stage 0 decision:
 
-1. **`two_session_concurrency` was NOT captured.** Root cause is a genuine
-   production robustness finding: the app reproducibly **wedges a Streamlit
-   session under forecast triggering** (`is_running` becomes stuck, the Run
-   button stays disabled, and the request never completes until a page
-   refresh). The process-wide `InferenceCoordinator` (capacity 1, bounded
-   semaphore) appeared to retain a stuck hold that its 300 s timeout did not
-   release within the observation window. This must be **fixed and
-   re-measured before public sharing** (tracked as a follow-up, not part of
-   this ADR acceptance).
-2. **`coordinator_timeout_recovery` was NOT run** — the coordinator timeout is
-   300 s and a genuine timeout is not safely inducible in production.
-   Documented, not fabricated.
+1. **`two_session_concurrency` was NOT captured at the earlier commits.** Root
+   cause was a genuine production robustness finding: the app reproducibly
+   **wedged a Streamlit session under forecast triggering** (`is_running`
+   became stuck, the Run button stayed disabled, and the request never
+   completed until a page refresh). The process-wide `InferenceCoordinator`
+   (capacity 1, bounded semaphore) appeared to retain a stuck hold that its
+   300 s timeout did not release within the observation window.
+   **Resolution:** the defect was fixed in Stage A (PR #37, commit `dc3046fa`;
+   fail-closed execution-liveness watchdog + explicit UI run lifecycle) and
+   **genuinely re-measured at `dc3046fa`**: two isolated browser sessions
+   produced a capacity-1 queued pair (cold 6.44 s window overlapping a queued
+   6.43 s request, one pipeline, coordinator healthy). The concurrency
+   limitation is **re-measured and resolved**.
+2. **`coordinator_timeout_recovery` was NOT run under the 300 s / 120 s
+   timeouts** — no legitimate request can hold the permit that long (max
+   measured ~8-9 s cold). The queue timeout is now a **measured-justified
+   5 s** (`src/config.py`), making a genuine timeout inducible with a
+   legitimate cold/max request; final re-measurement is scheduled after the
+   redeploy carrying that change. Documented, not fabricated.
 3. **`oversized_csv_rejected` is platform-enforced** — the Streamlit uploader
    (`maxUploadSize = 50`, matching the app limit) rejects files > 50 MB
    client-side before the app branch runs. Rejection before parsing was
-   verified; the typed acceptance event is not emitted. Treated as satisfied
-   by platform enforcement.
+   verified; the typed acceptance event is not emitted. Represented in the
+   canonical contract via `platform_enforced=True`
+   (`PLATFORM_ENFORCED_CLOUD_TESTS` in `src/evidence_schemas.py`).
 
 Decision: **Choice A** (cached local CPU inference on Streamlit Community
-Cloud) is accepted for Stage 0, with the concurrency robustness fix listed
-above as a required follow-up before public sharing.
+Cloud) is accepted for Stage 0, with the concurrency robustness defect fixed
+and re-measured and the remaining Gate C closure (timeout-recovery
+re-measurement at the adjusted 5 s queue timeout) tracked as scheduled work
+before public sharing.
 
 ## Context
 

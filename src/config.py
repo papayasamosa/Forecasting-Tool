@@ -48,12 +48,19 @@ COORDINATOR_CAPACITY: int = 1
 
 # Queue timeout: how long a request waits for the capacity-1 permit before
 # the coordinator raises CoordinatorTimeoutError.  The request never touches
-# the backend while queued.  Justified by genuine measured Cloud durations
-# (docs/evidence/cloud_gate_c/): cold forecast ~7-9 s (model load 6.9-8.7 s),
-# warm forecast ~0.06-0.09 s.  120 s is comfortably above legitimate cold
-# execution (~13x the measured cold duration) while avoiding the previous
-# five-minute silent wait.  This is a QUEUE timeout, not an execution bound.
-COORDINATOR_QUEUE_TIMEOUT_SECONDS: int = 120
+# the backend while queued.  Justified by genuine measured Community Cloud
+# durations at commit dc3046fa (Stage A robustness closure, 2026-08-07):
+#   - warm forecast: 0.06-0.5 s (max-size 8192-row request ~1 s)
+#   - cold forecast (incl. model load): ~6.4-8.7 s
+#   - maximum legitimate single request (8192 context x 1024 horizon,
+#     Chronos-2 parallel horizon generation): ~8-9 s cold, ~1 s warm
+# A 5 s queue timeout bounds the worst-case silent wait to 5 s (the old
+# 300 s / 120 s values were not genuinely inducible because no legitimate
+# request can hold capacity that long) while remaining comfortably above a
+# normal warm request, and it is genuinely testable end-to-end: a queued
+# request during a legitimate cold/max request (>5 s) reaches the timeout
+# and recovers on retry.
+COORDINATOR_QUEUE_TIMEOUT_SECONDS: int = 5
 
 # Backend execution-liveness watchdog: if backend.forecast() has not returned
 # within this bound it is presumed unresponsive; the coordinator fails closed
