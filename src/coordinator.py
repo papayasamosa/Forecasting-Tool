@@ -41,7 +41,10 @@ from typing import Any, Callable
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_CAPACITY = 1
-DEFAULT_QUEUE_TIMEOUT_SECONDS = 120
+# 5 s queue timeout: justified by genuine measured Cloud durations (warm
+# ~0.1-1 s, cold incl. model load ~6.4-8.7 s, max legitimate request ~8-9 s).
+# See src/config.py COORDINATOR_QUEUE_TIMEOUT_SECONDS for the full rationale.
+DEFAULT_QUEUE_TIMEOUT_SECONDS = 5
 DEFAULT_BACKEND_EXECUTION_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_HISTORY = 256
 

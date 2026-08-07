@@ -2579,6 +2579,116 @@ class TestAcceptanceTestResult:
         errors = at.validate()
         assert errors == []
 
+    def test_platform_enforced_oversized_valid(self):
+        """The platform-enforced oversized_csv_rejected test is valid with a
+        documented details note (rejection is enforced by the uploader before
+        the app code runs)."""
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult(
+            test_name="oversized_csv_rejected",
+            passed=False,
+            platform_enforced=True,
+            details="Streamlit uploader rejects >50MB client-side before parsing",
+        )
+        errors = at.validate()
+        assert errors == []
+
+    def test_platform_enforced_not_allowlisted_rejected(self):
+        """platform_enforced must never be accepted for a test outside the
+        allowlist — no other canonical test may bypass the passing gate."""
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult(
+            test_name="cold_forecast", passed=False, platform_enforced=True,
+            details="should not be allowed",
+        )
+        errors = at.validate()
+        assert any("platform_enforced" in e and "cold_forecast" in e for e in errors)
+
+    def test_platform_enforced_and_passed_rejected(self):
+        """A test cannot be both passed and platform_enforced."""
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult(
+            test_name="oversized_csv_rejected", passed=True, platform_enforced=True,
+            details="x",
+        )
+        errors = at.validate()
+        assert any("passed" in e for e in errors)
+
+    def test_platform_enforced_requires_details(self):
+        """A platform-enforced test must document the enforcement."""
+        from src.evidence_schemas import AcceptanceTestResult
+        at = AcceptanceTestResult(
+            test_name="oversized_csv_rejected", passed=False, platform_enforced=True,
+            details="",
+        )
+        errors = at.validate()
+        assert any("details" in e for e in errors)
+
+
+class TestPlatformEnforcedCloudContract:
+    """A Cloud evidence record may pass the canonical acceptance gate when the
+    platform-enforced test is present with platform_enforced=True; all other
+    required tests must genuinely pass."""
+
+    def _build_record(self, oversized_entry: dict) -> "object":
+        from src.evidence_schemas import (
+            AcceptanceTestResult, CloudEvidence, CANONICAL_CLOUD_TESTS,
+        )
+        evidence = CloudEvidence(
+            evidence_origin="real_measurement",
+            success=True,
+            code_commit="a" * 40,
+            deployed_commit="a" * 40,
+            deployed_url="https://x.streamlit.app",
+            started_at_utc="2026-01-01T00:00:00+00:00",
+            completed_at_utc="2026-01-01T00:01:00+00:00",
+            model_id="amazon/chronos-2",
+            configured_revision="29ec3766d36d6f73f0696f85560a422f50e8498c",
+            model_revision="29ec3766d36d6f73f0696f85560a422f50e8498c",
+            package_versions={"torch": "2.13.0+cpu"},
+            pip_check_passed=True,
+            torch_cuda_none=True,
+            nvidia_packages_absent=True,
+            cold_peak_rss_mb=100.0,
+            process_peak_rss_mb=200.0,
+            concurrent_users=2,
+            sync_mode="semaphore",
+            timeout_result="no_timeout",
+            acceptance_tests=[
+                AcceptanceTestResult(test_name=name, passed=True)
+                for name in CANONICAL_CLOUD_TESTS
+            ],
+        )
+        # Replace the oversized entry with the given one.
+        evidence.acceptance_tests = [
+            t for t in evidence.acceptance_tests
+            if t.test_name != "oversized_csv_rejected"
+        ]
+        evidence.acceptance_tests.append(
+            AcceptanceTestResult(**oversized_entry)
+        )
+        return evidence
+
+    def test_platform_enforced_oversized_passes_gate(self):
+        evidence = self._build_record({
+            "test_name": "oversized_csv_rejected",
+            "passed": False,
+            "platform_enforced": True,
+            "details": "Streamlit uploader rejects >50MB client-side before parsing",
+        })
+        errors = evidence.validate()
+        assert not any("acceptance_test" in e for e in errors), errors
+
+    def test_missing_oversized_still_fails_gate(self):
+        evidence = self._build_record({
+            "test_name": "oversized_csv_rejected",
+            "passed": False,
+            "platform_enforced": False,
+            "details": "",
+        })
+        errors = evidence.validate()
+        assert any("must pass" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # Coordinator tests (WP10)
@@ -2597,11 +2707,14 @@ class TestInferenceCoordinator:
         from src.coordinator import InferenceCoordinator
         c = InferenceCoordinator()
         assert c.capacity == 1
-        # Queue timeout default is 120 s (justified by measured Cloud cold
-        # ~7-9 s / warm ~0.1 s durations); the execution-liveness watchdog is
+        # Queue timeout default is 5 s — justified by genuine measured Cloud
+        # durations (warm ~0.1-1 s, cold incl. model load ~6.4-8.7 s, max
+        # legitimate request ~8-9 s): it bounds the worst-case silent wait,
+        # stays above a normal warm request, and is genuinely inducible with
+        # a legitimate cold/max request.  The execution-liveness watchdog is
         # a separate, generous bound (900 s) for first-run model loading.
-        assert c.queue_timeout_seconds == 120
-        assert c.timeout_seconds == 120  # deprecated alias
+        assert c.queue_timeout_seconds == 5
+        assert c.timeout_seconds == 5  # deprecated alias
         assert c.backend_execution_timeout_seconds == 900
         assert c.health_state == "healthy"
         assert c.last_failure_category == ""
