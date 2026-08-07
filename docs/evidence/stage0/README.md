@@ -42,14 +42,23 @@ supersedes the invalidated PR #18 bundle. It was produced with the hardened
 The evidence manifest records this bundle and its receipts as the valid
 Gate B3 entry.
 
-## Cloud Gate C (pending — do not mark complete)
+## Cloud Gate C (collected draft — still pending, do not mark complete)
 
-Cloud Gate C is the sole remaining Stage 0 evidence gate and remains
-**pending** until genuine Community Cloud collection is complete. No valid
-`cloud_stage0` evidence is currently published in the manifest
-(`cloud_summary` is `null`).
+Cloud Gate C is the sole remaining Stage 0 evidence gate. Genuine Community
+Cloud collection has now been performed on the deployed app (commit
+`c46e586d19c33e3dd4118ca99bbab1f0bc0743d4`) and the raw typed collection
+bundles are committed under `docs/evidence/cloud_gate_c/` (see its
+`README.md` for the full measured-results matrix and honest status). **Gate C
+is NOT complete**: the collected bundles prove both token-absent and
+token-present lifecycles on the exact same deployed commit (14 of the
+required measurements verified), but several required measurements could
+not be captured with the available tooling (two-session concurrency,
+coordinator timeout recovery, recoverable failure) and the oversized-rejection
+acceptance event is blocked by the platform upload limit. The manifest
+`cloud_summary` entry therefore stays `null` and no `cloud_stage0` release
+evidence is published.
 
-The Stage 1 corrective instrumentation (PR pending) added the producer for
+The Stage 1 corrective instrumentation added the producer for
 genuine Cloud evidence:
 
 - `src/cloud_diagnostics.py` — typed, allowlisted runtime diagnostics;
