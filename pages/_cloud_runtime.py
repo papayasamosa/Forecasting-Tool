@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.config import COORDINATOR_CAPACITY, COORDINATOR_TIMEOUT_SECONDS
+from src.config import (
+    COORDINATOR_BACKEND_EXECUTION_TIMEOUT_SECONDS,
+    COORDINATOR_CAPACITY,
+    COORDINATOR_QUEUE_TIMEOUT_SECONDS,
+)
 from src.cloud_diagnostics import RequestTelemetryStore
 from src.coordinator import InferenceCoordinator
 from src.forecasting.chronos2_adapter import Chronos2Adapter
@@ -28,7 +32,9 @@ def get_forecast_backend() -> Chronos2Adapter:
 def get_coordinator() -> InferenceCoordinator:
     """Process-cached InferenceCoordinator (one per process, like the backend)."""
     return InferenceCoordinator(
-        capacity=COORDINATOR_CAPACITY, timeout_seconds=COORDINATOR_TIMEOUT_SECONDS
+        capacity=COORDINATOR_CAPACITY,
+        queue_timeout_seconds=COORDINATOR_QUEUE_TIMEOUT_SECONDS,
+        backend_execution_timeout_seconds=COORDINATOR_BACKEND_EXECUTION_TIMEOUT_SECONDS,
     )
 
 

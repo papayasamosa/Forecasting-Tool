@@ -2597,7 +2597,14 @@ class TestInferenceCoordinator:
         from src.coordinator import InferenceCoordinator
         c = InferenceCoordinator()
         assert c.capacity == 1
-        assert c.timeout_seconds == 300
+        # Queue timeout default is 120 s (justified by measured Cloud cold
+        # ~7-9 s / warm ~0.1 s durations); the execution-liveness watchdog is
+        # a separate, generous bound (900 s) for first-run model loading.
+        assert c.queue_timeout_seconds == 120
+        assert c.timeout_seconds == 120  # deprecated alias
+        assert c.backend_execution_timeout_seconds == 900
+        assert c.health_state == "healthy"
+        assert c.last_failure_category == ""
         assert c.sync_mode == "semaphore"
 
     def test_single_request_succeeds(self):

@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from io import StringIO, BytesIO
 from typing import Any
 
@@ -48,6 +49,8 @@ from src.forecasting.chronos2_adapter import (  # noqa: E402
 from src.coordinator import (  # noqa: E402
     InferenceCoordinator,
     CoordinatorTimeoutError,
+    CoordinatorPoisonedError,
+    BackendExecutionUnresponsiveError,
 )
 from src.telemetry import (  # noqa: E402
     current_rss_mb,
@@ -240,9 +243,108 @@ def _record_cloud_request(
     store.record(record)
 
 
+def _safe_record_cloud_request(*args, **kwargs) -> None:
+    """Best-effort telemetry: a telemetry failure must never prevent UI
+    cleanup or hide the underlying forecast outcome.  All telemetry writes
+    in the run path go through this wrapper."""
+    try:
+        _record_cloud_request(*args, **kwargs)
+    except Exception:
+        logger.exception("Failed to record cloud request telemetry")
+
+
 def _parse_csv_bytes(file_bytes: bytes) -> pd.DataFrame:
     """Parse uploaded CSV bytes once and return a DataFrame."""
     return pd.read_csv(BytesIO(file_bytes))
+
+
+# ---------------------------------------------------------------------------
+# Run lifecycle (explicit active-request lifecycle, not a lone boolean)
+# ---------------------------------------------------------------------------
+# The Forecast page used to gate the Run button on a persistent
+# ``st.session_state.is_running`` boolean.  A Cloud production defect proved
+# that class of state can permanently disable a session when the forecast
+# path never regains control.  The replacement is an explicit lifecycle
+# record owned by a request ID:
+#
+#     {"request_id": str, "started_at_utc": str, "phase": str}
+#
+# phases: idle | preparing | running | failed.  Every exit path clears it in
+# a ``finally`` block (telemetry failures cannot prevent UI cleanup), and a
+# rerun can identify a stale/orphaned lifecycle so the button is never
+# permanently disabled by leftover state.
+def _default_run_lifecycle() -> dict:
+    return {"request_id": "", "started_at_utc": "", "phase": "idle"}
+
+
+def _set_run_phase(phase: str, request_id: str = "") -> None:
+    """Update the active-request lifecycle in session state.
+
+    Keeps the owning request ID and the original start timestamp so a later
+    rerun can judge whether an old lifecycle is stale/orphaned.
+    """
+    lifecycle = dict(st.session_state.get("run_lifecycle") or _default_run_lifecycle())
+    if phase in ("idle", "failed"):
+        lifecycle["request_id"] = ""
+    elif request_id:
+        lifecycle["request_id"] = request_id
+    if phase == "idle":
+        lifecycle["started_at_utc"] = ""
+    elif not lifecycle.get("started_at_utc"):
+        lifecycle["started_at_utc"] = datetime.now(timezone.utc).isoformat()
+    lifecycle["phase"] = phase
+    st.session_state.run_lifecycle = lifecycle
+
+
+def _clear_run_lifecycle() -> None:
+    """Reset the run lifecycle to idle (used by normal recovery paths)."""
+    st.session_state.run_lifecycle = _default_run_lifecycle()
+
+
+def _lifecycle_is_stale(lifecycle: dict | None) -> bool:
+    """A lifecycle active far beyond the maximum tolerated duration (queue
+    timeout + backend execution watchdog + margin) is orphaned — the UI must
+    not remain permanently disabled by it.
+
+    Defence-in-depth only: the normal run path clears the lifecycle in its
+    ``finally`` block and the coordinator's watchdog bounds backend
+    execution, so a genuinely in-flight request is never misclassified.
+    """
+    from src.config import (
+        COORDINATOR_BACKEND_EXECUTION_TIMEOUT_SECONDS,
+        COORDINATOR_QUEUE_TIMEOUT_SECONDS,
+    )
+    if not lifecycle or lifecycle.get("phase") not in ("preparing", "running"):
+        return False
+    started = lifecycle.get("started_at_utc", "")
+    if not started:
+        # A lifecycle with no start timestamp is never legitimately active.
+        return True
+    try:
+        started_dt = datetime.fromisoformat(started)
+        age = (datetime.now(timezone.utc) - started_dt).total_seconds()
+    except (TypeError, ValueError):
+        return True
+    max_age = (
+        COORDINATOR_QUEUE_TIMEOUT_SECONDS
+        + COORDINATOR_BACKEND_EXECUTION_TIMEOUT_SECONDS
+        + 30
+    )
+    return age > max_age
+
+
+def _ui_is_busy() -> bool:
+    """Whether the Run Forecast button must be disabled for this session.
+
+    Disabled only while a genuine, non-stale active-request lifecycle exists
+    for THIS browser session (Streamlit ``st.session_state`` is per-browser,
+    so one session can never mutate another's UI state).  An orphaned or
+    stale lifecycle never keeps the session permanently disabled.
+    """
+    lifecycle = st.session_state.get("run_lifecycle") or {}
+    if lifecycle.get("phase") not in ("preparing", "running"):
+        return False
+    return not _lifecycle_is_stale(lifecycle)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +354,11 @@ _DEFAULT_STATE = {
     "run_id": "",
     "forecast_result": None,
     "error_message": "",
-    "is_running": False,
+    # Explicit active-request lifecycle (replaces the lone ``is_running``
+    # boolean): the UI busy state is owned by a request ID + phase and can
+    # be identified as stale/orphaned, so leftover state can never
+    # permanently disable a session.
+    "run_lifecycle": _default_run_lifecycle(),
     "cached_df": None,           # parsed DataFrame reused across reruns
     "cached_df_hash": "",        # SHA-256 of uploaded bytes (identity only)
     "cached_columns": [],
@@ -271,13 +377,19 @@ _session_id = _resolve_collection_session_id()
 
 def _record_acceptance_event(test_name: str, passed: bool = True, details: str = "") -> None:
     """Record a canonical acceptance-test event for this browser's
-    collection session (a test genuinely executed)."""
+    collection session (a test genuinely executed).
+
+    Best-effort: a telemetry failure must never prevent UI cleanup or the
+    forecast outcome from surfacing.
+    """
     try:
         _telemetry_store.record_acceptance_event(
             test_name, passed, details=details, session_id=_session_id,
         )
     except ValueError:
         logger.warning("Ignoring unknown acceptance-test event %s", test_name)
+    except Exception:
+        logger.warning("Ignoring acceptance-test event %s (telemetry unavailable)", test_name)
 
 # ---------------------------------------------------------------------------
 # Page layout
@@ -343,7 +455,7 @@ with st.sidebar:
     quantiles_str = st.text_input("Quantile levels (comma-separated)", value="0.1, 0.5, 0.9")
     st.markdown("---")
     run_button = st.button("🚀 Run Forecast", type="primary", use_container_width=True,
-                          disabled=st.session_state.is_running)
+                          disabled=_ui_is_busy())
 
 # ---------------------------------------------------------------------------
 # Data preview (no model loading here)
@@ -365,8 +477,8 @@ else:
 # ---------------------------------------------------------------------------
 # Run forecast (lazy — model not loaded until first click)
 # ---------------------------------------------------------------------------
-if run_button and df is not None and not st.session_state.is_running:
-    st.session_state.is_running = True
+if run_button and df is not None and not _ui_is_busy():
+    _set_run_phase("preparing")
     st.session_state.error_message = ""
     st.session_state.forecast_result = None
 
@@ -380,14 +492,14 @@ if run_button and df is not None and not st.session_state.is_running:
                 raise ValueError(f"Quantile must be between {QUANTILE_MIN} and {QUANTILE_MAX} inclusive, got {q}")
     except ValueError as e:
         st.error(f"Invalid quantile levels: {e}")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # Block identical timestamp and target column selections (WP6)
     if ts_col == target_col:
         st.error("Timestamp and target columns must be different.")
         _record_acceptance_event("same_column_rejected")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # Use selected columns only (WP4: reduce memory before row-record expansion)
@@ -395,7 +507,7 @@ if run_button and df is not None and not st.session_state.is_running:
         working_df = df[[ts_col, target_col]].copy()
     else:
         st.error(f"Selected columns '{ts_col}' and/or '{target_col}' not found in data.")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # Parse timestamps and sort chronologically (WP6: keep latest observations)
@@ -405,7 +517,7 @@ if run_button and df is not None and not st.session_state.is_running:
         logger.warning(f"Timestamp parse failed in column '{ts_col}': {type(exc).__name__}")
         st.error(f"Could not parse timestamps in column '{ts_col}'. Check the date format.")
         _record_acceptance_event("invalid_timestamp_rejected")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # ------------------------------------------------------------------
@@ -430,7 +542,7 @@ if run_button and df is not None and not st.session_state.is_running:
                 "Remove or fix the invalid timestamps and try again."
             )
         _record_acceptance_event("blank_timestamp_rejected")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     working_df = working_df.sort_values(ts_col).reset_index(drop=True)
@@ -442,7 +554,7 @@ if run_button and df is not None and not st.session_state.is_running:
     original_rows = len(working_df)
     if original_rows == 0:
         st.error("The selected columns produced zero valid rows. Check that the timestamp column contains parseable dates.")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # ------------------------------------------------------------------
@@ -479,7 +591,7 @@ if run_button and df is not None and not st.session_state.is_running:
         )
     except ValueError as e:
         st.error(f"Configuration error: {e}")
-        st.session_state.is_running = False
+        _set_run_phase("failed")
         st.stop()
 
     # Get or create the process-cached backend and coordinator (model loads
@@ -494,6 +606,10 @@ if run_button and df is not None and not st.session_state.is_running:
     # Sampler starts before queue wait / model loading so the request-scoped
     # peak captures the whole request window.
     sampler.start()
+    # Active-request lifecycle: the Run button stays disabled only while
+    # this request genuinely owns the run; every exit path clears it in the
+    # finally below (telemetry failures cannot prevent UI cleanup).
+    _set_run_phase("running", request_id=request_id)
     try:
         backend = _resolve_backend()
         coordinator = _resolve_coordinator()
@@ -519,15 +635,25 @@ if run_button and df is not None and not st.session_state.is_running:
             # Sanitised queue-time telemetry from the execution record (no
             # full-history scan).
             st.session_state.last_queue_seconds = exec_record.request_record.get("queue_seconds", 0.0)
-            _record_cloud_request(
+            _safe_record_cloud_request(
                 store, request_id, exec_record, result, sampler, session_id,
             )
             # Record which canonical acceptance tests genuinely ran so the
             # collection session reports only tests that actually executed
             # (codex P1-4 / P1-6).
             meta = result.runtime_metadata
+            # Best-effort telemetry read: a store failure must not prevent
+            # the success path from completing or the lifecycle from being
+            # cleared.
+            try:
+                warm_records = store.snapshot(session_id=session_id)
+            except Exception:
+                logger.warning(
+                    "Telemetry snapshot unavailable; acceptance-event counting degraded"
+                )
+                warm_records = []
             warm_so_far = len([
-                r for r in store.snapshot(session_id=session_id)
+                r for r in warm_records
                 if r.get("success") and r.get("pipeline_reused")
                 and not r.get("pipeline_constructed")
             ])
@@ -571,15 +697,17 @@ if run_button and df is not None and not st.session_state.is_running:
                 _record_acceptance_event("recoverable_failure", details=f"recovered by {request_id}")
     except CoordinatorTimeoutError:
         # Preserve the coordinator's genuine timeout measurement (queue
-        # start, completion, configured timeout duration) instead of
+        # start, completion, configured queue-timeout duration) instead of
         # discarding it — the coordinator already stored the record when it
-        # timed out (codex P1-12).
+        # timed out (codex P1-12).  This is a QUEUE wait timeout only: the
+        # request never acquired the inference slot, so the message must not
+        # imply a backend execution timeout.
         timeout_record = None
         try:
             timeout_record = coordinator.get_request_record(request_id)
         except Exception:
             timeout_record = None
-        _record_cloud_request(
+        _safe_record_cloud_request(
             store, request_id, timeout_record, None, sampler, session_id,
             error_category="CoordinatorTimeoutError", success=False,
         )
@@ -593,7 +721,7 @@ if run_button and df is not None and not st.session_state.is_running:
             "The forecasting service is busy handling another request and did not "
             "become available in time. Please try again in a moment."
         )
-        logger.warning("Coordinator timeout waiting for inference slot", exc_info=True)
+        logger.warning("Coordinator queue timeout waiting for inference slot", exc_info=True)
     except AdapterError as e:
         # Preserve the coordinator's genuine failure measurement (queue and
         # inference timestamps) — it recorded the request before re-raising
@@ -603,7 +731,7 @@ if run_button and df is not None and not st.session_state.is_running:
             failure_record = coordinator.get_request_record(request_id)
         except Exception:
             failure_record = None
-        _record_cloud_request(
+        _safe_record_cloud_request(
             store, request_id, failure_record, None, sampler, session_id,
             error_category=type(e).__name__, success=False,
         )
@@ -612,13 +740,41 @@ if run_button and df is not None and not st.session_state.is_running:
         _record_acceptance_event("configuration_preserved", details=f"recoverable error {request_id}")
         st.session_state.error_message = str(e)
         logger.warning("Forecast failed", exc_info=True)
+    except BackendExecutionUnresponsiveError as e:
+        # The coordinator failed closed after a backend execution that never
+        # returned.  The permit is retained (never reused), the shared
+        # pipeline is not touched again, and new requests are refused until
+        # the application process is safely recycled.
+        failure_record = None
+        try:
+            failure_record = coordinator.get_request_record(request_id)
+        except Exception:
+            failure_record = None
+        _safe_record_cloud_request(
+            store, request_id, failure_record, None, sampler, session_id,
+            error_category="BackendExecutionUnresponsiveError", success=False,
+        )
+        st.session_state.error_message = str(e)
+        logger.error(
+            "Backend execution unresponsive; coordinator failed closed; "
+            "process recycle required", exc_info=True,
+        )
+    except CoordinatorPoisonedError as e:
+        # The coordinator is already poisoned: no new inference may enter
+        # the shared backend until the process is recycled.
+        _safe_record_cloud_request(
+            store, request_id, None, None, sampler, session_id,
+            error_category="CoordinatorPoisonedError", success=False,
+        )
+        st.session_state.error_message = str(e)
+        logger.warning("Coordinator poisoned; new forecasts refused", exc_info=True)
     except Exception:
         failure_record = None
         try:
             failure_record = coordinator.get_request_record(request_id)
         except Exception:
             failure_record = None
-        _record_cloud_request(
+        _safe_record_cloud_request(
             store, request_id, failure_record, None, sampler, session_id,
             error_category="UnexpectedError", success=False,
         )
@@ -629,10 +785,14 @@ if run_button and df is not None and not st.session_state.is_running:
         logger.error("Unexpected forecast error", exc_info=True)
     finally:
         # Always stop the request-scoped sampler, even on failure
-        # (idempotent — _record_cloud_request already stopped it).
-        sampler.stop(session_id=session_id)
-
-    st.session_state.is_running = False
+        # (idempotent — _safe_record_cloud_request already stopped it), and
+        # always clear the UI lifecycle.  A telemetry failure cannot prevent
+        # either: both are individually guarded.
+        try:
+            sampler.stop(session_id=session_id)
+        except Exception:
+            logger.exception("Failed to stop request sampler during cleanup")
+        _set_run_phase("idle")
 
 # ---------------------------------------------------------------------------
 # Results

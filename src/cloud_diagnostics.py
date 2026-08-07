@@ -970,7 +970,45 @@ def _coordinator_state_string(coordinator: Any | None) -> str:
         sync_mode = coordinator.sync_mode
     except Exception:
         sync_mode = "unknown"
-    return f"capacity={coordinator.capacity};max_history={max_history};history={history};sync_mode={sync_mode}"
+    try:
+        health_state = coordinator.health_state
+    except Exception:
+        health_state = "unknown"
+    try:
+        queue_timeout = coordinator.queue_timeout_seconds
+    except Exception:
+        queue_timeout = -1
+    try:
+        exec_timeout = coordinator.backend_execution_timeout_seconds
+    except Exception:
+        exec_timeout = -1
+    try:
+        queue_depth = coordinator.queue_depth
+    except Exception:
+        queue_depth = -1
+    try:
+        active_request_id = coordinator.active_request_id or ""
+    except Exception:
+        active_request_id = ""
+    try:
+        active_since = coordinator.active_since_utc or ""
+    except Exception:
+        active_since = ""
+    try:
+        last_release = coordinator.last_release_at_utc or ""
+    except Exception:
+        last_release = ""
+    try:
+        last_failure = coordinator.last_failure_category or ""
+    except Exception:
+        last_failure = ""
+    return (
+        f"capacity={coordinator.capacity};max_history={max_history};history={history};"
+        f"sync_mode={sync_mode};health={health_state};queue_timeout_s={queue_timeout};"
+        f"exec_timeout_s={exec_timeout};queue_depth={queue_depth};"
+        f"active_request_id={active_request_id};active_since={active_since};"
+        f"last_release_at={last_release};last_failure_category={last_failure}"
+    )
 
 
 def build_runtime_diagnostics(

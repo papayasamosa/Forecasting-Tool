@@ -74,7 +74,7 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
-| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected (16/19 verified, both token lifecycles + recoverable failure); remaining: concurrency (blocked by session-wedging bug), timeout recovery, oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
+| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected (16/19 verified, both token lifecycles + recoverable failure); remaining: concurrency (session-wedging robustness bug now fixed in code — re-measurement pending deployment), timeout recovery (now safely inducible with 120 s queue timeout), oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
 | ADR-001 inference backend | ✅ Accepted (Choice A) with documented limitations — see `docs/adr_001_inference_backend.md` |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
@@ -116,8 +116,8 @@ tests/
     fixtures/                    # Synthetic data fixtures
 docs/
     evidence/stage0/             # Sanitised evidence artefacts + manifest
-    stage_0_benchmark_report.md  # Benchmark report (needs current-head rerun)
-    adr_001_inference_backend.md # Provisional — pending Cloud evidence
+    stage_0_benchmark_report.md  # Stage 0 benchmark report (genuine Gate B3 evidence at commit 7831cb4)
+    adr_001_inference_backend.md # ADR-001 — Accepted (Choice A) with documented limitations
     community_cloud_test_checklist.md  # Cloud testing checklist
     development/                 # MCP developer tooling (optional)
 .github/workflows/
@@ -295,24 +295,40 @@ ADR-001 was accepted (Choice A) with documented limitations.
   bound in typed bundles under `docs/evidence/cloud_gate_c/`; **16 of 19 required
   measurements verified** (incl. recoverable inference failure + configuration
   preservation). **Gate C is not marked complete**: `two_session_concurrency` was
-  not captured (the app reproducibly wedges a Streamlit session under forecast
-  triggering — a real robustness bug to fix before public sharing),
-  `coordinator_timeout_recovery` is not safely inducible (300 s), and the
-  oversized-rejection event is platform-enforced (rejection-before-parse
-  verified). These are documented as accepted limitations for Stage 0.
+  not captured (the app reproducibly wedged a Streamlit session under forecast
+  triggering — a real robustness bug); `coordinator_timeout_recovery` was not
+  safely inducible under the old 300 s queue timeout; and the oversized-rejection
+  event is platform-enforced (rejection-before-parse verified). The
+  concurrency/liveness robustness fix (queue timeout 120 s, fail-closed backend
+  execution watchdog, explicit UI run lifecycle) is implemented in the Stage A
+  branch and is scheduled for genuine Cloud re-measurement (Stage B) before
+  Gate C can be marked complete.
 - **ADR-001**: ✅ Accepted (Choice A) with documented limitations (2026-08-07),
   with the concurrency robustness fix tracked as a required follow-up before
   public sharing.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
-- **Inference coordinator**: `src/coordinator.py` implements a bounded semaphore
-  and request telemetry. The production Streamlit page (`pages/1_Forecast.py`)
-  now routes every forecast call through a process-cached
-  `InferenceCoordinator.run(...)` instead of calling `backend.forecast(task)`
-  directly, so overlapping sessions queue behind the semaphore and a
-  `CoordinatorTimeoutError` surfaces as a recoverable, configuration-preserving
-  error. Cloud concurrency evidence collected against this page will now be
-  meaningful.
+- **Inference coordinator**: `src/coordinator.py` implements a bounded
+  semaphore, request telemetry, and **explicitly separated timeout
+  semantics**:
+  - `queue_timeout_seconds` (default 120 s) bounds how long a *queued*
+    request waits for the capacity-1 permit; on expiry it raises
+    `CoordinatorTimeoutError` (a queue wait only — it never touches the
+    backend). Justified by measured Cloud cold (~7-9 s) / warm (~0.06-0.09 s)
+    forecast durations in `docs/evidence/cloud_gate_c/`.
+  - `backend_execution_timeout_seconds` (default 900 s) is the
+    execution-liveness watchdog: a backend call that never returns makes the
+    coordinator **fail closed** (`health_state=poisoned`) and the permit is
+    **not** released, so no second inference can enter a still-running
+    shared pipeline until the application process is safely recycled
+    (`BackendExecutionUnresponsiveError` / `CoordinatorPoisonedError`).
+  The production Streamlit page (`pages/1_Forecast.py`) routes every
+  forecast call through a process-cached `InferenceCoordinator.run(...)`.
+  The UI busy state is an explicit active-request lifecycle
+  (`request_id`/`started_at_utc`/`phase`) rather than a lone persistent
+  boolean: it clears on every exit path (success, queue timeout, adapter
+  error, unexpected error, telemetry failure) and a rerun identifies
+  stale/orphaned state, so a session can never be permanently disabled.
 
 > **Evidence manifest** contains the local Stage 0 bundle hash. CI verifies its
 > integrity on every run — hash/schema verification passing does **not**

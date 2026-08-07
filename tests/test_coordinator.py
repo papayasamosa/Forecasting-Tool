@@ -16,6 +16,8 @@ from datetime import datetime
 import pytest
 
 from src.coordinator import (
+    BackendExecutionUnresponsiveError,
+    CoordinatorPoisonedError,
     CoordinatorTimeoutError,
     InferenceCoordinator,
 )
@@ -210,3 +212,178 @@ class TestRequestLog:
         coordinator.run(lambda: "ok", request_id="req_1")
         assert coordinator.request_log[0]["sync_mode"] == "semaphore"
         assert coordinator.sync_mode == "semaphore"
+
+
+class TestBackendExecutionWatchdog:
+    """Stage A regression class: a backend execution that acquires the
+    permit and then never returns must FAIL CLOSED.
+
+    The coordinator must not release the permit (the old execution may
+    still be using the shared pipeline), must refuse all new requests until
+    the process is recycled, and must surface the unresponsive state in its
+    health diagnostics.
+    """
+
+    def _hang_then_release(self, release_event: threading.Event):
+        """A backend call that blocks until the test releases it."""
+        release_event.wait(timeout=10)
+        return "should-not-be-seen"
+
+    def test_unresponsive_execution_poisons_coordinator_and_retains_permit(self):
+        coordinator = InferenceCoordinator(
+            capacity=1, queue_timeout_seconds=2, backend_execution_timeout_seconds=0.2
+        )
+        release_event = threading.Event()
+
+        with pytest.raises(BackendExecutionUnresponsiveError):
+            coordinator.run(
+                self._hang_then_release, release_event, request_id="hung",
+            )
+
+        # The coordinator must be in the fail-closed poisoned state and must
+        # report the unresponsive failure category.
+        assert coordinator.health_state == "poisoned"
+        assert coordinator.last_failure_category == "backend_execution_unresponsive"
+
+        # The permit is deliberately retained (not released): ownership of
+        # the unresponsive execution is still recorded.
+        assert coordinator.active_request_id == "hung"
+        assert coordinator.active_since_utc != ""
+
+        # The request record is typed and truthful.
+        record = coordinator.get_request_record("hung")
+        assert record["success"] is False
+        assert record["error_code"] == "BackendExecutionUnresponsiveError"
+
+        # The hung worker must be released so the test process can exit
+        # cleanly (the poisoned coordinator never reuses the permit).
+        release_event.set()
+
+    def test_poisoned_coordinator_refuses_new_requests_fast(self):
+        """While poisoned, a new request must be refused immediately with
+        CoordinatorPoisonedError — and the backend function must NOT be
+        called again (no second inference can enter the shared pipeline)."""
+        coordinator = InferenceCoordinator(
+            capacity=1, queue_timeout_seconds=2, backend_execution_timeout_seconds=0.2
+        )
+        release_event = threading.Event()
+        calls = []
+
+        def _tracking_fn():
+            calls.append("called")
+
+        with pytest.raises(BackendExecutionUnresponsiveError):
+            coordinator.run(self._hang_then_release, release_event, request_id="hung")
+        release_event.set()
+
+        started = time.monotonic()
+        with pytest.raises(CoordinatorPoisonedError):
+            coordinator.run(_tracking_fn, request_id="refused")
+        elapsed = time.monotonic() - started
+        # Refused fast — no queue wait, no backend call.
+        assert elapsed < 1.0
+        assert calls == [], "backend must never be invoked while poisoned"
+
+        # Even a genuine queue timeout cannot reset the poisoned state.
+        assert coordinator.health_state == "poisoned"
+
+    def test_poisoned_state_is_not_recovered_in_process(self):
+        """Fail-closed means the coordinator stays poisoned until the
+        process is recycled — releasing the old execution must NOT make the
+        permit reusable."""
+        coordinator = InferenceCoordinator(
+            capacity=1, queue_timeout_seconds=2, backend_execution_timeout_seconds=0.2
+        )
+        release_event = threading.Event()
+
+        with pytest.raises(BackendExecutionUnresponsiveError):
+            coordinator.run(self._hang_then_release, release_event, request_id="hung")
+        # The old execution genuinely ends now.
+        release_event.set()
+        time.sleep(0.1)
+
+        with pytest.raises(CoordinatorPoisonedError):
+            coordinator.run(lambda: "nope", request_id="later")
+        assert coordinator.health_state == "poisoned"
+
+    def test_queue_timeout_does_not_poison_coordinator(self):
+        """A QUEUE timeout (never acquired the permit) must leave the
+        coordinator healthy — the permit is unowned and untouched."""
+        coordinator = InferenceCoordinator(
+            capacity=1, queue_timeout_seconds=0.2, backend_execution_timeout_seconds=2
+        )
+        holder_started = threading.Event()
+        release_holder = threading.Event()
+
+        def _hold():
+            holder_started.set()
+            release_holder.wait(timeout=5)
+            return "held"
+
+        holder_thread = threading.Thread(
+            target=lambda: coordinator.run(_hold, request_id="holder")
+        )
+        holder_thread.start()
+        holder_started.wait(timeout=2)
+
+        with pytest.raises(CoordinatorTimeoutError):
+            coordinator.run(lambda: "should not run", request_id="impatient")
+
+        assert coordinator.health_state == "healthy"
+        assert coordinator.last_failure_category == "queue_timeout"
+
+        # After the holder completes, the permit is reusable: the queue
+        # timeout never consumed an unowned permit.
+        release_holder.set()
+        holder_thread.join(timeout=5)
+        coordinator.run(lambda: "ok", request_id="after")
+        assert coordinator.request_log[-1]["success"] is True
+
+
+class TestDiagnosticsSafety:
+    """Coordinator diagnostics must never carry raw payloads or secrets."""
+
+    def test_request_records_contain_only_allowlisted_fields(self):
+        coordinator = InferenceCoordinator(capacity=1, queue_timeout_seconds=2)
+
+        secret_value = "hf_secret_payload_abc"
+        raw_rows = [{"timestamp": "2024-01-01", "target": 123.45}]
+        coordinator.run(
+            lambda *a, **k: "ok", raw_rows, marker=secret_value, request_id="req_x",
+        )
+        allowed = {
+            "request_id", "start_time_utc", "inference_start_utc",
+            "completion_time_utc", "queue_seconds", "inference_seconds",
+            "success", "error_code", "sync_mode",
+        }
+        for entry in coordinator.request_log:
+            assert set(entry.keys()) == allowed, (
+                f"unexpected fields in request record: {sorted(entry)}"
+            )
+            serialised = repr(entry)
+            assert secret_value not in serialised
+            assert "123.45" not in serialised
+
+    def test_diagnostics_properties_never_expose_raw_args(self):
+        coordinator = InferenceCoordinator(
+            capacity=1, queue_timeout_seconds=2, backend_execution_timeout_seconds=5
+        )
+        coordinator.run(lambda: "ok", request_id="req_1")
+        diagnostics = {
+            "health_state": coordinator.health_state,
+            "active_request_id": coordinator.active_request_id,
+            "active_since_utc": coordinator.active_since_utc,
+            "last_release_at_utc": coordinator.last_release_at_utc,
+            "last_failure_category": coordinator.last_failure_category,
+            "queue_depth": coordinator.queue_depth,
+            "capacity": coordinator.capacity,
+            "queue_timeout_seconds": coordinator.queue_timeout_seconds,
+            "backend_execution_timeout_seconds": coordinator.backend_execution_timeout_seconds,
+        }
+        assert diagnostics["health_state"] == "healthy"
+        assert diagnostics["last_failure_category"] == ""
+        assert diagnostics["queue_depth"] == 0
+        # No raw inputs, no user identity, no secrets are ever stored.
+        serialised = repr(diagnostics)
+        assert "hf_" not in serialised
+        assert "123.45" not in serialised

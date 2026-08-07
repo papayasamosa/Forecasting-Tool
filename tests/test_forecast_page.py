@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
+from datetime import datetime, timezone
 
 import pytest
 import pandas as pd
@@ -91,6 +94,80 @@ class _TimeoutCoordinator:
     def run(self, fn, *args, request_id: str = "", **kwargs):
         from src.coordinator import CoordinatorTimeoutError
         raise CoordinatorTimeoutError("simulated: no inference slot available")
+
+
+class _UnresponsiveCoordinator:
+    """Always raises BackendExecutionUnresponsiveError without calling fn.
+
+    Simulates the fail-closed outcome of the coordinator's execution
+    watchdog on the page path.
+    """
+
+    def run(self, fn, *args, request_id: str = "", **kwargs):
+        from src.coordinator import BackendExecutionUnresponsiveError
+        raise BackendExecutionUnresponsiveError(
+            "simulated: backend execution did not return and the service "
+            "failed closed"
+        )
+
+
+class _HangingBackend:
+    """Backend whose forecast() blocks until the test releases it.
+
+    Used with the REAL coordinator (short execution watchdog) to prove the
+    page recovers from an unresponsive backend execution end-to-end.
+    """
+
+    def __init__(self):
+        self.release_event = threading.Event()
+        self.call_count = 0
+
+    def forecast(self, task):
+        self.call_count += 1
+        self.release_event.wait(timeout=10)
+        raise AssertionError("hanging backend must never return")
+
+
+class _ExplodingTelemetryStore:
+    """Telemetry store that raises on every write/read.
+
+    Proves a telemetry failure can never prevent UI cleanup.
+    """
+
+    def record(self, record):  # noqa: D401 - test double
+        raise RuntimeError("simulated telemetry store failure")
+
+    def record_acceptance_event(self, *args, **kwargs):
+        raise RuntimeError("simulated telemetry store failure")
+
+    def snapshot(self, session_id: str = ""):
+        raise RuntimeError("simulated telemetry store failure")
+
+    def get(self, request_id: str):
+        raise RuntimeError("simulated telemetry store failure")
+
+
+class _RecordKeepingTelemetryStore:
+    """Records every CloudRequestRecord dict written (for assertions)."""
+
+    def __init__(self):
+        self.records: list[dict] = []
+        self.events: list[dict] = []
+
+    def record(self, record):
+        self.records.append(dict(getattr(record, "to_dict", lambda: {})()))
+
+    def record_acceptance_event(self, test_name, passed, details="", session_id=""):
+        self.events.append({"test_name": test_name, "passed": passed})
+
+    def snapshot(self, session_id: str = ""):
+        return [r for r in self.records]
+
+    def get(self, request_id: str):
+        for r in self.records:
+            if r.get("request_id") == request_id:
+                return r
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +258,9 @@ class TestForecastPageAppTest:
         fake_pipeline = FakePipeline()
         adapter = Chronos2Adapter(pipeline_or_provider=fake_pipeline)
 
-        at = AppTest.from_file("pages/1_Forecast.py")
+        # Larger timeout: this machine is a known flake source for the
+        # default 3s AppTest timeout (see the sibling timing test).
+        at = AppTest.from_file("pages/1_Forecast.py", default_timeout=60)
         at.session_state["_test_backend_override"] = adapter
         at.run()
 
@@ -334,7 +413,8 @@ class TestForecastPageCoordinatorIntegration:
         at.run()
 
         assert not at.exception
-        assert at.session_state["is_running"] is False
+        # The explicit run lifecycle must be cleared (button re-enabled).
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
         assert at.session_state["forecast_result"] is None
         assert "busy" in at.error[0].value.lower()
         # Configuration must be preserved after the recoverable error.
@@ -371,7 +451,8 @@ class TestForecastPageCoordinatorIntegration:
         at.button[0].click()
         at.run()
         assert not at.exception
-        assert at.session_state["is_running"] is False
+        # Explicit run lifecycle must be cleared (button re-enabled).
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
         assert at.session_state["error_message"] != ""
 
         # A second run must succeed — the (real, non-spy) coordinator design
@@ -382,6 +463,154 @@ class TestForecastPageCoordinatorIntegration:
         assert not at.exception
         assert at.session_state["forecast_result"] is not None
         assert len(spy.run_calls) == 2
+
+
+@pytest.mark.skipif(not HAS_APPTEST, reason="streamlit.testing.v1.AppTest not available")
+class TestForecastPageRunLifecycle:
+    """Stage A closure: the explicit run lifecycle must never permanently
+    disable a session, and the page must recover from every failure class
+    including an unresponsive backend and telemetry failures."""
+
+    def test_fresh_active_lifecycle_disables_button(self):
+        """A genuine, non-stale active lifecycle disables the Run button."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.session_state["run_lifecycle"] = {
+            "request_id": "req_active",
+            "started_at_utc": datetime.now(timezone.utc).isoformat(),
+            "phase": "running",
+        }
+        at.run()
+        assert not at.exception
+        assert at.button[0].disabled is True
+
+    def test_stale_orphaned_lifecycle_does_not_disable_button(self):
+        """A stale/orphaned lifecycle (active far beyond the maximum
+        tolerated duration) must NOT keep the session permanently disabled —
+        the button self-recovers without a browser refresh."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.session_state["run_lifecycle"] = {
+            "request_id": "req_orphaned",
+            # Far beyond queue_timeout + backend_execution_timeout + margin.
+            "started_at_utc": "2020-01-01T00:00:00+00:00",
+            "phase": "running",
+        }
+        at.run()
+        assert not at.exception
+        assert at.button[0].disabled is False
+
+    def test_lifecycle_without_start_timestamp_is_treated_as_stale(self):
+        """A lifecycle that lost its start timestamp is never legitimately
+        active and must not keep the button disabled."""
+        at = AppTest.from_file("pages/1_Forecast.py")
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.session_state["run_lifecycle"] = {
+            "request_id": "req_no_ts",
+            "started_at_utc": "",
+            "phase": "running",
+        }
+        at.run()
+        assert not at.exception
+        assert at.button[0].disabled is False
+
+    def test_two_independent_sessions_do_not_share_ui_busy_state(self):
+        """Browser session A's active lifecycle must never disable browser
+        session B's Run button (Streamlit session state is per-browser)."""
+        at_a = AppTest.from_file("pages/1_Forecast.py")
+        at_b = AppTest.from_file("pages/1_Forecast.py")
+        at_a.session_state["_test_backend_override"] = _ExplodingBackend()
+        at_b.session_state["_test_backend_override"] = _ExplodingBackend()
+        at_a.session_state["run_lifecycle"] = {
+            "request_id": "req_a",
+            "started_at_utc": datetime.now(timezone.utc).isoformat(),
+            "phase": "running",
+        }
+        at_a.run()
+        at_b.run()
+        assert not at_a.exception
+        assert not at_b.exception
+        assert at_a.button[0].disabled is True
+        assert at_b.button[0].disabled is False
+
+    def test_unresponsive_backend_recovers_lifecycle_end_to_end(self):
+        """A backend execution that acquires the permit and never returns
+        must surface a safe error and clear the UI lifecycle (no refresh
+        needed), using the REAL coordinator's watchdog."""
+        from src.coordinator import InferenceCoordinator
+
+        hanging = _HangingBackend()
+        real_coordinator = InferenceCoordinator(
+            capacity=1,
+            queue_timeout_seconds=2,
+            backend_execution_timeout_seconds=0.2,
+        )
+        at = AppTest.from_file("pages/1_Forecast.py", default_timeout=60)
+        at.session_state["_test_backend_override"] = hanging
+        at.session_state["_test_coordinator_override"] = real_coordinator
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        # The lifecycle must be cleared — the button is re-enabled.
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
+        # A safe, honest message is shown (fail-closed, no unsafe retry).
+        errors = [e.value for e in at.error]
+        assert any("unresponsive" in e.lower() for e in errors), errors
+        # The coordinator is poisoned and retains the permit.
+        assert real_coordinator.health_state == "poisoned"
+        assert real_coordinator.active_request_id != ""
+
+        # A subsequent run must be refused (CoordinatorPoisonedError) and
+        # must NOT call the hanging backend again.
+        calls_before = hanging.call_count
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert hanging.call_count == calls_before, (
+            "no second inference may enter the still-running shared backend"
+        )
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
+        errors = [e.value for e in at.error]
+        assert any("recycled" in e.lower() for e in errors), errors
+        hanging.release_event.set()
+
+    def test_telemetry_failure_does_not_prevent_ui_cleanup(self):
+        """A telemetry store failure during the run path must never leave
+        the session permanently busy."""
+        from src.forecasting.chronos2_adapter import Chronos2Adapter
+        from tests.test_adapter_contract import FakePipeline
+
+        adapter = Chronos2Adapter(pipeline_or_provider=FakePipeline())
+        exploding_store = _ExplodingTelemetryStore()
+
+        at = AppTest.from_file("pages/1_Forecast.py", default_timeout=60)
+        at.session_state["_test_backend_override"] = adapter
+        at.session_state["_test_telemetry_store_override"] = exploding_store
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        # The lifecycle is cleared despite every telemetry call failing.
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
+        assert at.button[0].disabled is False
+
+    def test_telemetry_failure_during_timeout_cleanup_does_not_stick(self):
+        """Even when telemetry recording fails on the CoordinatorTimeoutError
+        path, the UI lifecycle must still clear."""
+        at = AppTest.from_file("pages/1_Forecast.py", default_timeout=60)
+        at.session_state["_test_backend_override"] = _ExplodingBackend()
+        at.session_state["_test_coordinator_override"] = _TimeoutCoordinator()
+        at.session_state["_test_telemetry_store_override"] = _ExplodingTelemetryStore()
+        at.run()
+
+        at.button[0].click()
+        at.run()
+        assert not at.exception
+        assert at.session_state["run_lifecycle"]["phase"] == "idle"
+        assert at.button[0].disabled is False
 
 
 @pytest.mark.skipif(not HAS_STREAMLIT, reason="streamlit not installed")
@@ -486,8 +715,13 @@ class TestForecastPageEmptyData:
         at.run()
         assert not at.exception
 
-        # is_running should be reset to False
-        assert at.session_state["is_running"] is False, "Button should be re-enabled after error"
+        # The explicit run lifecycle must be non-busy (button re-enabled).
+        # Validation paths that halt the script with st.stop() leave the
+        # transient phase at "failed"; "idle" and "failed" are both
+        # non-busy, so the button is always re-enabled.
+        phase = at.session_state["run_lifecycle"]["phase"]
+        assert phase in ("idle", "failed"), f"unexpected phase {phase!r}"
+        assert at.button[0].disabled is False
 
     def test_headers_only_csv_no_backend_construction(self):
         """Backend forecast should not be called for headers-only data."""
