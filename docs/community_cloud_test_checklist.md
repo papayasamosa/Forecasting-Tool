@@ -51,9 +51,9 @@ Use this checklist when deploying to Streamlit Community Cloud.
 | 13 | `invalid_timestamp_rejected` | CSV with invalid timestamps produces user-friendly error | ✅ both |
 | 14 | `same_column_rejected` | Same timestamp/target column selected is blocked | ✅ both |
 | 15 | `context_truncation_visible` | Truncation notice displayed for long context | ✅ both (9000→8192 rows) |
-| 16 | `recoverable_failure` | Expected failure + same-adapter retry succeeds | ❌ not run (requires induced genuine failure) |
-| 17 | `configuration_preserved` | App config stays intact after recoverable error | ✅ recorded on genuine error paths that ran |
-| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | ❌ not run (needs a second browser session) |
+| 16 | `recoverable_failure` | Expected failure + same-adapter retry succeeds | ✅ both lifecycles (genuine `InferenceError` from a non-numeric-target CSV + successful recovery run in the same session) |
+| 17 | `configuration_preserved` | App config stays intact after recoverable error | ✅ recorded on genuine error paths that ran (rejections + recoverable failure) |
+| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | ❌ not captured — app reproducibly WEDGES a session under forecast triggering (`is_running` stuck, Run button disabled until refresh); blocks reliable concurrent measurement. See `docs/evidence/cloud_gate_c/README.md`. NOT fabricated |
 | 19 | `coordinator_timeout_recovery` | Coordinator timeout surfaces as recoverable error | ❌ not run (300 s timeout not safely inducible) |
 
 > **Note:** Duplicate-timestamp remediation is Phase 1 work. In Stage 0, malformed
@@ -127,15 +127,18 @@ Use this checklist when deploying to Streamlit Community Cloud.
 - [x] Same-column mapping blocked
 - [x] Errors show user-friendly messages (no stack traces)
 - [x] Configuration preserved after recoverable error
-- [ ] Two-session concurrency measured (requires a second browser session)
+- [x] Recoverable failure + retry measured (genuine non-numeric-target `InferenceError` + recovery)
+- [ ] Two-session concurrency measured (blocked by the session-wedging production bug; needs a fix then re-measurement)
 - [ ] Coordinator timeout recovery measured (300 s timeout — not safely inducible)
-- [ ] Recoverable failure + retry measured (requires induced genuine failure)
 
-**Decision:** ⏳ Pending — genuine Cloud Gate C evidence collected on commit
-`c46e586d` (14 measurements verified, both token lifecycles bound); the remaining
-items above require capabilities the agent does not have. See
-`docs/evidence/cloud_gate_c/README.md` for the full status. Do not mark Gate C
-complete.
+**Decision:** ⏳ Pending — genuine Cloud Gate C evidence collected on commits
+`c46e586d` / `c7856f06` (functionally identical code): **16 of 19 measurements verified**,
+both token lifecycles bound, recoverable failure + configuration preservation captured.
+Remaining: `two_session_concurrency` (app wedges sessions under triggering — a real
+robustness finding to fix), `coordinator_timeout_recovery` (300 s timeout, not safely
+inducible), `oversized_csv_rejected` (platform-enforced; rejection-before-parse verified,
+typed event not emitted). See `docs/evidence/cloud_gate_c/README.md` for the full status.
+Do not mark Gate C complete.
 
 ## Administration checkpoints (user-authenticated, exact)
 
