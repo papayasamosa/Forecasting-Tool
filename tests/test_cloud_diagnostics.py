@@ -102,7 +102,11 @@ def _valid_diagnostics() -> CloudRuntimeDiagnostics:
         process_peak_rss_mb=800.0,
         pipeline_constructed=False,
         pipeline_construction_count=0,
-        coordinator_state="capacity=1;max_history=256;history=0;sync_mode=semaphore",
+        coordinator_state=(
+            "capacity=1;max_history=256;history=0;sync_mode=semaphore;health=healthy;"
+            "queue_timeout_s=120;exec_timeout_s=900;queue_depth=0;active_request_id=;"
+            "active_since=;last_release_at=;last_failure_category="
+        ),
     )
 
 

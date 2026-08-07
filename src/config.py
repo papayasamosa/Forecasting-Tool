@@ -11,9 +11,9 @@ from typing import ClassVar
 # ---------------------------------------------------------------------------
 MODEL_ID: str = "amazon/chronos-2"
 
-# Hugging Face revision/commit pinned for this model. "main" is a placeholder
-# until the Stage 0 measured-evidence run resolves and records an exact
-# snapshot commit to pin (see docs/stage_0_benchmark_report.md).
+# Hugging Face revision/commit pinned for this model.  This is a concrete,
+# immutable snapshot SHA recorded by the Stage 0 measured-evidence run (see
+# docs/stage_0_benchmark_report.md) — it is NOT a "main" placeholder.
 MODEL_REVISION: str = "29ec3766d36d6f73f0696f85560a422f50e8498c"
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,27 @@ MODEL_LOAD_TIMEOUT: int = 300
 # Inference coordinator (process-wide semaphore serialising forecast calls)
 # ---------------------------------------------------------------------------
 COORDINATOR_CAPACITY: int = 1
-COORDINATOR_TIMEOUT_SECONDS: int = 300
+
+# Queue timeout: how long a request waits for the capacity-1 permit before
+# the coordinator raises CoordinatorTimeoutError.  The request never touches
+# the backend while queued.  Justified by genuine measured Cloud durations
+# (docs/evidence/cloud_gate_c/): cold forecast ~7-9 s (model load 6.9-8.7 s),
+# warm forecast ~0.06-0.09 s.  120 s is comfortably above legitimate cold
+# execution (~13x the measured cold duration) while avoiding the previous
+# five-minute silent wait.  This is a QUEUE timeout, not an execution bound.
+COORDINATOR_QUEUE_TIMEOUT_SECONDS: int = 120
+
+# Backend execution-liveness watchdog: if backend.forecast() has not returned
+# within this bound it is presumed unresponsive; the coordinator fails closed
+# (poisoned) and the capacity permit is NOT reused, so no second inference
+# can enter a still-running shared pipeline.  Generous to accommodate the
+# first-run model download/load on Community Cloud while still bounding a
+# genuine hang.  Recovery requires a safe process/backend recycle.
+COORDINATOR_BACKEND_EXECUTION_TIMEOUT_SECONDS: int = 900
+
+# Deprecated alias kept for backward compatibility (maps to the queue
+# timeout).  New code should use COORDINATOR_QUEUE_TIMEOUT_SECONDS.
+COORDINATOR_TIMEOUT_SECONDS: int = COORDINATOR_QUEUE_TIMEOUT_SECONDS
 
 # ---------------------------------------------------------------------------
 # Supported quantile range
