@@ -1,6 +1,10 @@
 # Cloud Gate C — Genuine Collection Report (final status: Gate C NOT complete)
 
 **Date:** 2026-08-07 (UTC times from artifacts)
+**Stage 4 outcome:** ADR-001 was **accepted (Choice A) with documented limitations** on
+2026-08-07 based on this evidence (see `docs/adr_001_inference_backend.md`). Gate C itself
+remains **not marked complete** — the manifest `cloud_summary` entry stays `null` — and the
+concurrency robustness fix is a required follow-up before public sharing.
 **Deployment:** https://forecasting-tool-bjhchtg9t6xhyxshidineu.streamlit.app/
 **Deployed commits (verified, git_head):** `c46e586d19c33e3dd4118ca99bbab1f0bc0743d4` (initial
 lifecycles) and `c7856f06a188a470bea6eee87808d533b34ed394` (current, after the docs-only

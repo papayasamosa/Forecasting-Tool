@@ -74,8 +74,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
-| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected on commit `c46e586d` (14 measurements verified, both token lifecycles bound); remaining items need concurrency/failure/timeout capture — see `docs/evidence/cloud_gate_c/README.md` |
-| ADR-001 inference backend | ⏳ Provisionally accepted pending Cloud Gate C |
+| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected (16/19 verified, both token lifecycles + recoverable failure); remaining: concurrency (blocked by session-wedging bug), timeout recovery, oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
+| ADR-001 inference backend | ✅ Accepted (Choice A) with documented limitations — see `docs/adr_001_inference_backend.md` |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
 | Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement, colon-delimited secret detection (PR #27 P1), strict release deserialisation, D-drive base runtime enforcement, `workflow_dispatch` recovery trigger, correctness lint across `src/`/`scripts/`, canonical Cloud template parity — see "PR #27 review closure and release-readiness closure" below |
@@ -251,7 +251,9 @@ Push-to-main CI is configured but no post-merge commit had been verified on
 (see below for this corrective PR's own record).
 
 Genuine current-head local model evidence (Gates B2–B3) is published on
-commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
+commit `7831cb4` (2026-08-05). Cloud Gate C evidence was genuinely collected
+on 2026-08-07 (16/19 verified; see `docs/evidence/cloud_gate_c/`), and
+ADR-001 was accepted (Choice A) with documented limitations.
 
 ## Remaining Stage 0 gates
 
@@ -262,7 +264,7 @@ commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
 | B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
 | B3 | Current-head local evidence bundle | ✅ Genuine bundle published 2026-08-05 (commit `7831cb4`) — independently executed token-present run; supersedes invalidated PR #18 | 4 |
 | C | Community Cloud technical spike | ⏳ Pending — needs completion | 5 |
-| D | ADR-001 decision | ⏳ Provisionally accepted, pending Gate C | 6 |
+| D | ADR-001 decision | ✅ Accepted (Choice A) with documented limitations (PR #36) | 6 |
 | E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 7 |
 
 > **Correct sequence:** deploy to Cloud → collect evidence → decide ADR.
@@ -288,16 +290,19 @@ commit `7831cb4` (2026-08-05); Cloud evidence (Gate C) is still pending.
   `scripts/build_local_stage0_bundle.py` require independently-provenanced
   token-path evidence (unique `run_id`, timestamps, matching revisions per
   attempted path) so a duplicated record is mechanically rejected.
-- **Cloud evidence (Gate C)**: Genuine collection performed on commit `c46e586d`
-  (2026-08-07) — both token lifecycles bound in typed bundles under
-  `docs/evidence/cloud_gate_c/`; 14 required measurements verified. **Gate C is
-  still not complete**: two-session concurrency, coordinator timeout recovery, and
-  recoverable-failure require capabilities the agent does not have (a second
-  browser session, an induced genuine failure), and the oversized-rejection
-  acceptance event is blocked by the platform upload limit. This is the sole
-  remaining Stage 0 evidence blocker (the Gate B3 local bundle is published and
-  valid).
-- **ADR-001**: Provisionally accepted pending Cloud Gate C. Not finally accepted.
+- **Cloud evidence (Gate C)**: Genuine collection performed on commits `c46e586d`
+  / `c7856f06` (2026-08-07, functionally identical code) — both token lifecycles
+  bound in typed bundles under `docs/evidence/cloud_gate_c/`; **16 of 19 required
+  measurements verified** (incl. recoverable inference failure + configuration
+  preservation). **Gate C is not marked complete**: `two_session_concurrency` was
+  not captured (the app reproducibly wedges a Streamlit session under forecast
+  triggering — a real robustness bug to fix before public sharing),
+  `coordinator_timeout_recovery` is not safely inducible (300 s), and the
+  oversized-rejection event is platform-enforced (rejection-before-parse
+  verified). These are documented as accepted limitations for Stage 0.
+- **ADR-001**: ✅ Accepted (Choice A) with documented limitations (2026-08-07),
+  with the concurrency robustness fix tracked as a required follow-up before
+  public sharing.
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
   Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
 - **Inference coordinator**: `src/coordinator.py` implements a bounded semaphore
