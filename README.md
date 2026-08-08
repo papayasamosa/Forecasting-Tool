@@ -74,8 +74,8 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | PR #19 evidence invalidation | ✅ Complete |
 | PR #20 coordinator integration | ✅ Complete |
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
-| Community Cloud deployment (Gate C) | ⏳ Pending — genuine evidence collected at commit `dc3046fa` (16/19 previously verified + **two-session concurrency re-measured and proven**: cold 6.44 s window overlapping a queued 6.43 s request, one pipeline); remaining: timeout recovery (queue timeout now 5 s, justified by measured durations — inducible, pending redeploy), oversized event (platform-enforced) — see `docs/evidence/cloud_gate_c/README.md` |
-| ADR-001 inference backend | ✅ Accepted (Choice A) with documented limitations — see `docs/adr_001_inference_backend.md` |
+| Community Cloud deployment (Gate C) | ✅ **COMPLETE** — final genuine evidence at commit `aa290c6f` (both token lifecycles on the same deployed commit; **18/19 verified** + `oversized_csv_rejected` platform-enforced; **two-session concurrency** and **coordinator timeout recovery (5 s)** genuinely re-measured); manifest `cloud_summary` populated with `evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json` — see `docs/evidence/cloud_gate_c/README.md` |
+| ADR-001 inference backend | ✅ Accepted (Choice A) — Cloud Gate C complete, Stage 0 complete — see `docs/adr_001_inference_backend.md` |
 | Phase 1 data ingestion core | ✅ Merged (PR #13) but paused — not integrated |
 | Phase 1 features | 🔜 After Stage 0 gates pass |
 | Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement, colon-delimited secret detection (PR #27 P1), strict release deserialisation, D-drive base runtime enforcement, `workflow_dispatch` recovery trigger, correctness lint across `src/`/`scripts/`, canonical Cloud template parity — see "PR #27 review closure and release-readiness closure" below |
@@ -251,9 +251,12 @@ Push-to-main CI is configured but no post-merge commit had been verified on
 (see below for this corrective PR's own record).
 
 Genuine current-head local model evidence (Gates B2–B3) is published on
-commit `7831cb4` (2026-08-05). Cloud Gate C evidence was genuinely collected
-on 2026-08-07 (16/19 verified; see `docs/evidence/cloud_gate_c/`), and
-ADR-001 was accepted (Choice A) with documented limitations.
+commit `7831cb4` (2026-08-05). **Cloud Gate C is COMPLETE**: final genuine
+evidence was collected on 2026-08-08 at commit `aa290c6f` (both token
+lifecycles, two-session concurrency, and coordinator timeout recovery
+re-measured; 18/19 verified + `oversized_csv_rejected` platform-enforced;
+see `docs/evidence/cloud_gate_c/`), and ADR-001 was accepted (Choice A)
+with **no unresolved measurement limitations** — **Stage 0 is complete**.
 
 ## Remaining Stage 0 gates
 
@@ -263,13 +266,13 @@ ADR-001 was accepted (Choice A) with documented limitations.
 | A9 | Evidence publication hardening | ✅ Merged (PR #11) | 2 |
 | B2 | Current-head local evidence rerun | ✅ Completed (PR #12) | 3 |
 | B3 | Current-head local evidence bundle | ✅ Genuine bundle published 2026-08-05 (commit `7831cb4`) — independently executed token-present run; supersedes invalidated PR #18 | 4 |
-| C | Community Cloud technical spike | ⏳ Pending — needs completion | 5 |
-| D | ADR-001 decision | ✅ Accepted (Choice A) with documented limitations (PR #36) | 6 |
-| E | Phase 1 start | 🔜 Partially started (ingestion core merged) but on hold until Stage 0 passes | 7 |
+| C | Community Cloud technical spike | ✅ **COMPLETE** — final genuine evidence at commit `aa290c6f` (PR #38); both token lifecycles, concurrency + timeout recovery re-measured; 18/19 verified + `oversized_csv_rejected` platform-enforced | 5 |
+| D | ADR-001 decision | ✅ Accepted (Choice A) — Cloud Gate C complete (PR #36 + final Gate C closure) | 6 |
+| E | Phase 1 start | 🔜 Next — Stage 0 gates have passed; Phase 1 work resumes | 7 |
 
 > **Correct sequence:** deploy to Cloud → collect evidence → decide ADR.
-> Phase 1 ingestion core was merged before Stage 0 passed. Additional Phase 1
-> feature work is paused until the Cloud gate is completed.
+> The Cloud gate (C) is now complete and Stage 0 has passed, so Phase 1
+> feature work resumes (Stage C: Phase 1 ingestion slice).
 
 ## Current status
 
@@ -290,29 +293,24 @@ ADR-001 was accepted (Choice A) with documented limitations.
   `scripts/build_local_stage0_bundle.py` require independently-provenanced
   token-path evidence (unique `run_id`, timestamps, matching revisions per
   attempted path) so a duplicated record is mechanically rejected.
-- **Cloud evidence (Gate C)**: Genuine collection performed on commits `c46e586d`
-  / `c7856f06` (2026-08-07, functionally identical code) — both token lifecycles
-  bound in typed bundles under `docs/evidence/cloud_gate_c/`; **16 of 19 required
+- **Cloud evidence (Gate C)**: ✅ **COMPLETE — Stage 0 passed.** Final genuine
+  collection at commit **`aa290c6f`** (2026-08-08, PR #38) on both token
+  lifecycles of the exact same deployed commit: **18 of 19 required
   measurements verified** (incl. recoverable inference failure + configuration
-  preservation). **Gate C is not marked complete**: `two_session_concurrency` was
-  not captured at the earlier commits (the app reproducibly wedged a Streamlit
-  session under forecast triggering — a real robustness bug, since fixed); the
-  robustness fix (fail-closed backend execution watchdog, explicit UI run
-  lifecycle) landed in Stage A (PR #37, commit `dc3046fa`), and genuine
-  re-measurement at `dc3046fa` has now **proven two-session concurrency**
-  (a cold 6.44 s request window overlapping a queued 6.43 s warm request,
-  one process-cached pipeline, coordinator healthy). `coordinator_timeout_recovery`
-  was not safely inducible under the old 300 s / 120 s queue timeouts (no
-  legitimate request can hold capacity that long: max measured ~8-9 s cold),
-  so the queue timeout is now 5 s (measured-justified; see `src/config.py`)
-  and is scheduled for final re-measurement after redeploy. The oversized-rejection
-  event is platform-enforced (rejection-before-parse verified; typed event not
-  emittable — represented in the contract via `platform_enforced`).
-- **ADR-001**: ✅ Accepted (Choice A) with documented limitations (2026-08-07),
-  with the concurrency robustness fix tracked as a required follow-up before
-  public sharing.
+  preservation) plus `oversized_csv_rejected` **platform-enforced**
+  (rejection-before-parse verified; typed event not emittable — represented in
+  the contract via `platform_enforced`). **two-session concurrency** proven at
+  `dc3046fa` (Stage A fix) and re-captured at `aa290c6f`; **coordinator
+  timeout recovery** genuinely re-measured at `aa290c6f` at the
+  measured-justified 5 s queue timeout (timeout `317f3d11-…` + recovery
+  `3b952e38-…` bound). Manifest `cloud_summary` populated with
+  `docs/evidence/stage0/evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json`
+  (`cloud_stage0`, `success=True`, `evidence_origin=real_measurement`).
+- **ADR-001**: ✅ Accepted (Choice A) — Cloud Gate C complete, **no unresolved
+  measurement limitations**; Stage 0 is complete (2026-08-08).
 - **Phase 1 ingestion**: Core module merged (PR #13) but not integrated with the
-  Streamlit page. No additional Phase 1 features will be added until Stage 0 passes.
+  Streamlit page. Stage 0 has now passed; Phase 1 feature work resumes (Stage C:
+  Phase 1 ingestion slice).
 - **Inference coordinator**: `src/coordinator.py` implements a bounded
   semaphore, request telemetry, and **explicitly separated timeout
   semantics**:
