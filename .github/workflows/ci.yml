@@ -86,7 +86,7 @@ jobs:
           set +e
           python -m pytest tests/ -v \
             --cov=src.schemas --cov=src.forecasting --cov=src.benchmarking \
-            --cov=src.data_ingestion --cov=src.evidence_schemas --cov=src.telemetry \
+            --cov=src.data_ingestion --cov=src.validation --cov=src.evidence_schemas --cov=src.telemetry \
             --cov=src.coordinator --cov=src.evidence_validation \
             --cov=src.storage_policy --cov=src.redaction \
             --cov=src.cloud_diagnostics \

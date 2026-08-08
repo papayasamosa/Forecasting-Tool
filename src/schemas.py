@@ -47,6 +47,19 @@ class WarningCode(str, Enum):
     SEASONAL_NAIVE_INELIGIBLE = "seasonal_naive_ineligible"
 
 
+class ErrorCode(str, Enum):
+    """Blocking (ERROR-severity) validation codes.
+
+    These are raised by the Phase 1 ingestion/validation slice for inputs
+    that cannot be safely forecast and must be corrected by the user.
+    """
+    DUPLICATE_TIMESTAMPS = "duplicate_timestamps"
+    INVALID_TIMESTAMPS = "invalid_timestamps"
+    MISSING_TIMESTAMPS = "missing_timestamps"
+    MISSING_TARGET_VALUES = "missing_target_values"
+    EMPTY_DATA = "empty_data"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Validation types
 # ──────────────────────────────────────────────────────────────────────

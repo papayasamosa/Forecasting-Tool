@@ -94,6 +94,24 @@ HORIZON_MAX: int = 1024
 CONTEXT_WINDOW_CAP: int = 8192
 
 # ---------------------------------------------------------------------------
+# Validation thresholds (Phase 1 ingestion/validation slice)
+# ---------------------------------------------------------------------------
+# Minimum number of rows required for a meaningful univariate forecast.
+# Series shorter than this are flagged (warning) as short history.
+MIN_HISTORY_ROWS: int = 10
+
+# IQR multiplier for the (advisory, non-blocking) outlier detection.
+OUTLIER_IQR_MULTIPLIER: float = 3.0
+
+# A target series whose range is below this absolute epsilon is flagged as
+# zero-or-near-zero (a constant/flat series cannot support a forecast).
+ZERO_VARIANCE_EPS: float = 1e-9
+
+# A gap larger than this multiple of the median spacing flags irregular
+# (non-regular) dates and unreliable frequency inference.
+IRREGULAR_DATE_TOLERANCE_MULTIPLIER: float = 2.0
+
+# ---------------------------------------------------------------------------
 # Seasonality defaults for seasonal naive baseline
 # ---------------------------------------------------------------------------
 SEASONAL_PERIODS: ClassVar[dict[str, int]] = {
