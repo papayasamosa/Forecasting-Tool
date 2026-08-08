@@ -32,7 +32,7 @@
     },
     "cloud_summary": {
       "filename": "evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json",
-      "sha256": "9769084318d4b737672c15cc6a5ad71493858b158b777f57ec4e88db1c708400",
+      "sha256": "5d8b229a052e57c4265621d1740a1986bf6c705672c0adaa378ab5df7cdc01e7",
       "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
       "evidence_type": "cloud_stage0",
       "notes": "Published 20260808_130858"
@@ -82,21 +82,21 @@
     },
     "receipt_token_absent_receipt": {
       "filename": "evidence_receipt_token_absent_receipt_20260808_130858_531362_9beaf9b5.json",
-      "sha256": "ca3d8ed29f97f923fdc50c50233c243caf1f5157b36053703a9336dfb5aeb74f",
+      "sha256": "65e5907960e535960e37488e67ba52713974db9c7e604218b055203e2f2716e3",
       "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
       "evidence_type": "execution_receipt",
       "notes": "Receipt for token_absent_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
     },
     "receipt_token_present_receipt": {
       "filename": "evidence_receipt_token_present_receipt_20260808_130858_551646_897cb35a.json",
-      "sha256": "59cd07bd6a4e9ed6ca3bb0cb1dadacee3a96bd3dd56d70ba544e92453ed57124",
+      "sha256": "11c57d7354d412554008446304427fd34c145d08a60aa65e5b7644790f32bc77",
       "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
       "evidence_type": "execution_receipt",
       "notes": "Receipt for token_present_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
     },
     "receipt_collection_receipt": {
       "filename": "evidence_receipt_collection_receipt_20260808_130858_572432_5b90e713.json",
-      "sha256": "ffbf28e7c2bb1e717e0d2dde71423d813af10435c61427277356d5227ce3ad1b",
+      "sha256": "8d65cbe92038a1eb25553572ecd9f65843cb5a09ad561e06e095e599090b56ed",
       "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
       "evidence_type": "execution_receipt",
       "notes": "Receipt for collection_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
