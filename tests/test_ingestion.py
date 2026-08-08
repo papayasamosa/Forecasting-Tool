@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 
 from src.data_ingestion import (
+    DuplicateTimestampError,
     IngestedData,
     ColumnMapping,
     IngestionResult,
@@ -19,8 +20,10 @@ from src.data_ingestion import (
     ingest_upload,
     prepare_dataframe,
     build_forecast_task,
+    run_ingestion_pipeline,
 )
 from src.config import MAX_UPLOAD_SIZE_BYTES
+from src.schemas import ErrorCode, WarningCode
 
 
 # ---------------------------------------------------------------------------
@@ -272,3 +275,158 @@ class TestBuildForecastTask:
         mapping = ColumnMapping(timestamp="timestamp", target="target")
         task = build_forecast_task(df, mapping, prediction_length=5, quantile_levels=(0.05, 0.5, 0.95))
         assert task.quantile_levels == (0.05, 0.5, 0.95)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate timestamp detection (Phase 1 remediation)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateTimestampDetection:
+    def _dup_df(self) -> pd.DataFrame:
+        df = pd.DataFrame({
+            "timestamp": pd.date_range("2024-01-01", periods=5, freq="D"),
+            "target": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        return pd.concat(
+            [df, df.iloc[[1]]], ignore_index=True
+        ).sort_values("timestamp").reset_index(drop=True)
+
+    def test_prepare_dataframe_raises_duplicate_error(self):
+        df = self._dup_df()
+        mapping = ColumnMapping(timestamp="timestamp", target="target")
+        with pytest.raises(DuplicateTimestampError) as excinfo:
+            prepare_dataframe(df, mapping)
+        message = str(excinfo.value)
+        assert "duplicate" in message.lower()
+        # Phase 1 contract: detailed remediation guidance.
+        assert "aggregate" in message.lower() or "re-upload" in message.lower()
+        # The duplicated timestamp value is named.
+        assert "2024-01-02" in message
+
+    def test_build_forecast_task_raises_on_duplicates(self):
+        df = self._dup_df()
+        mapping = ColumnMapping(timestamp="timestamp", target="target")
+        with pytest.raises(DuplicateTimestampError):
+            build_forecast_task(df, mapping)
+
+    def test_clean_data_passes(self):
+        df = pd.DataFrame({
+            "timestamp": pd.date_range("2024-01-01", periods=5, freq="D"),
+            "target": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        mapping = ColumnMapping(timestamp="timestamp", target="target")
+        working_df, *_ = prepare_dataframe(df, mapping)
+        assert len(working_df) == 5
+
+
+# ---------------------------------------------------------------------------
+# End-to-end ingestion pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestRunIngestionPipeline:
+    def _df(self, rows: int = 20) -> pd.DataFrame:
+        rng = np.random.default_rng(seed=7)
+        return pd.DataFrame({
+            "timestamp": pd.date_range("2024-01-01", periods=rows, freq="W"),
+            "target": 100 + rng.normal(0, 5, size=rows),
+        })
+
+    def test_valid_data_builds_task(self):
+        df = self._df()
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert isinstance(result, IngestionResult)
+        assert result.task is not None
+        assert result.report is not None
+        assert result.report.is_blocking is False
+        assert result.errors == []
+        assert result.original_row_count == 20
+        assert result.retained_row_count == 20
+        assert result.truncated is False
+
+    def test_frequency_auto_inferred(self):
+        df = self._df()
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task.frequency == "W"
+
+    def test_explicit_frequency_preserved(self):
+        df = self._df()
+        result = run_ingestion_pipeline(
+            df, ColumnMapping(timestamp="timestamp", target="target"), frequency="D"
+        )
+        assert result.task.frequency == "D"
+
+    def test_duplicates_blocking_task_none(self):
+        df = self._df()
+        dup = df.iloc[[1]].copy()
+        df = pd.concat([df, dup], ignore_index=True).sort_values("timestamp").reset_index(drop=True)
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is None
+        assert result.report is not None
+        assert result.report.is_blocking is True
+        assert result.errors, "expected an error message"
+        assert any(
+            i.code == ErrorCode.DUPLICATE_TIMESTAMPS.value for i in result.report.errors
+        )
+
+    def test_all_missing_target_blocking(self):
+        df = self._df()
+        df["target"] = np.nan
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is None
+        assert any(
+            i.code == ErrorCode.MISSING_TARGET_VALUES.value for i in result.report.errors
+        )
+
+    def test_partial_missing_target_warns_but_builds(self):
+        df = self._df()
+        df.loc[3, "target"] = np.nan
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is not None
+        assert any(
+            i.code == WarningCode.MISSING_TARGET_VALUES.value for i in result.report.warnings
+        )
+
+    def test_short_history_warns_but_builds(self):
+        df = self._df(rows=5)
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is not None
+        assert any(
+            i.code == WarningCode.SHORT_HISTORY.value for i in result.report.warnings
+        )
+
+    def test_constant_series_warns_but_builds(self):
+        df = self._df()
+        df["target"] = 9.0
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is not None
+        assert any(
+            i.code == WarningCode.ZERO_OR_NEAR_ZERO.value for i in result.report.warnings
+        )
+
+    def test_missing_column_blocking(self):
+        df = self._df().drop(columns=["target"])
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="timestamp", target="target"))
+        assert result.task is None
+        assert result.report.is_blocking is True
+        assert result.errors
+
+    def test_truncation_warning_and_flag(self):
+        df = self._df(rows=100)
+        result = run_ingestion_pipeline(
+            df, ColumnMapping(timestamp="timestamp", target="target"), context_window_cap=10
+        )
+        assert result.task is not None
+        assert result.truncated is True
+        assert result.retained_row_count == 10
+        assert result.original_row_count == 100
+        assert any("truncated" in w.lower() for w in result.warnings)
+
+    def test_custom_mapping(self):
+        df = self._df().rename(columns={"timestamp": "ts", "target": "val"})
+        result = run_ingestion_pipeline(df, ColumnMapping(timestamp="ts", target="val"))
+        assert result.task is not None
+        assert result.task.timestamp_column == "ts"
+        assert result.task.target_columns == ("val",)
+
