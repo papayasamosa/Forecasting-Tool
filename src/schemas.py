@@ -277,6 +277,7 @@ class BacktestResult:
     configuration: BacktestConfiguration = dataclasses.field(
         default_factory=BacktestConfiguration
     )
+    warnings: tuple[str, ...] = ()
 
 
 def new_run_id() -> str:

@@ -76,8 +76,9 @@ A Streamlit application for time-series forecasting using **Amazon Chronos-2**, 
 | Gate B3 valid superseding evidence | ✅ Published 2026-08-05 (genuine bundle, commit `7831cb4`) |
 | Community Cloud deployment (Gate C) | ✅ **COMPLETE** — final genuine evidence at commit `aa290c6f` (both token lifecycles on the same deployed commit; **18/19 verified** + `oversized_csv_rejected` platform-enforced; **two-session concurrency** and **coordinator timeout recovery (5 s)** genuinely re-measured); manifest `cloud_summary` populated with `evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json` — see `docs/evidence/cloud_gate_c/README.md` |
 | ADR-001 inference backend | ✅ Accepted (Choice A) — Cloud Gate C complete, Stage 0 complete — see `docs/adr_001_inference_backend.md` |
-| Phase 1 data ingestion core | ✅ Merged (PR #13) + **Stage C ingestion/validation slice merged (PR #40)** — typed validation (`src/validation.py`) wired into the ingestion pipeline (`run_ingestion_pipeline`) with detailed duplicate-timestamp remediation; not yet integrated into the Streamlit page |
-| Phase 1 features | 🔜 In progress — Stage C (ingestion/validation) merged; Stage D (rolling-origin backtesting/baselines) next |
+| Phase 1 data ingestion core | ✅ Merged (PR #13) + **Stage C ingestion/validation slice merged (PR #40)** — typed validation (`src/validation.py`) wired into the ingestion pipeline (`run_ingestion_pipeline`) with detailed duplicate-timestamp remediation |
+| Phase 1 rolling-origin evaluation | ✅ **Stage D merged (PR #41)** — `src/backtesting.py` (rolling-origin folds: expanding/sliding × overlapping/non-overlapping) + `src/baselines.py` (last-value, seasonal naive) + `src/metrics.py` (MAE/RMSE/MASE); not yet integrated into the Streamlit page |
+| Phase 1 features | 🔜 In progress — Stages C + D merged; remaining slices (fingerprinting, exports/visualisation, page integration) |
 | Steps completed (current PR) | CI fail-closed (coverage rounding fix), explicit `evidence_origin` everywhere, sanitise-before-bind publisher pipeline, real receipt files in manifest, execution-wrapper/bundle compatibility, schema-level Cloud receipt + `CloudCollectionSession` binding, synthetic-mode fixes, `receipt_is_release_ready()` wired into schema validation, mutation tests, D-drive MCP/Graphify enforcement, colon-delimited secret detection (PR #27 P1), strict release deserialisation, D-drive base runtime enforcement, `workflow_dispatch` recovery trigger, correctness lint across `src/`/`scripts/`, canonical Cloud template parity — see "PR #27 review closure and release-readiness closure" below |
 | MCP developer tooling | ✅ Optional, not functionally verified |
 
@@ -97,6 +98,9 @@ src/
     evidence_schemas.py # Typed evidence models (v2) with validation
     data_ingestion.py   # Phase 1 ingestion core (PR #13) + typed pipeline (Stage C)
     validation.py       # Phase 1 typed data-quality validation (Stage C, Slice 3)
+    backtesting.py      # Phase 1 rolling-origin backtesting (Stage D, Slice 7)
+    baselines.py        # Phase 1 baselines: last-value, seasonal naive (Stage D, Slice 8)
+    metrics.py          # Phase 1 error metrics: MAE/RMSE/MASE (Stage D)
     forecasting/
         base.py         # ForecastBackend protocol
         chronos2_adapter.py  # Chronos2Adapter class
@@ -115,6 +119,9 @@ tests/
     test_evidence.py             # Evidence schema, publisher, manifest, bundle tests
     test_ingestion.py            # Phase 1 ingestion tests (Stage C)
     test_validation.py           # Phase 1 validation tests (Stage C, Slice 3)
+    test_backtesting.py          # Phase 1 backtesting tests (Stage D, Slice 7)
+    test_baselines.py            # Phase 1 baseline tests (Stage D, Slice 8)
+    test_metrics.py              # Phase 1 metrics tests (Stage D)
     fixtures/                    # Synthetic data fixtures
 docs/
     evidence/stage0/             # Sanitised evidence artefacts + manifest
@@ -270,12 +277,12 @@ with **no unresolved measurement limitations** — **Stage 0 is complete**.
 | B3 | Current-head local evidence bundle | ✅ Genuine bundle published 2026-08-05 (commit `7831cb4`) — independently executed token-present run; supersedes invalidated PR #18 | 4 |
 | C | Community Cloud technical spike | ✅ **COMPLETE** — final genuine evidence at commit `aa290c6f` (PR #38); both token lifecycles, concurrency + timeout recovery re-measured; 18/19 verified + `oversized_csv_rejected` platform-enforced | 5 |
 | D | ADR-001 decision | ✅ Accepted (Choice A) — Cloud Gate C complete (PR #36 + final Gate C closure) | 6 |
-| E | Phase 1 start | 🔜 In progress — **Stage C (ingestion/validation slice) merged (PR #40)**; Stage D (rolling-origin backtesting/baselines) next | 7 |
+| E | Phase 1 start | 🔜 In progress — **Stages C + D merged (PRs #40/#41)**; remaining Phase 1 slices pending | 7 |
 
 > **Correct sequence:** deploy to Cloud → collect evidence → decide ADR.
 > The Cloud gate (C) is complete and Stage 0 has passed. Phase 1 work
-> resumed with Stage C (typed ingestion/validation slice, PR #40); Stage D
-> (rolling-origin backtesting/baselines) is next.
+> resumed: Stage C (typed ingestion/validation slice, PR #40) and Stage D
+> (rolling-origin backtesting + baselines + metrics, PR #41) are merged.
 
 ## Current status
 
@@ -315,8 +322,12 @@ with **no unresolved measurement limitations** — **Stage 0 is complete**.
   **Stage C added the typed data-quality validation slice (PR #40)** — `src/validation.py`
   produces `ValidationReport`s (duplicate timestamps with detailed remediation guidance,
   missing targets, short history, flat series, IQR outliers, irregular dates) and is wired
-  into a non-raising `run_ingestion_pipeline` in `src/data_ingestion.py`. Not yet integrated
-  with the Streamlit page (Stage C is the module/test slice; page integration is a later step).
+  into a non-raising `run_ingestion_pipeline` in `src/data_ingestion.py`.
+- **Phase 1 rolling-origin evaluation (Stage D)**: **merged (PR #41)** — `src/backtesting.py`
+  (rolling-origin folds: expanding/sliding × overlapping/non-overlapping, `run_backtest` with
+  a decoupled `predict_fn`), `src/baselines.py` (last-value + seasonal naive with
+  eligibility contract), `src/metrics.py` (MAE/RMSE/MASE with MASE scaling). All are
+  module + tests slices; Streamlit page integration of the Phase 1 pipeline is a later step.
 - **Inference coordinator**: `src/coordinator.py` implements a bounded
   semaphore, request telemetry, and **explicitly separated timeout
   semantics**:

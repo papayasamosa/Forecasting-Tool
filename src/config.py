@@ -112,6 +112,12 @@ ZERO_VARIANCE_EPS: float = 1e-9
 IRREGULAR_DATE_TOLERANCE_MULTIPLIER: float = 2.0
 
 # ---------------------------------------------------------------------------
+# Backtesting (Phase 1 rolling-origin evaluation)
+# ---------------------------------------------------------------------------
+# Fewer than this many backtest folds triggers a FEW_FOLDS advisory warning.
+MIN_RECOMMENDED_FOLDS: int = 3
+
+# ---------------------------------------------------------------------------
 # Seasonality defaults for seasonal naive baseline
 # ---------------------------------------------------------------------------
 SEASONAL_PERIODS: ClassVar[dict[str, int]] = {
