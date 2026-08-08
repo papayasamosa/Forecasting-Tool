@@ -42,33 +42,45 @@ supersedes the invalidated PR #18 bundle. It was produced with the hardened
 The evidence manifest records this bundle and its receipts as the valid
 Gate B3 entry.
 
-## Cloud Gate C (collected draft — still pending, do not mark complete)
+## Cloud Gate C — ✅ COMPLETE
 
-Cloud Gate C is the sole remaining Stage 0 evidence gate. Genuine Community
-Cloud collection has been performed on the deployed app (commits
+Cloud Gate C is **complete** and **Stage 0 is complete**. Genuine Community
+Cloud collection was performed on the deployed app across commits
 `c46e586d19c33e3dd4118ca99bbab1f0bc0743d4` / `c7856f06a188a470bea6eee87808d533b34ed394`
-and, after the Stage A robustness fix, `dc3046fa2e8c32e3e379000ac68d1f43872a1270`)
-and the raw typed bundles/diagnostics are committed under
-`docs/evidence/cloud_gate_c/` (see its `README.md` for the full measured-results
-matrix and honest status). **Gate C is NOT complete**: the manifest
-`cloud_summary` entry stays `null` and no `cloud_stage0` release evidence is
-published. Status:
+(functionally identical code), after the Stage A robustness fix at
+`dc3046fa2e8c32e3e379000ac68d1f43872a1270` (concurrency re-measured), and finally at
+**`aa290c6f223085f98d68bca73c56e2c73d5bd047`** (measured-justified 5 s queue timeout +
+`platform_enforced` contract; **final Gate C collection**). The raw typed
+bundles/diagnostics are committed under `docs/evidence/cloud_gate_c/` (see its
+`README.md` for the full measured-results matrix and honest status). The manifest
+`cloud_summary` entry is populated with
+`evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json` (`cloud_stage0`,
+`success=True`, `evidence_origin=real_measurement`). Final status:
 
-- **16/19** measurements genuinely verified at `c46e586d` / `c7856f06` (both
-  token lifecycles on functionally identical code, recoverable failure,
-  configuration preservation, all input validations, context truncation).
-- **two-session concurrency — re-measured and PROVEN at `dc3046fa`** (Stage A
-  fix, PR #37): two isolated browser sessions, overlapping full request
-  windows, serialised inference, 6.434 s measured queue time, one pipeline,
-  coordinator healthy (typed records retained in
-  `docs/evidence/cloud_gate_c/cloud_diagnostics_concurrency_*_dc3046fa.json`).
-- **coordinator_timeout_recovery** — not safely inducible under the old
-  300 s / 120 s timeouts (max legitimate request measured ~8-9 s cold); queue
-  timeout adjusted to a measured-justified 5 s (`src/config.py`); final
-  re-measurement scheduled after redeploy.
-- **oversized_csv_rejected** — platform-enforced (rejection-before-parse
-  verified; typed in-app event not emittable); represented in the canonical
-  contract via `platform_enforced` (`PLATFORM_ENFORCED_CLOUD_TESTS`).
+- **18/19** measurements genuinely verified, plus the 19th
+  (`oversized_csv_rejected`) **truthfully represented via `platform_enforced`**
+  (rejection-before-parse verified; typed in-app event not emittable
+  client-side) — see `PLATFORM_ENFORCED_CLOUD_TESTS` in `src/evidence_schemas.py`.
+- At **`aa290c6f`**, on **both token lifecycles of the exact same deployed
+  commit**: genuine **two-session concurrency** (336 ms overlap, capacity-1
+  serialised), genuine **coordinator timeout recovery (5 s)**, cold loads on
+  both token paths (absent `5144b8f7-…` 6.31 s / present `d18952f4-…` 6.96 s
+  model load), warm/repeated runs, valid CSV, all input rejections, context
+  truncation, recoverable failure, configuration preservation, and
+  dependency/pip/CPU-only checks.
+- **two-session concurrency — re-measured and PROVEN** (typed records in
+  `docs/evidence/cloud_gate_c/cloud_diagnostics_concurrency_*_dc3046fa.json`
+  plus the final aa290c6f bundles).
+- **coordinator_timeout_recovery — re-measured and resolved at `aa290c6f`**
+  (queue timeout corrected to a measured-justified 5 s; a legitimate cold/max
+  request holding capacity triggered a genuine 5 s timeout on the queued
+  session, which recovered on retry — typed IDs bound in the session record).
+- **oversized_csv_rejected — platform-enforced** (rejection-before-parse
+  verified; typed in-app event not emittable; represented in the canonical
+  contract via `platform_enforced`).
+
+`verify_evidence_manifest.py` and `verify_stage0_evidence_readiness.py` pass
+(exit 0) with the published `cloud_stage0` record.
 
 The Stage 1 corrective instrumentation added the producer for
 genuine Cloud evidence:
@@ -101,7 +113,7 @@ docs/evidence/stage0/
   evidence_manifest.json             ← SHA-256 hashes of all sanitised files
   local_no_token_summary.json        ← download-cold / process-cold / warm results (no token)
   local_token_present_summary.json   ← token-present resolution and timings
-  cloud_summary.json                 ← Community Cloud results (pending)
+  cloud_summary.json                 ← Community Cloud results (complete — see manifest `cloud_summary`)  
 ```
 
 ## File naming convention

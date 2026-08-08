@@ -1,6 +1,6 @@
 {
   "evidence_schema_version": "2",
-  "last_updated": "2026-08-05T16:17:33.587672+00:00",
+  "last_updated": "2026-08-08T12:08:58.530075+00:00",
   "files": {
     "smoke_test": {
       "filename": null,
@@ -31,11 +31,11 @@
       "notes": "Published 20260805_171733"
     },
     "cloud_summary": {
-      "filename": null,
-      "sha256": null,
-      "code_commit": null,
+      "filename": "evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json",
+      "sha256": "5d8b229a052e57c4265621d1740a1986bf6c705672c0adaa378ab5df7cdc01e7",
+      "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
       "evidence_type": "cloud_stage0",
-      "notes": "Populate after Community Cloud deployment (Gate C)."
+      "notes": "Published 20260808_130858"
     },
     "receipt_download_cold_smoke": {
       "filename": "evidence_receipt_download_cold_smoke_20260805_171733_588671_805a382a.json",
@@ -79,6 +79,27 @@
       "evidence_type": "local_stage0_bundle",
       "status": "invalidated",
       "notes": "INVALIDATED - do not treat as passing Stage 0 release evidence. The runs.token_present_smoke record in this file is byte-for-byte identical to runs.process_cold_smoke (same started_at_utc/completed_at_utc, same cold/warm timings and RSS); only hf_token_present and the token_*_result objects were changed. It is not an independently executed token-present run. Retained unmodified for audit; superseded by evidence_local_stage0_bundle_20260805_171733_555681_2ce6345f.json (genuine Gate B3, commit 7831cb4)."
+    },
+    "receipt_token_absent_receipt": {
+      "filename": "evidence_receipt_token_absent_receipt_20260808_130858_531362_9beaf9b5.json",
+      "sha256": "65e5907960e535960e37488e67ba52713974db9c7e604218b055203e2f2716e3",
+      "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for token_absent_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
+    },
+    "receipt_token_present_receipt": {
+      "filename": "evidence_receipt_token_present_receipt_20260808_130858_551646_897cb35a.json",
+      "sha256": "11c57d7354d412554008446304427fd34c145d08a60aa65e5b7644790f32bc77",
+      "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for token_present_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
+    },
+    "receipt_collection_receipt": {
+      "filename": "evidence_receipt_collection_receipt_20260808_130858_572432_5b90e713.json",
+      "sha256": "8d65cbe92038a1eb25553572ecd9f65843cb5a09ad561e06e095e599090b56ed",
+      "code_commit": "aa290c6f223085f98d68bca73c56e2c73d5bd047",
+      "evidence_type": "execution_receipt",
+      "notes": "Receipt for collection_receipt, bound to evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json"
     }
   },
   "instructions": "Use scripts/publish_evidence.py to validate, sanitise, copy and update this manifest atomically. Do not edit by hand. Cloud evidence is built via scripts/build_cloud_stage0_evidence.py."

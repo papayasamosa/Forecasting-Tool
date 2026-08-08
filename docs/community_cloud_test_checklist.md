@@ -53,8 +53,8 @@ Use this checklist when deploying to Streamlit Community Cloud.
 | 15 | `context_truncation_visible` | Truncation notice displayed for long context | ✅ both (9000→8192 rows) |
 | 16 | `recoverable_failure` | Expected failure + same-adapter retry succeeds | ✅ both lifecycles (genuine `InferenceError` from a non-numeric-target CSV + successful recovery run in the same session) |
 | 17 | `configuration_preserved` | App config stays intact after recoverable error | ✅ recorded on genuine error paths that ran (rejections + recoverable failure) |
-| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | ✅ **captured at `dc3046fa`** (Stage A fix re-measured): isolated sessions `5850e6f5fa29` / `ecc49f26c6de`, requests `220cc5c4-…` / `e0055809-…`, overlapping full windows, serialised inference, 6.434 s measured queue, one pipeline, both success — see `cloud_gate_c/README.md` |
-| 19 | `coordinator_timeout_recovery` | Coordinator timeout surfaces as recoverable error | ⏳ queue timeout adjusted to a measured-justified 5 s (was 120 s — not inducible because max legit request ~8-9 s cold); final re-measurement scheduled after redeploy; not fabricated |
+| 18 | `two_session_concurrency` | Two simultaneous sessions, queue behaviour recorded | ✅ **captured at `dc3046fa`** (Stage A fix re-measured) and **re-captured at `aa290c6f`** (final: sessions `1b0f2b151a87`/`c47deb17f47c`, 336 ms overlap, capacity-1 serialised, 6.434 s queue at dc3046fa, one pipeline, both success) — see `cloud_gate_c/README.md` |
+| 19 | `coordinator_timeout_recovery` | Coordinator timeout surfaces as recoverable error | ✅ **re-measured at `aa290c6f`** (queue timeout corrected to a measured-justified 5 s; cold holder held capacity → queued session genuinely reached 5 s timeout → recovered on retry; typed IDs `317f3d11-…` / `3b952e38-…` bound) |
 
 > **Note:** Duplicate-timestamp remediation is Phase 1 work. In Stage 0, malformed
 > input produces a user-friendly error without detailed duplicate guidance.
@@ -128,19 +128,22 @@ Use this checklist when deploying to Streamlit Community Cloud.
 - [x] Errors show user-friendly messages (no stack traces)
 - [x] Configuration preserved after recoverable error
 - [x] Recoverable failure + retry measured (genuine non-numeric-target `InferenceError` + recovery)
-- [x] Two-session concurrency measured at `dc3046fa` (Stage A fix re-measured: isolated sessions, overlapping windows, 6.434 s queue, one pipeline)
-- [ ] Coordinator timeout recovery measured (queue timeout adjusted to 5 s; final re-measurement scheduled after redeploy)
+- [x] Two-session concurrency measured at `dc3046fa` and re-captured at `aa290c6f` (isolated sessions, overlapping windows, serialised, one pipeline)
+- [x] Coordinator timeout recovery measured at `aa290c6f` (5 s queue timeout, genuine timeout + recovery on retry)
 
-**Decision:** ⏳ Pending — genuine Cloud Gate C evidence collected on commits
-`c46e586d` / `c7856f06` (functionally identical code): **16 of 19 measurements verified**,
-both token lifecycles bound, recoverable failure + configuration preservation captured;
-plus **two-session concurrency re-measured and proven at `dc3046fa`** (Stage A fix,
-PR #37). Remaining: `coordinator_timeout_recovery` (queue timeout adjusted to a
-measured-justified 5 s — was 120 s / 300 s, not inducible because max legit request
-~8-9 s cold; final re-measurement scheduled after redeploy), `oversized_csv_rejected`
-(platform-enforced; rejection-before-parse verified, typed event not emittable —
-represented in the contract via `platform_enforced`). See
-`docs/evidence/cloud_gate_c/README.md` for the full status. Do not mark Gate C complete.
+**Decision:** ✅ **PASS — Gate C COMPLETE, Stage 0 complete.** Final collection at
+**`aa290c6f`** (measured-justified 5 s queue timeout + `platform_enforced` contract):
+**18 of 19 measurements genuinely verified, both token lifecycles on the exact same
+deployed commit** (token-absent `5144b8f7-…` 6.31 s model load / token-present
+`d18952f4-…` 6.96 s), genuine **two-session concurrency**, genuine **coordinator
+timeout recovery (5 s)**, recoverable failure + configuration preservation, all input
+validations, context truncation, dependency/pip/CPU-only checks; `oversized_csv_rejected`
+**platform-enforced** (rejection-before-parse verified, typed event not emittable —
+represented in the contract via `platform_enforced`). Manifest `cloud_summary` populated
+with `evidence_cloud_stage0_20260808_130858_484438_4ca8249f.json` (`success=True`,
+`evidence_origin=real_measurement`); `verify_evidence_manifest.py` and
+`verify_stage0_evidence_readiness.py` pass (exit 0). See
+`docs/evidence/cloud_gate_c/README.md` for the full measured-results matrix.
 
 ## Administration checkpoints (user-authenticated, exact)
 
