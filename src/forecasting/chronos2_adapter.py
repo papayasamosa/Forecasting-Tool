@@ -26,6 +26,7 @@ from src.schemas import (
 )
 from src.telemetry import capture_package_versions
 from src.forecasting.base import ForecastBackend
+from src.fingerprinting import fingerprint_forecast_task
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +351,7 @@ class Chronos2Adapter:
             prediction_length=task.prediction_length,
             quantile_levels=task.quantile_levels,
             context_rows_used=context_rows,
-            data_fingerprint="",
+            data_fingerprint=fingerprint_forecast_task(task),
             warnings=tuple(captured_warnings),
             runtime_seconds=round(inference_time, 3),
             model_load_seconds=round(model_load_time, 3),
